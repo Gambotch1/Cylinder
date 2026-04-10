@@ -1,0 +1,48 @@
+{
+  "config": {
+    "lookback": 15,
+    "input_col": "disp",
+    "target_col": "cl",
+    "model": "Ridge(alpha=1.0)",
+    "split_rule": "case index mod 5: train=(0,1,2), val=3, test=4"
+  },
+  "case_split": {
+    "train_cases": [
+      "Ur3.0",
+      "Ur4.0",
+      "Ur4.2",
+      "Ur4.8",
+      "Ur5.0",
+      "Ur5.2",
+      "Ur5.8",
+      "Ur6.0",
+      "Ur6.5",
+      "Ur9.0"
+    ],
+    "val_cases": [
+      "Ur4.4",
+      "Ur5.4",
+      "Ur7.0"
+    ],
+    "test_cases": [
+      "Ur4.6",
+      "Ur5.6",
+      "Ur8.0"
+    ]
+  },
+  "sizes": {
+    "train_samples": 199860,
+    "val_samples": 59958,
+    "test_samples": 59958
+  },
+  "val_metrics": {
+    "mae": 0.1015998622887578,
+    "rmse": 0.15579523186843064,
+    "r2": 0.3526296073859385
+  },
+  "test_metrics": {
+    "mae": 0.11886639746714063,
+    "rmse": 0.16261693974123492,
+    "r2": 0.14488971106274984
+  }
+}

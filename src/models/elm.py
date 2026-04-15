@@ -1,6 +1,7 @@
 import numpy as np
 from typing import List, Tuple, Dict
 import warnings
+import pandas as pd
 
 class ExtremeLearningMachine:
     """Extreme Learning Machine with SVD-based ridge regression."""
@@ -33,32 +34,80 @@ class ExtremeLearningMachine:
 
 # ================= DATA PREPARATION =================
 
-def estimate_min_lookback(runs: List[dict], B: float, U: float, dt: float, n_periods: int = 2) -> int:
-    """Estimate minimum lookback window to capture wake memory effects."""
-    periods = [int(np.ceil(n_periods * (vr * B / U) / dt)) for run in runs for vr in [run['vr']]]
-    return max(periods)
+def compute_lookback(ur_values, dt, D=1.0, U=1.0, n_periods=2):
+    """
+    Lookback must cover n_periods oscillation cycles at the largest Ur.
+    T = Ur * D / U  (oscillation period = reduced velocity in model units)
+    """
+    max_period_steps = max(int(np.ceil(ur * D / U / dt)) for ur in ur_values)
+    return n_periods * max_period_steps
 
-def create_lookback_features(runs: List[dict], lookback: int, B: float, U: float) -> Tuple[np.ndarray, np.ndarray]:
-    """Transform time-series data into feature matrix with lookback window (Scanlan's convention)."""
-    all_X, all_y = [], []
+def build_lookback_dataset(
+    df: pd.DataFrame,
+    lookback: int,
+    target_col: str = "cl",
+    input_cols: list[str] | None = None,
+    release_time: dict[str, float] | None = None,
+    release_window: bool = True,
+    include_meta: bool = True,
+    stride: int = 1,
+) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
+    features: list[np.ndarray] = []
+    targets: list[float] = []
+    rows: list[dict[str, object]] | None = [] if include_meta else None
 
-    for run in runs:
-        pos, vel, acc = run["h_or_p"], run["hdot_or_pdot"], run["hddot_or_pddot"]
-        
-        if run["motion_type"] == "heave":
-            features = np.column_stack([pos / B, vel / U, (acc * B) / U**2])
+    if input_cols is None:
+        input_cols = ["disp"]
+
+    for case_name, case_df in df.groupby("case", sort=True):
+        ordered = case_df.sort_values(by=["time", "step"]).reset_index(drop=True)
+        signal = ordered[input_cols].to_numpy(dtype=np.float32)
+        target = ordered[target_col].to_numpy(dtype=np.float32)
+        times = ordered["time"].to_numpy(dtype=np.float32)
+        steps = ordered["step"].to_numpy(dtype=np.int64)
+
+        release_t = -np.inf
+        if release_time is not None:
+            release_t = float(release_time.get(str(case_name), -np.inf))
+            # print(f"Case {case_name}: release time = {release_t}")
+
+        release_idx = int(np.searchsorted(times, release_t, side="left"))
+
+        if release_window:
+            start_i = max(lookback, release_idx + lookback)
         else:
-            features = np.column_stack([pos, (vel * B) / U, (acc * B**2) / U**2])
-            
-        targets = np.column_stack([run["CL"], run["CM"]])
+            start_i = max(lookback, release_idx)
 
-        for i in range(lookback, len(features)):
-            all_X.append(features[i - lookback : i, :].flatten())
-            all_y.append(targets[i, :])
+        if len(ordered) <= lookback:
+            continue
 
-    return np.array(all_X), np.array(all_y)
+        for i in range(start_i, len(ordered), stride):
+            window = signal[i - lookback : i, :]
+            features.append(window.reshape(-1))
+            targets.append(target[i])
+            if include_meta and rows is not None:
+                rows.append(
+                    {
+                        "case": str(case_name),
+                        "time": float(times[i]),
+                        "step": int(steps[i]),
+                        "time_release": float(times[i] - release_t),
+                        "y_true": float(target[i]),
+                    }
+                )
 
+    if not features:
+        empty_meta = (
+            pd.DataFrame(columns=["case", "time", "step", "time_release", "y_true"])
+            if include_meta
+            else pd.DataFrame()
+        )
+        return np.empty((0, lookback * len(input_cols))), np.empty((0,)), empty_meta
 
+    X = np.asarray(features, dtype=np.float32)
+    y = np.asarray(targets, dtype=np.float32)
+    meta = pd.DataFrame(rows) if include_meta and rows is not None else pd.DataFrame()
+    return X, y, meta
 # ================= ENSEMBLE METHODS =================
 
 def train_ensemble_elm(X: np.ndarray, y: np.ndarray, hidden_size: int, 

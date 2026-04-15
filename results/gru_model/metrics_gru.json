@@ -1,0 +1,54 @@
+{
+  "gru_config": {
+    "seq_len": 900,
+    "input_cols": [
+      "disp",
+      "vel",
+      "acc"
+    ],
+    "target_col": "cl",
+    "hidden_size": 64,
+    "num_layers": 2,
+    "dropout": 0.1,
+    "lr": 0.001,
+    "weight_decay": 1e-05,
+    "n_epochs": 100,
+    "batch_size": 256,
+    "patience": 15,
+    "stride_train": 3,
+    "stride_val": 1,
+    "device": "cuda"
+  },
+  "case_split": {
+    "train": [
+      "Ur4.6791",
+      "Ur6.0815",
+      "Ur6.7849",
+      "Ur7.2524",
+      "Ur8.1873"
+    ],
+    "val": [
+      "Ur9.2655"
+    ],
+    "test": [
+      "Ur10.9501"
+    ]
+  },
+  "val_metrics": {
+    "mae": 0.20664267241954803,
+    "rmse": 0.23617261704136822,
+    "r2": 0.13192331790924072
+  },
+  "test_metrics": {
+    "mae": 0.31154000759124756,
+    "rmse": 0.361785907978651,
+    "r2": -0.5596262216567993
+  },
+  "ar_results": {
+    "Ur10.9501": {
+      "mae": 0.31265273690223694,
+      "rmse": 0.3642853018280173,
+      "r2": -0.5812501907348633
+    }
+  }
+}

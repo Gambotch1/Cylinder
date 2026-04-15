@@ -1,20 +1,14 @@
 {
   "config": {
-    "lookback": 30,
+    "lookback": 200,
     "input_cols": [
       "disp",
       "vel",
       "acc"
     ],
     "target_col": "cl",
-    "model": "EnsembleELM(n_models=1, n_hidden=300, alpha=1.0)",
-    "elm_params": {
-      "n_models": 1,
-      "n_hidden": 300,
-      "alpha": 1.0,
-      "random_state_base": 3
-    },
-    "split_rule": "case index mod 5: train=(0,1,2), val=3, test=4"
+    "model": "EnsembleELM(n=1, h=300, lam=2.70e-07)",
+    "split_rule": "manual case sets"
   },
   "case_split": {
     "train_cases": [
@@ -41,18 +35,44 @@
     ]
   },
   "sizes": {
-    "train_samples": 135768,
-    "val_samples": 84855,
-    "test_samples": 50913
+    "train_samples": 26888,
+    "val_samples": 84005,
+    "test_samples": 50403
   },
   "val_metrics": {
-    "mae": 0.09304277222729986,
-    "rmse": 0.14931562040568053,
-    "r2": 0.7246852535484589
+    "mae": 0.2100461327345302,
+    "rmse": 0.37429511431898516,
+    "r2": -0.7322034941562636
   },
   "test_metrics": {
-    "mae": 0.0847109040680647,
-    "rmse": 0.1265677029222993,
-    "r2": 0.6711575107799448
+    "mae": 0.19828439077069698,
+    "rmse": 0.29255162668244916,
+    "r2": -0.7673288235507367
+  },
+  "autoregressive": {
+    "Ur4.2": {
+      "ar_metrics": {
+        "mae": 0.3954773611579197,
+        "rmse": 0.46696101838791376,
+        "r2": -0.6724347631908776
+      },
+      "ar_r2": -0.6724347631908776
+    },
+    "Ur5.8": {
+      "ar_metrics": {
+        "mae": 0.05474890034309613,
+        "rmse": 0.07527888786522445,
+        "r2": 0.06026566992631166
+      },
+      "ar_r2": 0.06026566992631166
+    },
+    "Ur7.0": {
+      "ar_metrics": {
+        "mae": 0.14462691081107512,
+        "rmse": 0.18176869689674016,
+        "r2": -2.7312022500731374
+      },
+      "ar_r2": -2.7312022500731374
+    }
   }
 }

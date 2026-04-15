@@ -83,6 +83,20 @@ def plot_case_with_uncertainty(csv_path: Path, case_name: str, output_path: Path
     else:
         plt.show()
 
+def plot_one_case(pred_df: pd.DataFrame, case_name: str, output_path: Path) -> None:
+    case_df = pred_df.loc[pred_df["case"] == case_name].sort_values(by=["time", "step"]).reset_index(drop=True)
+
+    fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
+    ax.plot(case_df["time"], case_df["y_true"], label="True cl", linewidth=1.2, color="black")
+    ax.plot(case_df["time"], case_df["y_pred"], label="Predicted cl", linewidth=1.0, color="tab:blue", alpha=0.9)
+    ax.set_xlabel("Time")
+    ax.set_ylabel("cl")
+    ax.set_title(f"ELM ensemble prediction on test case: {case_name}")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
+    fig.savefig(output_path, dpi=600)
+    plt.close(fig)
+
 def main():
     # File to read
     csv_file = RESULTS_DIR / "test_predictions_cl_elm.csv"

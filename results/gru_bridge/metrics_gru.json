@@ -1,0 +1,136 @@
+{
+  "dataset": "bridge",
+  "gru_config": {
+    "bridge_D_ref": 7.42,
+    "bridge_fn_hz": 0.32,
+    "bridge_t_star_release": 20.0,
+    "bridge_downsample": 10,
+    "bridge_seq_len": 2000,
+    "bridge_stride_train": 5,
+    "cylinder_D_ref": 1.0,
+    "cylinder_dt": 0.02,
+    "cylinder_t_release": 60.0,
+    "cylinder1000_D_ref": 0.2,
+    "cylinder1000_dt": 0.005,
+    "cylinder1000_t_release": 16.0,
+    "cylinder1000_U_inf": 1.0,
+    "hidden_size": 64,
+    "num_layers": 2,
+    "dropout": 0.1,
+    "lr": 0.001,
+    "weight_decay": 1e-05,
+    "n_epochs": 100,
+    "batch_size": 256,
+    "patience": 15,
+    "seq_len": 2000,
+    "stride_train": 5,
+    "stride_val": 1,
+    "use_ur_context": false,
+    "hl_range": [
+      50,
+      400
+    ],
+    "hl_step": 10,
+    "lam_range": [
+      1e-08,
+      0.001
+    ],
+    "n_trials": 50,
+    "n_jobs": -1,
+    "n_models": 15,
+    "n_hidden_nodes": 300,
+    "alpha_reg": 1.0,
+    "n_ensemble": 10,
+    "seed": 123,
+    "target_col": "cl",
+    "input_cols": [
+      "disp",
+      "vel",
+      "acc"
+    ],
+    "motion_type": "heave",
+    "viv_dataset": [
+      "cylinder",
+      "cylinder1000",
+      "bridge"
+    ]
+  },
+  "case_split": {
+    "train": [
+      "Ur10.1078",
+      "Ur5.0539",
+      "Ur5.2645",
+      "Ur5.6856",
+      "Ur5.8962",
+      "Ur6.3174",
+      "Ur6.4227",
+      "Ur6.8438",
+      "Ur6.9491",
+      "Ur7.3703",
+      "Ur7.5809",
+      "Ur8.2126",
+      "Ur8.4232",
+      "Ur8.8443",
+      "Ur9.2655",
+      "Ur9.6867"
+    ],
+    "val": [
+      "Ur4.8433",
+      "Ur5.5804",
+      "Ur6.1068",
+      "Ur6.7385",
+      "Ur7.265",
+      "Ur8.002"
+    ],
+    "test": [
+      "Ur4.6327",
+      "Ur5.4751",
+      "Ur6.0015",
+      "Ur6.528",
+      "Ur7.1597",
+      "Ur7.7914"
+    ]
+  },
+  "val_metrics": {
+    "mae": 0.07841647416353226,
+    "rmse": 0.0926743279153206,
+    "r2": 0.9211382865905762
+  },
+  "test_metrics": {
+    "mae": 0.07281851023435593,
+    "rmse": 0.09505946368040241,
+    "r2": 0.9079034924507141
+  },
+  "ar_results": {
+    "Ur4.6327": {
+      "mae": 0.07301825284957886,
+      "rmse": 0.08816364058366992,
+      "r2": 0.9001021385192871
+    },
+    "Ur5.4751": {
+      "mae": 0.03659370169043541,
+      "rmse": 0.04969727630300289,
+      "r2": 0.9678463339805603
+    },
+    "Ur6.0015": {
+      "mae": 0.060494598001241684,
+      "rmse": 0.09028535616480425,
+      "r2": 0.9151532649993896
+    },
+    "Ur6.528": {
+      "mae": 0.15389478206634521,
+      "rmse": 0.17581172255131589,
+      "r2": 0.7811294794082642
+    },
+    "Ur7.1597": {
+      "mae": 0.1015913188457489,
+      "rmse": 0.12314603231363748,
+      "r2": 0.7859769463539124
+    },
+    "Ur7.7914": {
+      "mae": 0.093877874314785,
+      "rmse": 0.1129897123293971,
+      "r2": 0.8294624090194702
+    }
+  }
+}

@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from sklearn.preprocessing import StandardScaler
 from typing import Optional
 import pandas as pd
@@ -14,7 +14,7 @@ class VIV_GRU(nn.Module):
     """
     GRU surrogate for aerodynamic lift coefficient prediction.
     
-    Processes kinematics as a sequence — no flattening needed.
+    Processes kinematics as a sequence.
     Hidden state carries phase information across timesteps.
     
     Input shape:  (batch, seq_len, n_features)
@@ -73,13 +73,25 @@ class VIVSequenceDataset(Dataset):
         input_cols:   list[str],
         release_time: dict[str, float],
         stride:       int = 1,
+        use_ur_context: bool = False,
+        ur_mean: float = 0.0,
+        ur_std: float = 1.0,
     ):
         self.sequences: list[np.ndarray] = []
         self.targets:   list[float]      = []
+        self.case_names: list[str]       = []
+        ur_std_safe = float(ur_std) if abs(float(ur_std)) > 0 else 1.0
 
         for case_name, case_df in df.groupby("case", sort=True):
             ordered = case_df.sort_values(["time", "step"]).reset_index(drop=True)
             signal  = ordered[input_cols].to_numpy(dtype=np.float32)
+
+            if use_ur_context:
+                ur_val = float(str(case_name)[2:])
+                ur_scaled = (ur_val - float(ur_mean)) / ur_std_safe
+                ur_col = np.full((signal.shape[0], 1), ur_scaled, dtype=np.float32)
+                signal = np.hstack([signal, ur_col])
+
             target  = ordered[target_col].to_numpy(dtype=np.float32)
             times   = ordered["time"].to_numpy(dtype=np.float32)
 
@@ -93,14 +105,15 @@ class VIVSequenceDataset(Dataset):
             for i in range(start_i, len(ordered), stride):
                 self.sequences.append(signal[i - seq_len : i])  # (seq_len, n_feat)
                 self.targets.append(float(target[i]))
+                self.case_names.append(str(case_name))
 
     def __len__(self) -> int:
         return len(self.targets)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, str]:
         x = torch.from_numpy(self.sequences[idx])   # (seq_len, n_features)
         y = torch.tensor(self.targets[idx], dtype=torch.float32)
-        return x, y
+        return x, y, self.case_names[idx]
 
 
 def fit_scalers(
@@ -119,14 +132,15 @@ def fit_scalers(
 def apply_scalers_to_df(
     df:       pd.DataFrame,
     x_scaler: StandardScaler,
-    y_scaler: StandardScaler,
+    y_scaler: Optional[StandardScaler],
     input_cols:  list[str],
     target_col:  str,
 ) -> pd.DataFrame:
     """Return a copy of df with input cols and target col scaled."""
     df = df.copy()
     df[input_cols]  = x_scaler.transform(df[input_cols].to_numpy(dtype=np.float32))
-    df[target_col]  = y_scaler.transform(
-        df[target_col].to_numpy(dtype=np.float32).reshape(-1, 1)
-    ).ravel()
+    if y_scaler is not None:
+        df[target_col]  = y_scaler.transform(
+            df[target_col].to_numpy(dtype=np.float32).reshape(-1, 1)
+        ).ravel()
     return df

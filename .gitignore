@@ -17,3 +17,4 @@ env/
 
 # Build / run outputs
 *.out
+*.png

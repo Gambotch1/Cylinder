@@ -1,0 +1,124 @@
+{
+  "dataset": "cylinder1000",
+  "gru_config": {
+    "bridge_D_ref": 7.42,
+    "bridge_fn_hz": 0.32,
+    "bridge_t_star_release": 20.0,
+    "bridge_downsample": 10,
+    "bridge_seq_len": 2000,
+    "bridge_stride_train": 5,
+    "cylinder_D_ref": 1.0,
+    "cylinder_dt": 0.02,
+    "cylinder_t_release": 60.0,
+    "cylinder1000_D_ref": 0.2,
+    "cylinder1000_dt": 0.005,
+    "cylinder1000_t_release": 16.0,
+    "cylinder1000_U_inf": 1.0,
+    "hidden_size": 128,
+    "num_layers": 2,
+    "dropout": 0.1,
+    "lr": 0.001,
+    "weight_decay": 1e-05,
+    "n_epochs": 100,
+    "batch_size": 256,
+    "patience": 15,
+    "seq_len": 960,
+    "stride_train": 3,
+    "stride_val": 1,
+    "use_ur_context": true,
+    "hl_range": [
+      50,
+      400
+    ],
+    "hl_step": 10,
+    "lam_range": [
+      1e-08,
+      0.001
+    ],
+    "n_trials": 50,
+    "n_jobs": -1,
+    "n_models": 15,
+    "n_hidden_nodes": 300,
+    "alpha_reg": 1.0,
+    "n_ensemble": 10,
+    "seed": 123,
+    "target_col": "cl",
+    "input_cols": [
+      "disp",
+      "vel",
+      "acc"
+    ],
+    "motion_type": "heave",
+    "viv_dataset": [
+      "cylinder",
+      "cylinder1000",
+      "bridge"
+    ]
+  },
+  "case_split": {
+    "train": [
+      "Ur10",
+      "Ur12",
+      "Ur3",
+      "Ur3.5",
+      "Ur4",
+      "Ur4.5",
+      "Ur5",
+      "Ur5.75",
+      "Ur6",
+      "Ur6.25",
+      "Ur8"
+    ],
+    "val": [
+      "Ur2.5",
+      "Ur4.25",
+      "Ur5.25",
+      "Ur6.5",
+      "Ur9"
+    ],
+    "test": [
+      "Ur11",
+      "Ur2",
+      "Ur4.75",
+      "Ur5.5",
+      "Ur7"
+    ]
+  },
+  "val_metrics": {
+    "mae": 0.052354391664266586,
+    "rmse": 0.10509946865155946,
+    "r2": 0.9679681062698364
+  },
+  "test_metrics": {
+    "mae": 0.10114483535289764,
+    "rmse": 0.22367030666493,
+    "r2": 0.8358348608016968
+  },
+  "ar_results": {
+    "Ur11": {
+      "mae": 0.004536357708275318,
+      "rmse": 0.005866896190563228,
+      "r2": 0.9998283386230469
+    },
+    "Ur2": {
+      "mae": 0.3743784725666046,
+      "rmse": 0.4207557206141799,
+      "r2": 0.7659618258476257
+    },
+    "Ur4.75": {
+      "mae": 0.05301479622721672,
+      "rmse": 0.06339706431163292,
+      "r2": 0.9349572062492371
+    },
+    "Ur5.5": {
+      "mae": 0.008602662943303585,
+      "rmse": 0.010917914152435381,
+      "r2": 0.9995405673980713
+    },
+    "Ur7": {
+      "mae": 0.0198198389261961,
+      "rmse": 0.022170656887782317,
+      "r2": 0.9978893399238586
+    }
+  }
+}

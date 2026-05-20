@@ -6,6 +6,7 @@ from pathlib import Path
 import os
 import re
 from scipy.signal import savgol_filter
+from utils import format_ur_label, parse_ur_label
 
 
 DIR = Path(__file__).resolve().parents[1]
@@ -21,6 +22,9 @@ CYLINDER_RE1000_ROOT     = DIR / "data" / "cylinder_Re_1000"
 CYLINDER_RE1000_DISP_DIR = CYLINDER_RE1000_ROOT / "disp"
 CYLINDER_RE1000_CD_DIR   = CYLINDER_RE1000_ROOT / "cd"
 CYLINDER_RE1000_CL_DIR   = CYLINDER_RE1000_ROOT / "cl"
+CYLINDER_RE1000_VEL_DIR  = CYLINDER_RE1000_ROOT / "vel"
+CYLINDER_RE1000_FY_DIR   = CYLINDER_RE1000_ROOT / "force"
+
 
 # Bridge
 BRIDGE_DISP_DIR = DIR / "data" / "Bridge" / "disp"
@@ -71,37 +75,20 @@ def read_out_files(filepath: str | Path) -> tuple[pd.DataFrame, str]:
                 os.path.basename(str(filepath)))
 
 
-def _format_ur_label(value: float) -> str:
-    """Float → canonical 'Ur{value}' label, trailing zeros stripped."""
-    txt = f"{value:.4f}".rstrip("0").rstrip(".")
-    return f"Ur{txt}"
-
 
 def extract_case_name(filepath: str | Path) -> str:
     """
     Extract a canonical Ur label from a filename.
-
-    Supported patterns (case-insensitive):
-      disp_Ur_4.00.out   → Ur4
-      disp-Ur5.0.out     → Ur5
-      cl-Ur4.25.out      → Ur4.25
-      disp-16.11.out     → '16.11'  (bridge m/s label, converted later)
-      disp-Ur5.0.out     → Ur5
     """
     stem = Path(filepath).stem
 
-    # Pattern 1: explicit Ur token (handles Ur_4.00, Ur4.25, ur-5.0 etc.)
-    ur_match = re.search(
-        r"[Uu][Rr][_\-]?([0-9]+(?:\.[0-9]+)?)", stem
-    )
+    ur_match = re.search(r"[Uu][Rr][_\-]?([0-9]+(?:\.[0-9]+)?)", stem)
     if ur_match:
-        return _format_ur_label(float(ur_match.group(1)))
+        return format_ur_label(float(ur_match.group(1)))
 
-    # Pattern 2: last token after "-" (e.g. disp-16.11 → '16.11')
     if "-" in stem:
         return stem.rsplit("-", 1)[1]
 
-    # Pattern 3: last token after "_"
     if "_" in stem:
         return stem.rsplit("_", 1)[1]
 
@@ -117,9 +104,8 @@ def _resolve_data_dirs(dataset: str) -> tuple[Path, Path, Path]:
     return CYLINDER_DISP_DIR, CYLINDER_CD_DIR, CYLINDER_CL_DIR
 
 
-def _normalize_bridge_cases_to_ur(df: pd.DataFrame,
-                                   fn_hz: float,    
-                                   d_ref: float) -> pd.DataFrame:
+def _normalize_bridge_cases_to_ur(df: pd.DataFrame, fn_hz: float, d_ref: float) -> pd.DataFrame:
+
     if fn_hz <= 0 or d_ref <= 0:
         raise ValueError("fn_hz and d_ref must be positive.")
     out   = df.copy()
@@ -130,7 +116,7 @@ def _normalize_bridge_cases_to_ur(df: pd.DataFrame,
             f"{bad} bridge case labels could not be parsed as velocities. "
             "Expected filenames like 'disp-16.11.out'."
         )
-    out["case"] = (speed / float(fn_hz * d_ref)).map(_format_ur_label).astype("string")
+    out["case"] = (speed / float(fn_hz * d_ref)).map(format_ur_label).astype("string")
     return out
 
 
@@ -164,9 +150,7 @@ def read_out_directory(directory: Path, value_name: str) -> pd.DataFrame:
           .reset_index(drop=True)
     )
     return (combined.rename(columns={"val": value_name})
-                    .astype({"case": "string",
-                             **BASE_DTYPES,
-                             value_name: VALUE_DTYPE}))
+                    .astype({"case": "string", **BASE_DTYPES, value_name: VALUE_DTYPE}))
 
 
 def downsample(df: pd.DataFrame, every_n: int) -> pd.DataFrame:
@@ -181,7 +165,7 @@ def downsample(df: pd.DataFrame, every_n: int) -> pd.DataFrame:
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def merge_dataframes(
-    dataset: str | None = None,
+    dataset: str   | None = None,
     fn_hz:   float | None = None,
     d_ref:   float | None = None,
     convert_bridge_to_ur: bool = True,
@@ -213,15 +197,12 @@ def merge_dataframes(
         return empty
 
     df = (disp_df
-          .merge(cd_df,  on=["case", "step", "time"],
-                 how="inner", validate="one_to_one")
-          .merge(cl_df,  on=["case", "step", "time"],
-                 how="inner", validate="one_to_one")
+          .merge(cd_df,  on=["case", "step", "time"], how="inner", validate="one_to_one")
+          .merge(cl_df,  on=["case", "step", "time"], how="inner", validate="one_to_one")
           .sort_values(["case", "time", "step"])
           .reset_index(drop=True))
 
     if ds == "bridge" and convert_bridge_to_ur:
-        # Resolve fn_hz and d_ref from args → env → error
         if fn_hz is None:
             env = os.getenv("BRIDGE_FN_HZ")
             fn_hz = float(env) if env else None
@@ -231,15 +212,59 @@ def merge_dataframes(
         if fn_hz is None or d_ref is None:
             raise ValueError(
                 "Bridge dataset selected but fn_hz/d_ref are missing.\n"
-                "Call merge_dataframes(dataset='bridge', fn_hz=0.32, d_ref=7.42) "
-                "or set env vars BRIDGE_FN_HZ and BRIDGE_D_REF."
+                "Call merge_dataframes(dataset='bridge', fn_hz=0.32, d_ref=7.42)."
             )
         df = _normalize_bridge_cases_to_ur(df, fn_hz=fn_hz, d_ref=d_ref)
 
     return df
 
 
-def compute_kinematics(df: pd.DataFrame) -> pd.DataFrame:
+def correct_cl_for_reference_velocity(df: pd.DataFrame, fn: float, d_ref: float, u_ref_fluent: float = 1.0) -> pd.DataFrame:
+    """
+    Undo Fluent's CL normalisation if its reference velocity does not
+    match the per-case freestream. Multiply by (U_ref / U_actual)^2.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Merged dataframe with a 'case' column and 'cl' (and optionally 'cd').
+    fn : float
+        Natural frequency [Hz] used to compute per-case freestream from Ur.
+    d_ref : float
+        Reference depth/diameter [m].
+    u_ref_fluent : float
+        Reference velocity used by Fluent when normalising forces (default=1.0).
+    """
+    df = df.copy()
+    ur = df["case"].apply(parse_ur_label).astype("float32")
+    u_actual = ur * float(fn) * float(d_ref)
+    # per-case scalar correction: (U_ref / U_actual)^2
+    correction = (float(u_ref_fluent) / u_actual) ** 2
+    df["cl"] = df["cl"].astype("float32") * correction
+    if "cd" in df.columns:
+        df["cd"] = df["cd"].astype("float32") * correction
+    return df
+
+def _load_force(dataset: str) -> dict[str, pd.DataFrame]:
+
+    ds = dataset.strip().lower()
+    if ds not in {"cylinder1000", "cylinder_re_1000", "re1000", "cylinder-re-1000"}:
+        return {}
+    
+    out = {}
+    if CYLINDER_RE1000_VEL_DIR.exists():
+        vel_df = read_out_directory(CYLINDER_RE1000_VEL_DIR, "vel")
+        if not vel_df.empty:
+            out["vel"] = vel_df
+    if CYLINDER_RE1000_FY_DIR.exists():
+        force_df = read_out_directory(CYLINDER_RE1000_FY_DIR, "force")
+        if not force_df.empty:
+            out["force"] = force_df
+    return out
+
+
+def compute_kinematics(df: pd.DataFrame, dataset: str | None = None, 
+                       structural_params: dict | None = None) -> pd.DataFrame:
     """
     Append 'vel' and 'acc' columns computed per case via numerical
     differentiation of the smoothed displacement signal.
@@ -247,12 +272,45 @@ def compute_kinematics(df: pd.DataFrame) -> pd.DataFrame:
     print("Computing velocity and acceleration...")
     df = df.sort_values(["case", "time", "step"]).reset_index(drop=True)
 
-    velocities, accelerations = [], []
+    force_signal = _load_force(dataset) if dataset else {}
 
+    if force_signal and structural_params is not None:
+
+        m = structural_params['m']
+        c = structural_params['c']
+        k = structural_params['k']
+        print(f"[compute_kinematics] m={structural_params['m']:.6e}  "
+              f"c={structural_params['c']:.6e}  k={structural_params['k']:.6e}")
+
+        if "vel" in force_signal:
+            df = df.merge(force_signal["vel"], on=["case", "step", "time"], how="left", validate="one_to_one")
+        if "force" in force_signal:
+            df = df.merge(force_signal["force"], on=["case", "step", "time"], how="left", validate="one_to_one")
+            F_fluid = df["force"].astype("float32")
+            y       = df["disp"].astype("float32")
+            v       = df["vel"].astype("float32")  # from velocity monitor
+            df["acc"] = (F_fluid - c * v - k * y) / float(m)
+            df = df.drop(columns=["force"])
+
+        needs_fill = (
+            "vel" not in df.columns or df["vel"].isna().any() or
+            "acc" not in df.columns or df["acc"].isna().any()
+        )
+            
+        if needs_fill:
+            print("  WARNING: some cases missing force data, using Savgol fallback.")
+            df = _fill_missing_kinematics_with_savgol(df)
+
+        return df
+
+    return _fill_missing_kinematics_with_savgol(df)
+
+def _fill_missing_kinematics_with_savgol(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute vel/acc by Savgol-smoothing disp, then numerical differentiation."""
+    velocities, accelerations = [], []
     for _, case_df in df.groupby("case", sort=False):
         t = case_df["time"].to_numpy()
         d = case_df["disp"].to_numpy()
-
         if len(d) < 11:
             v = np.gradient(d, t)
             a = np.gradient(v, t)
@@ -260,12 +318,17 @@ def compute_kinematics(df: pd.DataFrame) -> pd.DataFrame:
             d_smooth = savgol_filter(d, window_length=11, polyorder=3)
             v = np.gradient(d_smooth, t)
             a = np.gradient(v, t)
-
         velocities.extend(v)
         accelerations.extend(a)
-
-    df["vel"] = velocities
-    df["acc"] = accelerations
+ 
+    if "vel" in df.columns:
+        df["vel"] = df["vel"].fillna(pd.Series(velocities, index=df.index))
+    else:
+        df["vel"] = velocities
+    if "acc" in df.columns:
+        df["acc"] = df["acc"].fillna(pd.Series(accelerations, index=df.index))
+    else:
+        df["acc"] = accelerations
     return df
 
 

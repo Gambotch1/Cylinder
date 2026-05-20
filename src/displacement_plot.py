@@ -90,8 +90,8 @@ def collect_files(dataset: str):
     disp_dir = get_disp_dir(dataset)
     files = {}
     for f in os.listdir(disp_dir):
-        if f.endswith(".out"):
-            ur = f.split("Ur")[-1].split(".out")[0]
+        if f.endswith("_corrected.out"):
+            ur = f.split("Ur")[-1].split("_corrected.out")[0]
             if ur.startswith("_"):
                 ur = ur[1:]
             files[ur] = disp_dir / f
@@ -104,130 +104,119 @@ def run(dataset: str):
     if not files:
         print(f"No .out files found for {dataset}")
         return
-    
+
     avg_results = []
     save_dir = ROOT / "plots_disp" / dataset
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    if dataset == "Cylinder200":
-        D = 1.0  # Diameter in meters for Cylinder200
-    elif dataset == "Cylinder1000":
-        D = 0.2  # Diameter in meters for Cylinder1000
+    D  = 1.0 if dataset == "Cylinder200" else 0.2
+    fn = 0.2   # fixed natural frequency [Hz]
 
-    for u_str, fpath in files.items():  
+    for u_str, fpath in files.items():
         df = parse_fluent_out(fpath)
-        
-        if df is not None and not df.empty:
-            U_red = float(u_str)
-            U = U_red * D  * 0.2 # Convert Ur to actual velocity (U = Ur * f_n * D) assuming f_n=1 Hz for simplicity
+        if df is None or df.empty:
+            print(f"No data found for Ur={u_str}")
+            continue
 
-            print(U)
-            t = df['time'].to_numpy()
+        U_red = float(u_str)
+        U     = U_red * fn * D   # freestream velocity [m/s]
 
-            # Average amplitude in centimeters (mean of absolute displacement)
-            avg_amplitude_cm = df['val'].abs().mean() * 100
-            avg_results.append({'Ur': U_red, 'avg_h_cm': avg_amplitude_cm})
-            print(f"Average amplitude for Ur={u_str}: {avg_amplitude_cm:.3f} cm")
-            
-            # Dimensionless quantities
-            t_star = (U * t) / D  # Dimensionless time
-            h_star = df['val'].to_numpy() / D  # Dimensionless displacement
+        t = df['time'].to_numpy()
+        h = df['val'].to_numpy()
 
-            plt.figure(figsize=(8, 5))
-            
-            # Plot Data
-            plt.plot(t_star, h_star, color='black', linewidth=1.0)
-            
-            # Labels and Title
-            plt.xlabel(r'Dimensionless Time $t^* = Ut/D$')
-            plt.ylabel(r'Dimensionless Displacement $h^* = h/D$')
-            # Optional: Add Velocity to title or as text box
-            plt.title(f'Vertical Response Time History ($U = {u_str}$ m/s)')
-            
-            # Axis Limits (Tight)
-            plt.xlim(t_star.min(), t_star.max())
-            
-            # Optional: Add zero line for reference
-            plt.axhline(0, color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
+        # ── Steady-state amplitude: half peak-to-peak of last 40% ──────────
+        ss_start      = int(0.6 * len(df))
+        h_ss          = h[ss_start:]
+        amplitude_m   = (h_ss.max() - h_ss.min()) / 2.0
+        amplitude_cm  = amplitude_m * 100
+        A_star        = amplitude_m / D   # dimensionless A/D
 
-            plt.ylim(-1, 1) 
-            
+        avg_results.append({
+            'Ur':          U_red,
+            'U_m_s':       U,
+            'amplitude_cm': amplitude_cm,
+            'A_star':      A_star,
+        })
+        print(f"Ur={U_red:.2f}  U={U:.4f} m/s  "
+              f"A={amplitude_cm:.3f} cm  A/D={A_star:.4f}")
 
-            save_name = f'{save_dir}/disp_history_{u_str.replace(".", "p")}.png'
-            plt.savefig(save_name, dpi=300)
-            print(f"Plot saved: {save_name}")
-            plt.show() 
-            plt.close()
-        else:
-            print(f"No data found for {u_str} m/s")
+        # ── Dimensionless time series plot ─────────────────────────────────
+        t_star = (U * t) / D
+        h_star = h / D
 
-    # --- 3. SAVE AVERAGE AMPLITUDES ---
+        plt.figure(figsize=(8, 5))
+        plt.plot(t_star, h_star, color='black', linewidth=0.8)
+        plt.axhline(0, color='gray', lw=0.5, alpha=0.5)
+
+        # Mark steady-state region
+        t_star_ss = t_star[ss_start:]
+        plt.axvspan(t_star_ss[0], t_star_ss[-1],
+                    alpha=0.08, color='tab:blue',
+                    label=f'Steady-state  $A^*={A_star:.3f}$')
+
+        plt.xlabel(r'Dimensionless time $t^* = Ut/D$', fontsize=13)
+        plt.ylabel(r'Dimensionless displacement $h/D$', fontsize=13)
+        plt.title(f'VIV response — $U_r = {U_red:.2f}$  '
+                  f'($U = {U:.4f}$ m/s,  Re=1000)')
+        plt.xlim(t_star.min(), t_star.max())
+        plt.legend(fontsize=11)
+        plt.tight_layout()
+
+        save_name = save_dir / f'disp_history_{u_str.replace(".", "p")}.png'
+        plt.savefig(save_name, dpi=300)
+        plt.close()
+        print(f"  Plot saved: {save_name}")
+
+    # ── Save amplitude summary ─────────────────────────────────────────────
     if avg_results:
-        avg_df = pd.DataFrame(avg_results).sort_values(by="Ur")
+        avg_df = pd.DataFrame(avg_results).sort_values('Ur')
         out_csv = save_dir / "avg_amplitudes.csv"
         avg_df.to_csv(out_csv, index=False)
-        print(f"Saved average amplitudes: {out_csv}")
+        print(f"\nSaved: {out_csv}")
+        print(avg_df[['Ur','U_m_s','amplitude_cm','A_star']].to_string(index=False))
 
-def plot_all_amplitudes(dataset_filter: str = None, amplitudes_dir: Path = None, output_path: Path = None):
-    """
-    Plots all average heights (avg_h_cm) against their respective velocities (U_m_s)
-    in a single plot, combining data from all CSV files in the amplitudes directory.
-    
-    """
+
+def plot_all_amplitudes(dataset_filter=None, amplitudes_dir=None, output_path=None):
     if amplitudes_dir is None:
         amplitudes_dir = ROOT / "plots_disp"
-    
-    if not amplitudes_dir.exists():
-        print(f"Error: Could not find {amplitudes_dir}")
-        return
-    
-    # Collect all data from CSV files
-    all_data = []
+
     csv_files = list(amplitudes_dir.rglob("avg_amplitudes.csv"))
-    
-    print(f"Found {len(csv_files)} CSV files:")
+    all_data  = []
+
     for csv_file in csv_files:
         case_label = csv_file.parent.name
-        
-        # Filter by dataset if specified
         if dataset_filter and case_label != dataset_filter:
             continue
-            
-        print(f"  - {csv_file}")
         df = pd.read_csv(csv_file)
         df["case"] = case_label
         all_data.append(df)
-    
+
     if not all_data:
-        print("No CSV files found with amplitude data.")
+        print("No amplitude data found.")
         return
-    
-    # Combine all data
-    combined_df = pd.concat(all_data, ignore_index=True)
-    
-    # Create the plot
+
+    combined = pd.concat(all_data, ignore_index=True)
+
     fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
-    
-    # Plot each case with a different marker/color
-    for case in combined_df["case"].unique():
-        case_data = combined_df[combined_df["case"] == case].sort_values("Ur")
-        ax.plot(case_data["Ur"], case_data["avg_h_cm"], 
-                marker='o', label=case, linewidth=1.5, markersize=6)
-    
-    # Formatting
-    ax.set_xlabel("Reduced Velocity (Ur)", fontsize=12, fontweight="bold")
-    ax.set_ylabel("Average Height (cm)", fontsize=12, fontweight="bold")
-    ax.set_title("Amplitude Response vs. Velocity", fontsize=14, fontweight="bold")
-    ax.grid(True, linestyle="--", alpha=0.6)
-    ax.legend(loc="best", fontsize=11)
-    
-    # Save or show
+
+    for case in combined["case"].unique():
+        sub = combined[combined["case"] == case].sort_values("Ur")
+        # Use A* = A/D if available, otherwise fall back to cm
+        y_col = "A_star" if "A_star" in sub.columns else "amplitude_cm"
+        y_label = r"Normalised amplitude $A^* = A/D$" \
+                  if y_col == "A_star" else "Average amplitude [cm]"
+        ax.plot(sub["Ur"], sub[y_col],
+                marker='o', label=case, lw=1.5, ms=6)
+
+    ax.set_xlabel(r"Reduced velocity $U_r = U / (f_n D)$", fontsize=13)
+    ax.set_ylabel(y_label, fontsize=13)
+    ax.set_title("VIV amplitude response curve", fontsize=14)
+    ax.grid(True, ls="--", alpha=0.5)
+    ax.legend(fontsize=11)
+
     if output_path:
         fig.savefig(output_path, dpi=600, bbox_inches="tight")
-        print(f"Saved plot to: {output_path}")
-    else:
-        plt.show()
-    
+        print(f"Saved: {output_path}")
     plt.close(fig)
 
 def parse_args():

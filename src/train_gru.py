@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 import matplotlib
+
+from utils import parse_ur_label
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -20,8 +22,8 @@ from sklearn.metrics import r2_score
 from torch.utils.data import DataLoader
 
 from config import config, prepare_gru_config
-from preprocess import merge_dataframes, compute_kinematics, downsample
-from models.gru import VIV_GRU, VIVSequenceDataset, apply_scalers_to_df
+from preprocess import merge_dataframes, compute_kinematics, downsample, correct_cl_for_reference_velocity
+from models.gru import VIV_GRU, VIVSequenceDataset, apply_scalers_to_df, fit_scalers
 from evaluate import evaluate
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -162,11 +164,13 @@ def inverse_per_case_scale(
     return out
 
 
-def autoregressive_rollout_gru( model, case_df, input_cols, seq_len, release_t, 
-                                case_stats, case_name, device, use_ur_context=False,
-                                ur_stats=None,) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    
-    
+def teacher_forcing_rollout(
+        model, case_df, input_cols, seq_len, release_t,
+        y_scaler, case_name, device, 
+        use_ur_context=False, ur_stats=None,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+
     model.eval()
     ordered   = case_df.sort_values("time").reset_index(drop=True)
     signal    = ordered[input_cols].to_numpy(dtype=np.float32)
@@ -174,7 +178,7 @@ def autoregressive_rollout_gru( model, case_df, input_cols, seq_len, release_t,
     if use_ur_context:
         ur_mean, ur_std = ur_stats if ur_stats is not None else (0.0, 1.0)
         ur_std = float(ur_std) if abs(float(ur_std)) > 0 else 1.0
-        ur_val = float(str(case_name)[2:])
+        ur_val = parse_ur_label(str(case_name))
         ur_scaled = (ur_val - float(ur_mean)) / ur_std
         ur_col = np.full((signal.shape[0], 1), ur_scaled, dtype=np.float32)
         signal = np.hstack([signal, ur_col])
@@ -185,35 +189,33 @@ def autoregressive_rollout_gru( model, case_df, input_cols, seq_len, release_t,
     release_idx = int(np.searchsorted(times, release_t))
     start       = max(seq_len, release_idx + seq_len)
 
-    preds, h = [], None
+    preds = []
     with torch.no_grad():
         for i in range(start, len(ordered)):
             w = signal[i - seq_len : i]
             x = torch.from_numpy(w).unsqueeze(0).to(device)
-            p, h = model(x, h)
-            h = h.detach()
+            p, _ = model(x)
             preds.append(p.item())
 
     cl_pred_s   = np.array(preds, dtype=np.float32)
     cl_true_s_s = cl_true_s[start:]
     times_s     = times[start:]
 
-    mu, sigma = case_stats[str(case_name)]
-    cl_pred = cl_pred_s * sigma + mu
-    cl_true = cl_true_s_s * sigma + mu
+    cl_pred = y_scaler.inverse_transform(cl_pred_s.reshape(-1, 1)).ravel()
+    cl_true = y_scaler.inverse_transform(cl_true_s_s.reshape(-1, 1)).ravel()
     return cl_pred, cl_true, times_s
 
 
 # ── Plotting helpers ───────────────────────────────────────────────────────────
 
-def plot_ar_result(cl_pred, cl_true, times, case_name, output_dir):
+def plot_tf_result(cl_pred, cl_true, times, case_name, output_dir):
     fig, axes = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
     ax = axes[0]
     ax.plot(times, cl_true, lw=0.8, color="black",    label="CFD (ground truth)")
     ax.plot(times, cl_pred, lw=0.8, color="tab:blue",
-            alpha=0.85, label="GRU (autoregressive)")
+            alpha=0.85, label="GRU (teacher forcing)")
     ax.set_ylabel("$C_L$", fontsize=13)
-    ax.set_title(f"{case_name} — AR rollout  "
+    ax.set_title(f"{case_name} — Teacher Forcing Rollout  "
                  f"$R^2={r2_score(cl_true, cl_pred):.4f}$")
     ax.legend(); ax.grid(True, alpha=0.3)
 
@@ -229,21 +231,21 @@ def plot_ar_result(cl_pred, cl_true, times, case_name, output_dir):
 
 
 def amplitude_comparison(model, all_df_s, release_time,
-                          input_cols, seq_len, case_stats,
+                          input_cols, seq_len, y_scaler,
                           device, output_dir,
                           train_cases, val_cases, test_cases,
                           use_ur_context=False, ur_stats=None):
     results = []
     for case_name, case_df in all_df_s.groupby("case"):
-        ur        = float(case_name[2:])
+        ur        = parse_ur_label(str(case_name))
         release_t = release_time[case_name]
-        cl_pred, cl_true, _ = autoregressive_rollout_gru(
+        cl_pred, cl_true, _ = teacher_forcing_rollout(
             model,
             case_df,
             input_cols,
             seq_len,
             release_t,
-            case_stats,
+            y_scaler,
             case_name,
             device,
             use_ur_context=use_ur_context,
@@ -265,39 +267,6 @@ def amplitude_comparison(model, all_df_s, release_time,
 
     df_res = pd.DataFrame(results).sort_values("Ur")
     df_res.to_csv(output_dir / "amplitude_comparison.csv", index=False)
-
-    # Response curve
-    fig, axes = plt.subplots(2, 1, figsize=(10, 7), constrained_layout=True)
-    ax = axes[0]
-    ax.plot(df_res["Ur"], df_res["CL_amp_CFD"], "o-",
-            color="black", lw=1.5, ms=5, label="CFD", zorder=3)
-    ax.plot(df_res["Ur"], df_res["CL_amp_GRU"], "s--",
-            color="tab:blue", lw=1.5, ms=5, label="GRU", zorder=3)
-    colors = {"train": "black", "val": "tab:green", "test": "tab:orange"}
-    for _, r in df_res.iterrows():
-        ax.axvline(r["Ur"], color=colors[r["split"]],
-                   lw=0.5, alpha=0.4, zorder=1)
-    for split, col in colors.items():
-        ax.axvline(-99, color=col, lw=2, alpha=0.6, label=split)
-    ax.set_xlim(df_res["Ur"].min() - 0.2, df_res["Ur"].max() + 0.2)
-    ax.set_ylabel(r"$C_L$ amplitude", fontsize=13)
-    ax.set_title("VIV aerodynamic response curve", fontsize=13)
-    ax.legend(fontsize=10); ax.grid(True, alpha=0.3)
-
-    ax2 = axes[1]
-    rel_err = 100 * (df_res["CL_amp_GRU"] - df_res["CL_amp_CFD"]) \
-              / (df_res["CL_amp_CFD"].abs() + 1e-8)
-    bar_colors = [colors[s] for s in df_res["split"]]
-    ax2.bar(df_res["Ur"], rel_err, width=0.15, color=bar_colors, alpha=0.8)
-    ax2.axhline(0,   color="black", lw=0.8)
-    ax2.axhline(+10, color="gray",  lw=0.5, ls="--", alpha=0.6)
-    ax2.axhline(-10, color="gray",  lw=0.5, ls="--", alpha=0.6)
-    ax2.set_xlabel(r"Reduced velocity $U_r$", fontsize=13)
-    ax2.set_ylabel("Relative error [%]", fontsize=13)
-    ax2.grid(True, alpha=0.3)
-
-    fig.savefig(output_dir / "VIV_response_curve.png", dpi=200)
-    plt.close(fig)
     return df_res
 
 
@@ -326,13 +295,39 @@ def main() -> None:
         )
         # Downsample bridge to reduce memory footprint
         raw_df = downsample(raw_df, cfg["bridge_downsample"])
+        # Apply CL correction using bridge fn/d_ref
+        raw_df = correct_cl_for_reference_velocity(raw_df, fn=cfg["bridge_fn_hz"], d_ref=cfg["bridge_D_ref"])
     else:
         raw_df = merge_dataframes(dataset=dataset)
+        ds = dataset.strip().lower()
+        if ds in {"cylinder1000", "cylinder_re_1000", "re1000"}:
+            # Use cylinder1000 reference fn/d_ref
+            raw_df = correct_cl_for_reference_velocity(raw_df, fn=0.2, d_ref=cfg["cylinder1000_D_ref"])
 
     if raw_df.empty:
         print("No data found. Check data directories."); return
 
-    raw_df    = compute_kinematics(raw_df)
+    params_Re1000 = None
+    if dataset in {"cylinder1000", "cylinder_re_1000", "re1000"}:
+        D = cfg["cylinder1000_D_ref"]; rho = 1.0; M_star = 2.0; fn=0.2
+        omega_n = 2 * np.pi * fn
+        cylinder_mass = M_star * rho * (np.pi * (D / 2) ** 2)
+        damper_cylinder = cylinder_mass * 2 * omega_n * 0.007
+        stiffness = cylinder_mass * omega_n ** 2
+        params_Re1000 = {
+            "m": cylinder_mass,                 # kg/m (legacy key)
+            "c": damper_cylinder,              # N*s/m (legacy key)
+            "k": stiffness,                    # N/m (legacy key)
+            "cylinder_mass": cylinder_mass,    # kg/m
+            "c_struct": damper_cylinder,       # N*s/m
+            "k_struct": stiffness,             # N/m
+        }
+
+    # debug
+    print("raw_df type:", type(raw_df))
+    print("raw_df head:", getattr(raw_df, "head", lambda: None)())
+
+    raw_df    = compute_kinematics(raw_df, dataset=dataset, structural_params=params_Re1000)
     all_cases = sorted(str(c) for c in raw_df["case"].drop_duplicates())
     print(f"Cases loaded: {all_cases}")
 
@@ -343,97 +338,62 @@ def main() -> None:
     print(f"Val:   {sorted(val_cases)}")
     print(f"Test:  {sorted(test_cases)}")
 
-    # Normalize CL independently per case to learn oscillation shape.
-    raw_df_n, case_stats = per_case_normalize(raw_df, cfg["target_col"])
-
-    train_df = raw_df_n[raw_df_n["case"].isin(train_cases)].copy()
-    val_df   = raw_df_n[raw_df_n["case"].isin(val_cases)].copy()
-    test_df  = raw_df_n[raw_df_n["case"].isin(test_cases)].copy()
+    train_df = raw_df[raw_df["case"].isin(train_cases)].copy()
+    val_df   = raw_df[raw_df["case"].isin(val_cases)].copy()
+    test_df  = raw_df[raw_df["case"].isin(test_cases)].copy()
 
     # ── Scale ──────────────────────────────────────────────────────────────
-    x_scaler = StandardScaler().fit(
-        train_df[cfg["input_cols"]].to_numpy(dtype=np.float32)
-    )
-    train_df_s = apply_scalers_to_df(
-        train_df, x_scaler, None, cfg["input_cols"], cfg["target_col"])
-    val_df_s   = apply_scalers_to_df(
-        val_df,   x_scaler, None, cfg["input_cols"], cfg["target_col"])
-    test_df_s  = apply_scalers_to_df(
-        test_df,  x_scaler, None, cfg["input_cols"], cfg["target_col"])
+    # Global scaling
+    x_scaler, y_scaler = fit_scalers(raw_df, cfg["input_cols"], cfg["target_col"])
 
-    train_ur = np.array([float(c[2:]) for c in sorted(train_cases)], dtype=np.float32)
+    print(f"x_scaler: mean={x_scaler.mean_} scale={x_scaler.scale_}")
+    print(f"y_scaler ({cfg['target_col']}): "
+          f"mean={float(y_scaler.mean_[0]):.6f} scale={float(y_scaler.scale_[0]):.6f}")
+
+
+    train_df_s = apply_scalers_to_df(train_df, x_scaler, y_scaler, cfg["input_cols"], cfg["target_col"])
+    val_df_s   = apply_scalers_to_df(val_df, x_scaler, y_scaler, cfg["input_cols"], cfg["target_col"])
+    test_df_s  = apply_scalers_to_df(test_df, x_scaler, y_scaler, cfg["input_cols"], cfg["target_col"])
+
+
+    train_ur = np.array([parse_ur_label(c) for c in sorted(train_cases)], dtype=np.float32)
+
     ur_mean = float(train_ur.mean())
-    ur_std = float(train_ur.std()) + 1e-8
+    ur_std  = float(train_ur.std()) + 1e-6
     use_ur_context = bool(cfg.get("use_ur_context", False))
     if use_ur_context:
         print(f"Using Ur context feature: mean={ur_mean:.4f}, std={ur_std:.4f}")
+
 
     # ── Datasets & loaders ─────────────────────────────────────────────────
     seq_len = int(cfg["seq_len"])
     target_col = str(cfg["target_col"])
     input_cols = list(cfg["input_cols"])
     stride_train = int(cfg["stride_train"])
-    train_ds = VIVSequenceDataset(
-        train_df_s,
-        seq_len,
-        target_col=target_col,
-        input_cols=input_cols,
-        release_time=release_time,
-        stride=stride_train,
-        use_ur_context=use_ur_context,
-        ur_mean=ur_mean,
-        ur_std=ur_std,
-    )
-    val_ds   = VIVSequenceDataset(
-        val_df_s,
-        seq_len,
-        target_col=target_col,
-        input_cols=input_cols,
-        release_time=release_time,
-        stride=1,
-        use_ur_context=use_ur_context,
-        ur_mean=ur_mean,
-        ur_std=ur_std,
-    )
-    test_ds  = VIVSequenceDataset(
-        test_df_s,
-        seq_len,
-        target_col=target_col,
-        input_cols=input_cols,
-        release_time=release_time,
-        stride=1,
-        use_ur_context=use_ur_context,
-        ur_mean=ur_mean,
-        ur_std=ur_std,
-    )
 
-    print(f"Dataset sizes — train: {len(train_ds)}  "
-          f"val: {len(val_ds)}  test: {len(test_ds)}")
+    common = dict(seq_len=seq_len, target_col=target_col, input_cols=input_cols,
+                  release_time=release_time, use_ur_context=use_ur_context,
+                  ur_mean=ur_mean, ur_std=ur_std)
+    
+    train_ds = VIVSequenceDataset(train_df_s, stride=stride_train, **common)
+    val_ds   = VIVSequenceDataset(val_df_s, stride=1, **common)
+    test_ds  = VIVSequenceDataset(test_df_s, stride=1, **common)
+
+    print(f"Dataset sizes — train: {len(train_ds)} val: {len(val_ds)} test: {len(test_ds)}")
+
+
+    
 
     batch_size = int(cfg["batch_size"])
     num_workers = 2
     pin_memory = bool(device == "cuda")
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-    )
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-    )
+    train_loader = DataLoader( train_ds, batch_size=batch_size,
+                                shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
+    val_loader   = DataLoader(val_ds, batch_size=batch_size,
+                                shuffle=False, num_workers=num_workers,pin_memory=pin_memory)
+    test_loader  = DataLoader(test_ds,batch_size=batch_size,
+                                shuffle=False,num_workers=num_workers,pin_memory=pin_memory)
+
 
     # ── Model ──────────────────────────────────────────────────────────────
     input_size = len(cfg["input_cols"]) + (1 if use_ur_context else 0)
@@ -453,8 +413,7 @@ def main() -> None:
     criterion = nn.MSELoss()
 
     # ── Training loop ──────────────────────────────────────────────────────
-    best_val_loss  = float("inf")
-    best_state     = None
+    best_val_loss  = float("inf"); best_state     = None
     patience_count = 0
     train_losses, val_losses = [], []
 
@@ -491,58 +450,63 @@ def main() -> None:
     torch.save(best_state, OUTPUT_DIR / "gru_best.pt")
     print(f"Best model saved (val_loss={best_val_loss:.5f})")
 
-    # Save scaler and case_stats for inference
+    # Save artifacts
     with open(OUTPUT_DIR / "x_scaler.pkl", "wb") as f:
         pickle.dump(x_scaler, f)
-    with open(OUTPUT_DIR / "case_stats.pkl", "wb") as f:
-        pickle.dump(case_stats, f)
+    with open(OUTPUT_DIR / "y_scaler.pkl", "wb") as f:
+        pickle.dump(y_scaler, f)
+    with open(OUTPUT_DIR / "ur_stats.pkl", "wb") as f:
+        pickle.dump({"mean": ur_mean, "std": ur_std, 
+                     "use_ur_context": use_ur_context}, f)
+
 
 
     # ── Final evaluation ───────────────────────────────────────────────────
     _, tp, tt, tcases = run_validation(model, test_loader, criterion, device)
     _, vp, vt, vcases = run_validation(model, val_loader, criterion, device)
 
-    test_pred = inverse_per_case_scale(tp, tcases, case_stats)
-    test_true = inverse_per_case_scale(tt, tcases, case_stats)
-    val_pred  = inverse_per_case_scale(vp, vcases, case_stats)
-    val_true  = inverse_per_case_scale(vt, vcases, case_stats)
+    test_pred = y_scaler.inverse_transform(tp.reshape(-1, 1)).ravel()
+    test_true = y_scaler.inverse_transform(tt.reshape(-1, 1)).ravel()
+    val_pred  = y_scaler.inverse_transform(vp.reshape(-1, 1)).ravel()
+    val_true  = y_scaler.inverse_transform(vt.reshape(-1, 1)).ravel()
 
     val_metrics  = evaluate(val_true,  val_pred)
     test_metrics = evaluate(test_true, test_pred)
     print(f"\nValidation: {json.dumps(val_metrics, indent=2)}")
     print(f"Test:       {json.dumps(test_metrics, indent=2)}")
 
-    # ── Autoregressive rollout ─────────────────────────────────────────────
-    print("\nAutoregressive rollout on test cases:")
-    ar_results = {}
+    # ── Teacher forcing rollout ─────────────────────────────────────────────
+    print("\nTeacher forcing rollout on test cases:")
+    tf_results = {}
     for case_name in sorted(test_cases):
         case_df_s = test_df_s[test_df_s["case"] == case_name].copy()
         if case_df_s.empty:
             continue
-        cl_pred, cl_true, times_ar = autoregressive_rollout_gru(
+        cl_pred, cl_true, times_ar = teacher_forcing_rollout(
             model,
             case_df_s,
             cfg["input_cols"],
             seq_len,
             release_time[case_name],
-            case_stats,
+            y_scaler,
             case_name,
             device,
             use_ur_context=use_ur_context,
             ur_stats=(ur_mean, ur_std),
         )
+
         if len(cl_true) < 20:
             print(f"  {case_name}: too short, skipping"); continue
-        ar_m = evaluate(cl_true, cl_pred)
-        ar_results[case_name] = ar_m
-        print(f"  {case_name}: R²={ar_m['r2']:.4f}  RMSE={ar_m['rmse']:.4f}")
-        plot_ar_result(cl_pred, cl_true, times_ar, case_name, OUTPUT_DIR)
+        tf_m = evaluate(cl_true, cl_pred)
+        tf_results[case_name] = tf_m
+        print(f"  {case_name}: R²={tf_m['r2']:.4f}  RMSE={tf_m['rmse']:.4f}")
+        plot_tf_result(cl_pred, cl_true, times_ar, case_name, OUTPUT_DIR)
 
     # ── Amplitude response curve ───────────────────────────────────────────
     all_df_s = pd.concat([train_df_s, val_df_s, test_df_s], ignore_index=True)
     amp_df   = amplitude_comparison(
         model, all_df_s, release_time,
-        cfg["input_cols"], seq_len, case_stats, device, OUTPUT_DIR,
+        cfg["input_cols"], seq_len, y_scaler, device, OUTPUT_DIR,
         train_cases, val_cases, test_cases,
         use_ur_context=use_ur_context,
         ur_stats=(ur_mean, ur_std),
@@ -568,7 +532,7 @@ def main() -> None:
                          "test":  sorted(test_cases)},
         "val_metrics":  val_metrics,
         "test_metrics": test_metrics,
-        "ar_results":   ar_results,
+        "tf_results":   tf_results,
     }
     with open(OUTPUT_DIR / "metrics_gru.json", "w") as f:
         json.dump(metrics, f, indent=2)

@@ -9,6 +9,8 @@ from sklearn.preprocessing import StandardScaler
 from typing import Optional
 import pandas as pd
 
+from utils import parse_ur_label
+
 
 class VIV_GRU(nn.Module):
     """
@@ -50,7 +52,6 @@ class VIV_GRU(nn.Module):
         h0: Optional[torch.Tensor] = None,   # (num_layers, batch, hidden_size)
     ) -> tuple[torch.Tensor, torch.Tensor]:
         out, hn = self.gru(x, h0)
-        # Use only the last timestep's hidden output
         pred = self.head(out[:, -1, :]).squeeze(-1)   # (batch,)
         return pred, hn
 
@@ -87,7 +88,7 @@ class VIVSequenceDataset(Dataset):
             signal  = ordered[input_cols].to_numpy(dtype=np.float32)
 
             if use_ur_context:
-                ur_val = float(str(case_name)[2:])
+                ur_val = parse_ur_label(str(case_name))
                 ur_scaled = (ur_val - float(ur_mean)) / ur_std_safe
                 ur_col = np.full((signal.shape[0], 1), ur_scaled, dtype=np.float32)
                 signal = np.hstack([signal, ur_col])

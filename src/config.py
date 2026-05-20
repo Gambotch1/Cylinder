@@ -19,6 +19,7 @@ config = {
     "cylinder1000_dt":        0.005, # Re=1000 timestep [s]
     "cylinder1000_t_release": 16.0,  # physical release time [s]
     "cylinder1000_U_inf":     1.0,   # freestream velocity [m/s]
+    "cylinder1000_zeta":      0.007,  # structural damping ratio (assumed)
 
     # ── GRU architecture ───────────────────────────────────────────────────
     "hidden_size":   64,
@@ -82,10 +83,9 @@ def prepare_gru_config(dataset: str, cfg: dict) -> dict:
         out["use_ur_context"] = False
 
     elif ds in {"cylinder1000", "cylinder_re_1000", "re1000"}:
-        # 2 cycles at Ur=12: T=Ur*D/U=12*0.2/1.0=2.4s, 2T=4.8s, /0.005=960
         out["seq_len"]      = 960
-        out["stride_train"] = 3
-        out["hidden_size"]  = 128
+        out["stride_train"] = 8
+        out["hidden_size"]  = cfg["hidden_size"]
         out["use_ur_context"] = True
 
     elif ds == "bridge":

@@ -246,7 +246,7 @@ def correct_cl_for_reference_velocity(df: pd.DataFrame, fn: float, d_ref: float,
     df = df.copy()
     ur = df["case"].apply(parse_ur_label).astype("float32")
     u_actual = ur * float(fn) * float(d_ref)
-    # per-case scalar correction: (U_ref / U_actual)^2
+
     correction = (float(u_ref_fluent) / u_actual) ** 2
     df["cl"] = df["cl"].astype("float32") * correction
     if "cd" in df.columns:

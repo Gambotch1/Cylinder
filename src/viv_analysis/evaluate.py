@@ -5,7 +5,7 @@ from typing import Callable
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
-def autoregressive_rollout(
+def Teacher_Forcing_rollout(
     predict_fn:    Callable[[np.ndarray], float],
     x_scaler,
     y_scaler,
@@ -15,7 +15,7 @@ def autoregressive_rollout(
     release_time_s: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Model-agnostic autoregressive rollout.
+    Model-agnostic teacher-forcing rollout.
 
     predict_fn : callable(x_scaled_2d) → float in scaled space
     All kinematic inputs (disp, vel, acc) use true CFD values.
@@ -33,7 +33,11 @@ def autoregressive_rollout(
 
     cl_pred_history = cl_true[:start].tolist()
 
-    col_arrays = {"disp": disp, "vel": vel, "acc": acc}
+    col_arrays = {
+        col: ordered[col].to_numpy()
+        for col in input_cols
+        if col != "cl"
+    }
 
     for i in range(start, len(ordered)):
         cols = []

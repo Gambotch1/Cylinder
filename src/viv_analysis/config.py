@@ -20,6 +20,9 @@ config = {
     "cylinder1000_t_release": 16.0,  # physical release time [s]
     "cylinder1000_U_inf":     1.0,   # freestream velocity [m/s]
     "cylinder1000_zeta":      0.007,  # structural damping ratio (assumed)
+    "cylinder1000_rho" :      1.0,
+    "cylinder1000_fn":        0.2,
+    "cylinder1000_M_star":    2.0,
 
     # ── GRU architecture ───────────────────────────────────────────────────
     "hidden_size":   64,
@@ -53,7 +56,7 @@ config = {
     # ── Shared ─────────────────────────────────────────────────────────────
     "seed":          123,
     "target_col":    "cl",
-    "input_cols":    ["disp", "vel", "acc"],
+    "input_cols":    ["disp", "vel", "acc", "ur"],
     "motion_type":   "heave",
 
     # ── Supported datasets ─────────────────────────────────────────────────
@@ -101,3 +104,27 @@ def prepare_gru_config(dataset: str, cfg: dict) -> dict:
         raise ValueError(f"Unknown dataset: {dataset}")
 
     return out
+
+def structural_params() -> dict:
+    rho = config['cylinder1000_rho']
+    D   = config['cylinder1000_D_ref']
+    fn  = config['cylinder1000_fn']
+
+    M_star = config['cylinder1000_M_star']
+    zeta   = config['cylinder1000_zeta']
+    m = M_star * rho * (np.pi * D**2 / 4.0)
+    omega_n = 2.0 * np.pi * fn
+    k = m * omega_n**2
+    c = 2.0 * m * omega_n * zeta
+
+
+    params_Re1000 = {
+            "m": m,                 # kg/m (legacy key)
+            "c": c,              # N*s/m (legacy key)
+            "k": k,                    # N/m (legacy key)
+            "cylinder_mass": m,    # kg/m
+            "c_struct": c,       # N*s/m
+            "k_struct": k,             # N/m
+        }
+    
+    return params_Re1000

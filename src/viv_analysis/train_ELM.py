@@ -22,62 +22,52 @@ from viv_analysis.models.elm import (
     compute_lookback,
 )
 from viv_analysis.plot import plot_one_case
-from viv_analysis.config import config
-from viv_analysis.preprocess import merge_dataframes, compute_kinematics
-from viv_analysis.evaluate import evaluate, autoregressive_rollout
-from viv_analysis.utils import PROJECT_ROOT
+from viv_analysis.config import config, structural_params
+from viv_analysis.preprocess import merge_dataframes, compute_kinematics, correct_cl_for_reference_velocity
+from viv_analysis.evaluate import evaluate, Teacher_Forcing_rollout
+from viv_analysis.utils import PROJECT_ROOT, parse_ur_label
 
 ROOT_DIR   = PROJECT_ROOT
 OUTPUT_DIR = ROOT_DIR / "results" / "elm_model"
 
 # -------------------------------
 
-def split_cases(
-    cases: list[str],
-) -> tuple[set[str], set[str], set[str], dict[str, float]]:
-    train_cases  = {"Ur2.0", "Ur4.0", "Ur4.5", "Ur5.0", "Ur5.5", "Ur6.25", "Ur8.0", "Ur10.0", "Ur12.0"}
-    val_cases    = {"Ur3.0", "Ur4.75", "Ur5.75", "Ur9.0"}
-    test_cases   = {"Ur2.5", "Ur5.25", "Ur6.0", "Ur7.0", "Ur11.0"}
+def pick_cases(cases: list[str], ur_values: list[float]) -> set[str]:
+    by_ur = {round(parse_ur_label(c), 6): c for c in cases}
+    selected = set()
 
-    all_defined = train_cases | val_cases | test_cases
-    case_set = set(cases)
+    for ur in ur_values:
+        key = round(float(ur), 6)
+        if key not in by_ur:
+            raise ValueError(
+                f"Requested Ur{ur} not found.\n"
+                f"Available cases: {sorted(cases)}"
+            )
+        selected.add(by_ur[key])
 
-    if all_defined.issubset(case_set):
-        selected_train = train_cases
-        selected_val = val_cases
-        selected_test = test_cases
-        extra = case_set - all_defined
-        if extra:
-            print(f"WARNING: data cases not assigned to fixed split: {extra}")
-    else:
-        ordered = sorted(case_set, key=lambda c: float(str(c)[2:]) if str(c).startswith("Ur") else float(c))
-        n = len(ordered)
-        if n < 3:
-            raise ValueError("Need at least 3 cases to create train/val/test splits.")
+    return selected
 
-        n_test = max(1, int(round(0.2 * n)))
-        n_val = max(1, int(round(0.2 * n)))
-        max_holdout = n - 1
-        if n_test + n_val > max_holdout:
-            overflow = n_test + n_val - max_holdout
-            n_val = max(1, n_val - overflow)
 
-        selected_test = set(ordered[-n_test:])
-        val_pool = [c for c in ordered if c not in selected_test]
-        selected_val = set(val_pool[-n_val:])
-        selected_train = set(c for c in ordered if c not in selected_test and c not in selected_val)
-        print("Using dynamic split from available cases.")
+def split_cases(cases: list[str]) -> tuple[set[str], set[str], set[str], dict[str, float]]:
+    train_cases = pick_cases(
+        cases,
+        [
+            2.0, 3.0, 4.0, 4.25, 4.75,
+            5.0, 5.5, 5.75,
+            6.25, 6.5,
+            8.0, 9.0, 10.0, 12.0,
+        ],
+    )
 
-    release_time = {}
-    for c in cases:
-        # Extract Ur float from string like "Ur5.25"
-        try:
-            ur_val = float(str(c).replace("Ur", "").replace("p", "."))
-            release_time[c] = 400.0 / ur_val if ur_val > 0 else 0
-        except ValueError:
-            release_time[c] = 60.0 # Fallback
-            
-    return selected_train, selected_val, selected_test, release_time
+    val_cases = pick_cases(cases, [2.5, 3.5, 6.0, 11.0])
+    test_cases = pick_cases(cases, [4.5, 5.25, 7.0])
+
+    release_time = {
+        c: 400.0 / parse_ur_label(c)
+        for c in cases
+    }
+
+    return train_cases, val_cases, test_cases, release_time
 
 # -------------------------------
 
@@ -121,31 +111,100 @@ def reduce_lookback_features(X: np.ndarray, n_cols: int = 3, step: int = 4) -> n
     # Flatten back to 2D for the ELM
     return X_reduced.reshape(N, -1)
 
+def cl_amplitude_metrics(cl_true: np.ndarray, cl_pred: np.ndarray, ss_frac: float = 0.3) -> dict:
+    """Amplitude comparison on the last ss_frac of the rollout window."""
+    if len(cl_true) < 20:
+        return {
+            "CL_amp_true": float("nan"),
+            "CL_amp_pred": float("nan"),
+            "CL_amp_abs_error": float("nan"),
+            "CL_amp_rel_error_pct": float("nan"),
+        }
+
+    start = int((1.0 - ss_frac) * len(cl_true))
+    true_ss = cl_true[start:]
+    pred_ss = cl_pred[start:]
+
+    amp_true = float((true_ss.max() - true_ss.min()) / 2.0)
+    amp_pred = float((pred_ss.max() - pred_ss.min()) / 2.0)
+    abs_err = abs(amp_pred - amp_true)
+    rel_err = 100.0 * abs_err / (abs(amp_true) + 1e-12)
+
+    return {
+        "CL_amp_true": amp_true,
+        "CL_amp_pred": amp_pred,
+        "CL_amp_abs_error": float(abs_err),
+        "CL_amp_rel_error_pct": float(rel_err),
+    }
+
+
+def plot_rollout_case(times, cl_true, cl_pred, case_name: str, output_dir: Path) -> None:
+    fig, axes = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
+
+    axes[0].plot(times, cl_true, lw=0.8, color="black", label="CFD true CL")
+    axes[0].plot(times, cl_pred, lw=0.8, color="tab:blue", label="ELM predicted CL")
+    axes[0].set_title(f"{case_name} — ELM teacher-forcing rollout")
+    axes[0].set_ylabel("$C_L$")
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(times, cl_pred - cl_true, lw=0.7, color="tab:red")
+    axes[1].axhline(0.0, color="black", lw=0.5)
+    axes[1].set_xlabel("Time [s]")
+    axes[1].set_ylabel("Residual")
+    axes[1].grid(True, alpha=0.3)
+
+    safe_case = case_name.replace(".", "p")
+    fig.savefig(output_dir / f"test_{safe_case}_cl_ar.png", dpi=200)
+    plt.close(fig)
+
 def prepare_data_bundle() -> dict:
-    raw_df = merge_dataframes()
+    raw_df = merge_dataframes(dataset="cylinder1000")
     if raw_df.empty:
         raise ValueError("Merged dataframe is empty.")
 
-    raw_df     = compute_kinematics(raw_df)
-    all_cases  = sorted(str(c) for c in raw_df["case"].drop_duplicates())
+    fn = config["cylinder1000_fn"]
+    d_ref = config["cylinder1000_D_ref"]
+
+    raw_df["ur"] = raw_df["case"].apply(parse_ur_label).astype("float32")
+
+    raw_df = correct_cl_for_reference_velocity(
+        raw_df,
+        fn=fn,
+        d_ref=d_ref,
+        u_ref_fluent=config["cylinder1000_U_inf"],
+    )
+
+    cylinder1000_params = structural_params()
+
+    raw_df = compute_kinematics(
+        raw_df,
+        dataset="cylinder1000",
+        structural_params=cylinder1000_params,
+    )
+
+    # keep ur after merges/fallbacks
+    if "ur" not in raw_df.columns:
+        raw_df["ur"] = raw_df["case"].apply(parse_ur_label).astype("float32")
+
+    all_cases = sorted(str(c) for c in raw_df["case"].drop_duplicates())
     train_cases, val_cases, test_cases, release_time = split_cases(all_cases)
 
-    # Compute physically motivated lookback
-    ur_values = [float(c[2:]) for c in all_cases if c.startswith("Ur")]
-    fn = 0.2
-    D = config["cylinder1000_D_ref"]  # 0.2
-    dt = config["cylinder1000_dt"]    # 0.005
+    dt_eff = (
+        raw_df.sort_values(["case", "time"])
+              .groupby("case")["time"]
+              .diff()
+              .dropna()
+              .median()
+    )
 
-    # 10 seconds / 0.005 dt = 2000 steps.
-    lookback = int(2.0 / fn / dt) # Exact math for 2 full cycles
+    lookback_seconds = 2.0 / fn
+    lookback = int(round(lookback_seconds / dt_eff))
+
+    print(f"Effective dt={dt_eff:.6f}, lookback={lookback}, window={lookback * dt_eff:.2f}s")
+
+
     config["lookback_steps"] = lookback
-
-    print(f"Lookback set to {lookback} steps ({lookback * dt:.1f} s, covers 2 cycles)")
-
-
-    config["lookback_steps"] = lookback
-    print(f"Lookback set to {lookback} steps "
-          f"({lookback * 0.02:.1f} s, covers 2 cycles at max Ur)")
 
     train_df = raw_df.loc[raw_df["case"].isin(train_cases)]
     val_df   = raw_df.loc[raw_df["case"].isin(val_cases)]
@@ -171,9 +230,9 @@ def prepare_data_bundle() -> dict:
 
     # Shrink the number of COLUMNS (Features)
     n_features = len(config["input_cols"])
-    X_train = reduce_lookback_features(X_train, n_cols=n_features, step=4)
-    X_val   = reduce_lookback_features(X_val,   n_cols=n_features, step=4)
-    X_test  = reduce_lookback_features(X_test,  n_cols=n_features, step=4)
+    # X_train = reduce_lookback_features(X_train, n_cols=n_features, step=4)
+    # X_val   = reduce_lookback_features(X_val,   n_cols=n_features, step=4)
+    # X_test  = reduce_lookback_features(X_test,  n_cols=n_features, step=4)
     
     print(f"Final X_train shape for ELM: {X_train.shape} (RAM safe!)")
 
@@ -257,6 +316,7 @@ def main() -> None:
         return
 
     # Unpack everything needed in main scope — no more undefined variables
+    all_cases   = bundle["raw_df"]["case"].drop_duplicates().tolist()
     X_train_s   = bundle["X_train_s"]
     y_train_s   = bundle["y_train_s"]
     X_val_s     = bundle["X_val_s"]
@@ -279,7 +339,7 @@ def main() -> None:
     study = optuna.create_study(
         direction="minimize",
         storage="sqlite:///optuna_dash.db",
-        study_name=f"elm_viv_v1_lb{lookback}",  # versioned name
+        study_name=f"elm_viv_v2_lb{lookback}",  
         load_if_exists=True,
         sampler=optuna.samplers.TPESampler(
             seed=config["seed"],
@@ -304,6 +364,14 @@ def main() -> None:
     lam_best = study.best_params["lam"]
     print(f"Best params: hidden={h_best}  lambda={lam_best:.2e}")
 
+    # ── Diagnostics ────────────────────────────────────────────────────────
+    print("Available cases:", all_cases)
+    print("Train:", sorted(train_cases))
+    print("Val:", sorted(val_cases))
+    print("Test:", sorted(test_cases))
+    print("Columns:", raw_df.columns.tolist())
+    print(raw_df[["case", "time", "disp", "vel", "acc", "ur", "cl"]].head())
+
     # ── Train final ensemble ───────────────────────────────────────────────
     print(f"Training ensemble of {config['n_models']} ELMs...")
     ensemble = train_ensemble_elm(
@@ -327,11 +395,10 @@ def main() -> None:
     val_metrics  = evaluate(y_val,  y_val_pred)
     test_metrics = evaluate(y_test, y_test_pred)
 
-    # ── Autoregressive rollout on each test case ───────────────────────────
-    ar_results = {}
-    
-    # Instantiate the wrapper once
-    wrapped_x_scaler = DownsampleScaler(x_scaler, n_cols=len(config["input_cols"]), step=4)
+    # ── Teacher-forcing rollout on each test case ─────────────
+    tf_results = {}
+    amp_results = {}
+    tf_pred_frames = []
 
     for case_name in sorted(test_cases):
         case_df = raw_df[raw_df["case"] == case_name].copy()
@@ -341,23 +408,49 @@ def main() -> None:
 
         release_t = release_time.get(case_name, 60.0)
         elm_predict_fn = lambda x: float(ensemble_predict(ensemble, x)[0][0])
-        
-        cl_pred, cl_true, times_ar = autoregressive_rollout(
+
+        cl_pred, cl_true, times_tf = Teacher_Forcing_rollout(
             predict_fn=elm_predict_fn,
-            x_scaler=wrapped_x_scaler,   # <--- USE THE WRAPPED SCALER HERE
+            x_scaler=x_scaler,
             y_scaler=y_scaler,
             case_df=case_df,
             input_cols=config["input_cols"],
             lookback=lookback,
             release_time_s=release_t,
         )
-        ar_metrics = evaluate(cl_true, cl_pred)
-        ar_results[case_name] = {
-            "ar_metrics":  ar_metrics,
-            "ar_r2":       ar_metrics["r2"],
+
+        tf_metrics = evaluate(cl_true, cl_pred)
+        amp_metrics = cl_amplitude_metrics(cl_true, cl_pred)
+
+        tf_results[case_name] = {
+            "tf_metrics": tf_metrics,
+            "tf_r2": tf_metrics["r2"],
         }
-        print(f"  AR rollout {case_name}: R²={ar_metrics['r2']:.4f}  "
-              f"RMSE={ar_metrics['rmse']:.4f}")
+        amp_results[case_name] = amp_metrics
+
+        print(
+            f"  TF rollout {case_name}: "
+            f"R²={tf_metrics['r2']:.4f}  RMSE={tf_metrics['rmse']:.4f}  "
+            f"CL_amp_true={amp_metrics['CL_amp_true']:.4f}  "
+            f"CL_amp_pred={amp_metrics['CL_amp_pred']:.4f}  "
+            f"amp_err={amp_metrics['CL_amp_rel_error_pct']:.2f}%"
+        )
+
+        plot_rollout_case(times_tf, cl_true, cl_pred, case_name, OUTPUT_DIR)
+
+        tf_pred_frames.append(pd.DataFrame({
+            "case": case_name,
+            "time": times_tf,
+            "cl_true": cl_true,
+            "cl_pred": cl_pred,
+            "residual": cl_pred - cl_true,
+        }))
+
+    if tf_pred_frames:
+        pd.concat(tf_pred_frames, ignore_index=True).to_csv(
+            OUTPUT_DIR / "test_tf_predictions_cl_elm.csv",
+            index=False,
+        )
 
     # ── Save metrics ───────────────────────────────────────────────────────
     metrics = {
@@ -381,7 +474,8 @@ def main() -> None:
         },
         "val_metrics":        val_metrics,
         "test_metrics":       test_metrics,
-        "autoregressive":     ar_results,
+        "Teacher_Forcing":    tf_results,
+        "amplitude":          amp_results,
     }
 
     metrics_path = OUTPUT_DIR / "metrics_cl_elm.json"

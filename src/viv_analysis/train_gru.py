@@ -49,7 +49,8 @@ def _cylinder1000_split(cases: list[str], release_t: float) -> tuple:
     if missing:
         print(f"WARNING: split references cases not in data: {missing}")
 
-    rt = {v: release_t for v in cases}
+    rt = { c: 400.0 / parse_ur_label(c) for c in cases }
+
     return train, val, test, rt
 
 
@@ -256,15 +257,25 @@ def amplitude_comparison(model, all_df_s, release_time,
         ss       = int(0.7 * len(cl_true))
         amp_cfd  = (cl_true[ss:].max() - cl_true[ss:].min()) / 2
         amp_gru  = (cl_pred[ss:].max() - cl_pred[ss:].min()) / 2
+        amp_abs_err = abs(amp_gru - amp_cfd)
+        amp_rel_err_pct = 100.0 * amp_abs_err / (abs(amp_cfd) + 1e-12)
+
         results.append({
-            "Ur": ur, "CL_amp_CFD": amp_cfd, "CL_amp_GRU": amp_gru,
+            "Ur": ur,
+            "CL_amp_CFD": amp_cfd,
+            "CL_amp_GRU": amp_gru,
+            "CL_amp_abs_error": amp_abs_err,
+            "CL_amp_rel_error_pct": amp_rel_err_pct,
             "ar_r2": r2_score(cl_true, cl_pred),
             "split": ("test" if case_name in test_cases
-                      else "val" if case_name in val_cases
-                      else "train"),
+                    else "val" if case_name in val_cases
+                    else "train"),
         })
-        print(f"  {case_name}: CFD={amp_cfd:.4f}  GRU={amp_gru:.4f}  "
-              f"R²={results[-1]['ar_r2']:.4f}  [{results[-1]['split']}]")
+        print(
+            f"  {case_name}: CFD={amp_cfd:.4f}  GRU={amp_gru:.4f}  "
+            f"amp_err={amp_rel_err_pct:.2f}%  "
+            f"R²={results[-1]['ar_r2']:.4f}  [{results[-1]['split']}]"
+        )
 
     df_res = pd.DataFrame(results).sort_values("Ur")
     df_res.to_csv(output_dir / "amplitude_comparison.csv", index=False)
@@ -283,6 +294,11 @@ def main() -> None:
 
     # ── Build dataset-specific GRU config ─────────────────────────────────
     cfg    = prepare_gru_config(dataset, config)
+    ds = dataset.strip().lower()
+    if ds in {"cylinder1000", "cylinder_re_1000", "re1000"}:
+        cfg["input_cols"] = ["disp", "vel", "acc"]
+        cfg["use_ur_context"] = True
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}  |  seq_len={cfg['seq_len']}  "
           f"stride_train={cfg['stride_train']}")
@@ -345,7 +361,7 @@ def main() -> None:
 
     # ── Scale ──────────────────────────────────────────────────────────────
     # Global scaling
-    x_scaler, y_scaler = fit_scalers(raw_df, cfg["input_cols"], cfg["target_col"])
+    x_scaler, y_scaler = fit_scalers(train_df, cfg["input_cols"], cfg["target_col"])
 
     print(f"x_scaler: mean={x_scaler.mean_} scale={x_scaler.scale_}")
     print(f"y_scaler ({cfg['target_col']}): "
@@ -353,8 +369,8 @@ def main() -> None:
 
 
     train_df_s = apply_scalers_to_df(train_df, x_scaler, y_scaler, cfg["input_cols"], cfg["target_col"])
-    val_df_s   = apply_scalers_to_df(val_df, x_scaler, y_scaler, cfg["input_cols"], cfg["target_col"])
-    test_df_s  = apply_scalers_to_df(test_df, x_scaler, y_scaler, cfg["input_cols"], cfg["target_col"])
+    val_df_s   = apply_scalers_to_df(val_df,   x_scaler, y_scaler, cfg["input_cols"], cfg["target_col"])
+    test_df_s  = apply_scalers_to_df(test_df,  x_scaler, y_scaler, cfg["input_cols"], cfg["target_col"])
 
 
     train_ur = np.array([parse_ur_label(c) for c in sorted(train_cases)], dtype=np.float32)
@@ -386,8 +402,8 @@ def main() -> None:
     
 
     batch_size = int(cfg["batch_size"])
-    num_workers = 2
-    pin_memory = bool(device == "cuda")
+    num_workers = 14
+    pin_memory = False
     train_loader = DataLoader( train_ds, batch_size=batch_size,
                                 shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
     val_loader   = DataLoader(val_ds, batch_size=batch_size,

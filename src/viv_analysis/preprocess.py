@@ -227,32 +227,6 @@ def merge_dataframes(
     return df
 
 
-def correct_cl_for_reference_velocity(df: pd.DataFrame, fn: float, d_ref: float, u_ref_fluent: float = 1.0) -> pd.DataFrame:
-    """
-    Undo Fluent's CL normalisation if its reference velocity does not
-    match the per-case freestream. Multiply by (U_ref / U_actual)^2.
-
-    Parameters
-    ----------
-    df : DataFrame
-        Merged dataframe with a 'case' column and 'cl' (and optionally 'cd').
-    fn : float
-        Natural frequency [Hz] used to compute per-case freestream from Ur.
-    d_ref : float
-        Reference depth/diameter [m].
-    u_ref_fluent : float
-        Reference velocity used by Fluent when normalising forces (default=1.0).
-    """
-    df = df.copy()
-    ur = df["case"].apply(parse_ur_label).astype("float32")
-    u_actual = ur * float(fn) * float(d_ref)
-
-    correction = (float(u_ref_fluent) / u_actual) ** 2
-    df["cl"] = df["cl"].astype("float32") * correction
-    if "cd" in df.columns:
-        df["cd"] = df["cd"].astype("float32") * correction
-    return df
-
 def _load_force(dataset: str) -> dict[str, pd.DataFrame]:
 
     ds = dataset.strip().lower()

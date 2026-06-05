@@ -59,10 +59,10 @@ class VIV_GRU(nn.Module):
 class VIVSequenceDataset(Dataset):
     """
     Dataset that returns (sequence, target) pairs.
-    
+
     sequence shape: (seq_len, n_features)
-    target:         scalar CL value
-    
+    target:         scalar CL value (rollout_k=1) or (rollout_k,) array
+
     Unlike the ELM dataset, we do NOT flatten — the GRU needs the
     sequence structure.
     """
@@ -77,10 +77,12 @@ class VIVSequenceDataset(Dataset):
         use_ur_context: bool = False,
         ur_mean: float = 0.0,
         ur_std: float = 1.0,
+        rollout_k: int = 1,
     ):
-        self.sequences: list[np.ndarray] = []
-        self.targets:   list[float]      = []
-        self.case_names: list[str]       = []
+        self.rollout_k   = rollout_k
+        self.sequences:  list[np.ndarray] = []
+        self.targets:    list             = []   # float (k=1) or ndarray (k>1)
+        self.case_names: list[str]        = []
         ur_std_safe = float(ur_std) if abs(float(ur_std)) > 0 else 1.0
 
         for case_name, case_df in df.groupby("case", sort=True):
@@ -103,17 +105,26 @@ class VIVSequenceDataset(Dataset):
             if len(ordered) <= seq_len:
                 continue
 
-            for i in range(start_i, len(ordered), stride):
-                self.sequences.append(signal[i - seq_len : i])  # (seq_len, n_feat)
-                self.targets.append(float(target[i]))
+            # Reduce upper bound so k targets always exist past position i
+            max_i = len(ordered) - (rollout_k - 1)
+
+            for i in range(start_i, max_i, stride):
+                self.sequences.append(signal[i - seq_len : i].copy())
+                if rollout_k == 1:
+                    self.targets.append(float(target[i]))
+                else:
+                    self.targets.append(target[i : i + rollout_k].copy())
                 self.case_names.append(str(case_name))
 
     def __len__(self) -> int:
         return len(self.targets)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, str]:
+    def __getitem__(self, idx: int) -> tuple:
         x = torch.from_numpy(self.sequences[idx])   # (seq_len, n_features)
-        y = torch.tensor(self.targets[idx], dtype=torch.float32)
+        if self.rollout_k == 1:
+            y = torch.tensor(self.targets[idx], dtype=torch.float32)  # scalar
+        else:
+            y = torch.from_numpy(self.targets[idx])  # (rollout_k,)
         return x, y, self.case_names[idx]
 
 

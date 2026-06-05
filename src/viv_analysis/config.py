@@ -15,7 +15,7 @@ config = {
     "cylinder_dt":        0.02,   # Re=200 timestep [s]
     "cylinder_t_release": 60.0,   # physical release time [s]
 
-    "cylinder1000_D_ref":     0.2,   # Re=1000 cylinder diameter [m]
+    "cylinder1000_D_ref":     0.4,   # Re=1000 cylinder diameter [m]
     "cylinder1000_dt":        0.005, # Re=1000 timestep [s]
     "cylinder1000_t_release": 16.0,  # physical release time [s]
     "cylinder1000_U_inf":     1.0,   # freestream velocity [m/s]
@@ -56,7 +56,7 @@ config = {
     # ── Shared ─────────────────────────────────────────────────────────────
     "seed":          123,
     "target_col":    "cl",
-    "input_cols":    ["disp", "vel", "acc", "ur"],
+    "input_cols":    ["disp", "vel", "acc"],
     "motion_type":   "heave",
 
     # ── Supported datasets ─────────────────────────────────────────────────
@@ -67,15 +67,7 @@ np.random.seed(config["seed"])
 
 
 def prepare_gru_config(dataset: str, cfg: dict) -> dict:
-    """
-    Return a copy of cfg with seq_len and stride_train
-    set appropriately for the requested dataset.
 
-    The seq_len target is 2 oscillation cycles at the highest Ur.
-    For cylinder (Re=200):  max Ur=9, T=9s,  2T=18s, dt=0.02s  → 900 steps
-    For cylinder1000:       max Ur=12, T=2.4s, 2T=4.8s, dt=0.005s → 960 steps
-    For bridge (downsampled x10): max Ur≈10.6, T=33s, dt_eff=0.002s → capped 900
-    """
     out = cfg.copy()
     ds  = dataset.strip().lower()
 
@@ -85,8 +77,8 @@ def prepare_gru_config(dataset: str, cfg: dict) -> dict:
         out["hidden_size"]  = cfg["hidden_size"]
         out["use_ur_context"] = False
 
-    elif ds in {"cylinder1000", "cylinder_re_1000", "re1000"}:
-        out["seq_len"]      = 960
+    elif ds in {"cylinder1000", "cylinder_re_1000", "re1000","re1000_disp","re1000_vel","re1000_acc"}:
+        out["seq_len"]      = 1000
         out["stride_train"] = 8
         out["hidden_size"]  = cfg["hidden_size"]
         out["use_ur_context"] = True

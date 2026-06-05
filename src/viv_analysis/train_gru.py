@@ -22,10 +22,11 @@ from sklearn.metrics import r2_score
 from torch.utils.data import DataLoader
 
 from viv_analysis.config import config, prepare_gru_config
-from viv_analysis.preprocess import merge_dataframes, compute_kinematics, downsample, correct_cl_for_reference_velocity
+from viv_analysis.preprocess import merge_dataframes, compute_kinematics, downsample
 from viv_analysis.models.gru import VIV_GRU, VIVSequenceDataset, apply_scalers_to_df, fit_scalers
 from viv_analysis.evaluate import evaluate
 from viv_analysis.utils import PROJECT_ROOT
+from viv_analysis.coupled_inference import Newmark_beta
 
 ROOT_DIR = PROJECT_ROOT
 
@@ -41,9 +42,11 @@ def _cylinder_split(cases: list[str], release_t: float) -> tuple:
 
 
 def _cylinder1000_split(cases: list[str], release_t: float) -> tuple:
-    test  = {"Ur2", "Ur4.75", "Ur5.5",  "Ur7",  "Ur11"}
-    val   = {"Ur2.5", "Ur4.25", "Ur5.25", "Ur6.5",  "Ur9"}
-    train = set(cases) - test - val
+    test  = { "Ur2", "Ur4.75", "Ur5.5",  "Ur7"}
+    val   = { "Ur3", "Ur4.25", "Ur5.25", "Ur6.5",  "Ur9"}
+    eliminate = { "Ur11", "Ur12","Ur10"}
+    train = set(cases) - test - val  - eliminate
+    print("train (computed):", sorted(set(cases) - test - val - eliminate))
 
     missing = (test | val) - set(cases)
     if missing:
@@ -88,7 +91,7 @@ def split_cases(cases: list[str], dataset: str,
     ds = dataset.strip().lower()
     if ds == "cylinder":
         return _cylinder_split(cases, release_t=cfg["cylinder_t_release"])
-    if ds in {"cylinder1000", "cylinder_re_1000", "re1000"}:
+    if ds in {"cylinder1000", "cylinder_re_1000", "re1000", "re1000_disp","re1000_vel","re1000_acc", "re1000_"}:
         return _cylinder1000_split(cases, release_t=cfg["cylinder1000_t_release"])
     if ds == "bridge":
         return _bridge_split(
@@ -115,6 +118,137 @@ def train_one_epoch(model, loader, optimizer, criterion, device) -> float:
         optimizer.step()
         total += loss.item()
     return total / len(loader)
+
+
+def train_rollout_epoch(
+    model, loader, optimizer, criterion, device,
+    rollout_k: int, dt: float, m: float, c: float, k_phys: float,
+    idx_h: int, idx_hdot: int, idx_hddot: int, expected_features: int,
+    x_mean, x_scale, y_mean, y_scale,
+    rho: float, D: float, fn: float,
+    max_grad_norm: float = 1.0,
+) -> float:
+    model.train()
+    x_mean_t  = torch.tensor(x_mean,  dtype=torch.float32, device=device)
+    x_scale_t = torch.tensor(x_scale, dtype=torch.float32, device=device)
+    total = 0.0
+
+    for x_b, y_b, case_b in loader:
+        x_b = x_b.to(device)
+        y_b = y_b.to(device)
+        optimizer.zero_grad()
+
+        if rollout_k == 1:
+            pred, _ = model(x_b)
+            loss = criterion(pred, y_b)
+        else:
+            loss = _rollout_loss_k(
+                model, x_b, y_b, case_b,
+                rollout_k, dt, m, c, k_phys,
+                idx_h, idx_hdot, idx_hddot,
+                x_mean_t, x_scale_t,
+                float(y_mean), float(y_scale),
+                rho, D, fn, criterion, device,
+            )
+
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        optimizer.step()
+        total += loss.item()
+
+    return total / max(len(loader), 1)
+
+
+def eval_rollout_epoch(
+    model, loader, criterion, device,
+    rollout_k: int, dt: float, m: float, c: float, k_phys: float,
+    idx_h: int, idx_hdot: int, idx_hddot: int, expected_features: int,
+    x_mean, x_scale, y_mean, y_scale,
+    rho: float, D: float, fn: float,
+) -> float:
+    model.eval()
+    x_mean_t  = torch.tensor(x_mean,  dtype=torch.float32, device=device)
+    x_scale_t = torch.tensor(x_scale, dtype=torch.float32, device=device)
+    total = 0.0
+
+    with torch.no_grad():
+        for x_b, y_b, case_b in loader:
+            x_b = x_b.to(device)
+            y_b = y_b.to(device)
+
+            if rollout_k == 1:
+                pred, _ = model(x_b)
+                loss = criterion(pred, y_b)
+            else:
+                loss = _rollout_loss_k(
+                    model, x_b, y_b, case_b,
+                    rollout_k, dt, m, c, k_phys,
+                    idx_h, idx_hdot, idx_hddot,
+                    x_mean_t, x_scale_t,
+                    float(y_mean), float(y_scale),
+                    rho, D, fn, criterion, device,
+                )
+            total += loss.item()
+
+    return total / max(len(loader), 1)
+
+
+def _rollout_loss_k(
+    model, x_b, y_b, case_b,
+    rollout_k, dt, m, c, k_phys,
+    idx_h, idx_hdot, idx_hddot,
+    x_mean_t, x_scale_t,
+    y_mean, y_scale,
+    rho, D, fn, criterion, device,
+):
+    """
+    Multi-step rollout loss for rollout_k > 1.
+
+    Starts from the ground-truth window, predicts CL, propagates kinematics
+    via Newmark-beta (inside torch.no_grad), slides the window, and repeats
+    rollout_k times. Returns the mean MSE across all k steps.
+
+    The ODE propagation is detached from the computation graph — gradients
+    flow only through each step's GRU call, not through the physics.
+    """
+    last = x_b[:, -1, :]
+    h_c   = last[:, idx_h]     * x_scale_t[idx_h]     + x_mean_t[idx_h]
+    hd_c  = last[:, idx_hdot]  * x_scale_t[idx_hdot]  + x_mean_t[idx_hdot]
+    hdd_c = last[:, idx_hddot] * x_scale_t[idx_hddot] + x_mean_t[idx_hddot]
+
+    U_vals = torch.tensor(
+        [parse_ur_label(cn) * fn * D for cn in case_b],
+        dtype=torch.float32, device=device,
+    )
+
+    window     = x_b.clone()
+    total_loss = None
+
+    for step in range(rollout_k):
+        pred, _ = model(window)
+        step_loss = criterion(pred, y_b[:, step])
+        total_loss = step_loss if total_loss is None else total_loss + step_loss
+
+        if step < rollout_k - 1:
+            with torch.no_grad():
+                cl_phys = pred.detach() * y_scale + y_mean
+                F = 0.5 * rho * U_vals**2 * D * cl_phys
+
+                h_c, hd_c, hdd_c = Newmark_beta(
+                    F, h_c, hd_c, hdd_c, dt, m, c, k_phys,
+                )
+
+                h_s   = (h_c   - x_mean_t[idx_h])    / x_scale_t[idx_h]
+                hd_s  = (hd_c  - x_mean_t[idx_hdot]) / x_scale_t[idx_hdot]
+                hdd_s = (hdd_c - x_mean_t[idx_hddot]) / x_scale_t[idx_hddot]
+
+                new_row               = window[:, -1, :].clone()
+                new_row[:, idx_h]     = h_s
+                new_row[:, idx_hdot]  = hd_s
+                new_row[:, idx_hddot] = hdd_s
+                window = torch.cat([window[:, 1:, :], new_row.unsqueeze(1)], dim=1)
+
+    return total_loss
 
 
 def run_validation(model, loader, criterion, device):
@@ -295,13 +429,14 @@ def main() -> None:
     # ── Build dataset-specific GRU config ─────────────────────────────────
     cfg    = prepare_gru_config(dataset, config)
     ds = dataset.strip().lower()
-    if ds in {"cylinder1000", "cylinder_re_1000", "re1000"}:
-        cfg["input_cols"] = ["disp", "vel", "acc"]
+    if ds in {"cylinder1000", "cylinder_re_1000", "re1000", "re1000_disp","re1000_vel","re1000_acc","re1000_Rollout"}:
+        cfg["input_cols"] = ["disp","vel","acc"]
         cfg["use_ur_context"] = True
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}  |  seq_len={cfg['seq_len']}  "
           f"stride_train={cfg['stride_train']}")
+    print(f"input feature:s: {cfg['input_cols']}  |  use_ur_context={cfg['use_ur_context']}")
 
     # ── Load data ──────────────────────────────────────────────────────────
     if dataset == "bridge":
@@ -312,20 +447,15 @@ def main() -> None:
         )
         # Downsample bridge to reduce memory footprint
         raw_df = downsample(raw_df, cfg["bridge_downsample"])
-        # Apply CL correction using bridge fn/d_ref
-        raw_df = correct_cl_for_reference_velocity(raw_df, fn=cfg["bridge_fn_hz"], d_ref=cfg["bridge_D_ref"])
     else:
         raw_df = merge_dataframes(dataset=dataset)
         ds = dataset.strip().lower()
-        if ds in {"cylinder1000", "cylinder_re_1000", "re1000"}:
-            # Use cylinder1000 reference fn/d_ref
-            raw_df = correct_cl_for_reference_velocity(raw_df, fn=0.2, d_ref=cfg["cylinder1000_D_ref"])
 
     if raw_df.empty:
         print("No data found. Check data directories."); return
 
     params_Re1000 = None
-    if dataset in {"cylinder1000", "cylinder_re_1000", "re1000"}:
+    if dataset in {"cylinder1000", "cylinder_re_1000", "re1000", "re1000_disp","re1000_vel","re1000_acc"}:
         D = cfg["cylinder1000_D_ref"]; rho = 1.0; M_star = 2.0; fn=0.2
         omega_n = 2 * np.pi * fn
         cylinder_mass = M_star * rho * (np.pi * (D / 2) ** 2)

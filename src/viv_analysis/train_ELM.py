@@ -21,9 +21,9 @@ from viv_analysis.models.elm import (
     build_lookback_dataset,
     compute_lookback,
 )
-from viv_analysis.plot import plot_one_case
+from viv_analysis.plotting.plot import plot_one_case
 from viv_analysis.config import config, structural_params
-from viv_analysis.preprocess import merge_dataframes, compute_kinematics, correct_cl_for_reference_velocity
+from viv_analysis.preprocess import merge_dataframes, compute_kinematics
 from viv_analysis.evaluate import evaluate, Teacher_Forcing_rollout
 from viv_analysis.utils import PROJECT_ROOT, parse_ur_label
 
@@ -167,13 +167,6 @@ def prepare_data_bundle() -> dict:
     d_ref = config["cylinder1000_D_ref"]
 
     raw_df["ur"] = raw_df["case"].apply(parse_ur_label).astype("float32")
-
-    raw_df = correct_cl_for_reference_velocity(
-        raw_df,
-        fn=fn,
-        d_ref=d_ref,
-        u_ref_fluent=config["cylinder1000_U_inf"],
-    )
 
     cylinder1000_params = structural_params()
 

@@ -45,7 +45,6 @@ from viv_analysis.coupled_inference import warmup_history, run_coupled_viv
 from viv_analysis.models.gru import VIV_GRU
 from viv_analysis.preprocess import (
     compute_kinematics,
-    correct_cl_for_reference_velocity,
     merge_dataframes,
 )
 from viv_analysis.utils import format_ur_label
@@ -116,7 +115,6 @@ def _load_artifacts(dataset: str, device: str):
 def _load_cfd(dataset: str) -> pd.DataFrame:
     structural_params = _structural_params(6.0)  # dummy Ur for loading
     raw = merge_dataframes(dataset=dataset)
-    raw = correct_cl_for_reference_velocity(raw, fn=FN, d_ref=D)
     raw = compute_kinematics(raw, dataset=dataset, structural_params=structural_params)
     return raw
 

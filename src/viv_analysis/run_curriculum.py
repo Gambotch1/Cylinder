@@ -17,6 +17,11 @@ from viv_analysis.train_gru import (
 from viv_analysis.utils import PROJECT_ROOT
 
 
+
+
+
+
+
 def save_ckpt(path, model, optimizer, phase, epoch, rollout_k):
     torch.save(
         {
@@ -112,6 +117,16 @@ def main():
     cfg["use_ur_context"] = True
     use_ur_context = bool(cfg.get("use_ur_context", False))
 
+    artifact_dir = PROJECT_ROOT / "results" / f"gru_{dataset}"
+
+    # ── Load model + scalers + ur_stats ───────────────────────────────────
+    with open(artifact_dir / "ur_stats.pkl", "rb") as f:
+        ur_stats = pickle.load(f)
+    with open(artifact_dir / "x_scaler.pkl", "rb") as f:
+        x_scaler = pickle.load(f)
+    with open(artifact_dir / "y_scaler.pkl", "rb") as f:
+        y_scaler = pickle.load(f)
+
     # ── Load and preprocess ────────────────────────────────────────────────
     raw_df = merge_dataframes(dataset=dataset)
 
@@ -143,7 +158,6 @@ def main():
     assert set(train_df["case"].unique()) <= train_cases, \
         "train_df contains val/test cases — check split logic"
 
-    x_scaler, y_scaler = fit_scalers(train_df, input_cols, cfg["target_col"])
     train_df_s = apply_scalers_to_df(
         train_df, x_scaler, y_scaler, input_cols, cfg["target_col"])
     val_df_s   = apply_scalers_to_df(
@@ -156,8 +170,8 @@ def main():
         input_cols  = input_cols,
         release_time= release_time,
         use_ur_context = use_ur_context,
-        ur_mean     = 0.0,
-        ur_std      = 1.0,
+        ur_mean=  ur_stats["mean"],
+        ur_std= ur_stats["std"],
     )
 
     physics_kwargs = dict(
@@ -203,9 +217,9 @@ def main():
     # ── Curriculum (structural fix: actually call run_phase) ──────────────
     curriculum = [
         (1,  10),   # warm-up: identical to one-step baseline
-        # (2,   5),
-        # (5,   5),
-        # (10, 15),
+        (2,   5),
+        (5,   5),
+        (10, 15),
     ]
 
     for k, n_epochs in curriculum:

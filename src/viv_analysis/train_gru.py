@@ -42,9 +42,9 @@ def _cylinder_split(cases: list[str], release_t: float) -> tuple:
 
 
 def _cylinder1000_split(cases: list[str], release_t: float) -> tuple:
-    test  = { "Ur2", "Ur4.75", "Ur5.5",  "Ur7"}
-    val   = { "Ur3", "Ur4.25", "Ur5.25", "Ur6.5",  "Ur9"}
-    eliminate = { "Ur11", "Ur12","Ur10"}
+    test  = { "Ur11", "Ur4.75", "Ur5.5",  "Ur7"}
+    val   = { "Ur4.25", "Ur5.25", "Ur6.5",  "Ur9"}
+    eliminate = { "Ur2", "Ur2.5","Ur3"}
     train = set(cases) - test - val  - eliminate
     print("train (computed):", sorted(set(cases) - test - val - eliminate))
 

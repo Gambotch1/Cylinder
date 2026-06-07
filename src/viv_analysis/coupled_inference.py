@@ -480,9 +480,12 @@ def run_coupled_viv(
 
 def main(
     Ur: float = 6.0, # reduced velocity to simulate
-    dataset: str = "Cylinder1000", # dataset name for loading scalers and stats
+    cfd_dataset: str = "Cylinder1000", # dataset name for loading CFD data
+    model_dataset: str = "Cylinder1000", # dataset name for loading model artifacts
     total_time: float = 700.0, # total simulation time in seconds
     artifact_dir: Optional[Path] = None,
+    checkpoint: str = "gru_best.pt",
+    model_subdir: Optional[str] = None,
     ):
 
     
@@ -490,14 +493,19 @@ def main(
     print(f"Using device: {device}")
 
     if artifact_dir is None:
-        artifact_dir = PROJECT_ROOT / "results" / f"gru_{dataset}"
+        if model_subdir is not None:
+            artifact_dir = PROJECT_ROOT / "results" / model_subdir
+        else:
+            artifact_dir = PROJECT_ROOT / "results" / f"gru_{model_dataset}"
+        artifact_dir_base = PROJECT_ROOT / "results" / f"gru_{cfd_dataset}"
+
 
     # ── Load model + scalers + ur_stats ───────────────────────────────────
     with open(artifact_dir / "x_scaler.pkl", "rb") as f:
         x_scaler = pickle.load(f)
     with open(artifact_dir / "y_scaler.pkl", "rb") as f:
         y_scaler = pickle.load(f)
-    with open(artifact_dir / "ur_stats.pkl", "rb") as f:
+    with open(artifact_dir_base / "ur_stats.pkl", "rb") as f:
         ur_info = pickle.load(f)
 
 
@@ -548,22 +556,22 @@ def main(
     input_cols = ["disp", "vel", "acc"]
     input_size = len(input_cols) + (1 if use_ur_context else 0)
     hidden_size, num_layers = 64, 2
-    metrics_path = artifact_dir / "metrics_gru.json"
+    metrics_path = artifact_dir_base / "metrics_gru.json"
     if metrics_path.exists():
         with open(metrics_path, "r") as f:
             saved_metrics = json.load(f)
         hidden_size = saved_metrics["gru_config"].get("hidden_size", hidden_size)
         num_layers  = saved_metrics["gru_config"].get("num_layers", num_layers)
-        seq_len = saved_metrics["gru_config"].get("seq_len", 2000)
+        seq_len = saved_metrics["gru_config"].get("seq_len", 1000)
 
 
     # ── Load CFD trajectory at this Ur ────────────────────────────────────
     print(f"\nLoading CFD trajectory at Ur={Ur} for warm-start...")
-    raw_df = merge_dataframes(dataset=dataset)
+    raw_df = merge_dataframes(dataset=cfd_dataset)
     if raw_df.empty:
         raise RuntimeError("Could not load CFD data for warmup.")
     # Correct CL normalization if Fluent used a different reference velocity
-    raw_df = compute_kinematics(raw_df,dataset= dataset, structural_params=params_Re1000)
+    raw_df = compute_kinematics(raw_df,dataset= cfd_dataset, structural_params=params_Re1000)
 
     case_label = format_ur_label(Ur)
     case_df = raw_df[raw_df["case"] == case_label].copy()
@@ -609,7 +617,13 @@ def main(
 
     model = VIV_GRU(input_size=input_size, hidden_size=hidden_size, 
                     num_layers=num_layers, dropout=0.1).to(device)
-    model.load_state_dict(torch.load(artifact_dir / "gru_best.pt", map_location=device))
+    
+    # Load checkpoint: handle both training checkpoints (with 'model' key) and raw state_dicts
+    ckpt = torch.load(artifact_dir / checkpoint, map_location=device)
+    if isinstance(ckpt, dict) and "model" in ckpt:
+        model.load_state_dict(ckpt["model"])
+    else:
+        model.load_state_dict(ckpt)
 
     print(f"Model loaded: input_size={input_size}  hidden_size={hidden_size}")
 
@@ -668,7 +682,7 @@ def main(
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
 
-    diag_png = PROJECT_ROOT / "results" / f"diagnostic_tf_vs_coupled_Ur_{Ur}.png"
+    diag_png = PROJECT_ROOT / "results" / f"diagnostic_tf_vs_coupled_Ur_{Ur}_{checkpoint}.png"
     fig.savefig(diag_png, dpi=150)
     plt.close(fig)
     print(f"Saved diagnostic plot to {diag_png}")
@@ -716,7 +730,7 @@ def main(
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    replay_png = PROJECT_ROOT / "results" / f"diagnostic_newmark_replay_Ur_{Ur}.png"
+    replay_png = PROJECT_ROOT / "results" / f"diagnostic_newmark_replay_Ur_{Ur}_{checkpoint}.png"
     fig.savefig(replay_png, dpi=150)
     plt.close(fig)
 
@@ -791,7 +805,7 @@ def main(
     axes[3].grid(True, alpha=0.3)
 
 
-    out_png = PROJECT_ROOT / "results" / f"coupled_viv_Ur_{Ur}_3.png"
+    out_png = PROJECT_ROOT / "results" / f"coupled_viv_Ur_{Ur}_{checkpoint}.png"
     out_png.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_png, dpi=150)
     plt.close(fig)
@@ -808,12 +822,22 @@ def main(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--Ur",type=float, default=6.0)
-    parser.add_argument("--dataset", type=str, default="cylinder1000")
     parser.add_argument("--total_time", type=float, default=700.0)
+    parser.add_argument("--cfd_dataset", type=str, default="cylinder1000",
+                    help="Dataset key for loading CFD data")
+    parser.add_argument("--model_dataset", type=str, default="cylinder_re_1000",
+                    help="Dataset key for loading model artifacts")
+    parser.add_argument("--checkpoint", type=str, default="gru_best.pt",
+                    help="Checkpoint filename within model artifact_dir")
+    parser.add_argument("--model_subdir", type=str, default=None,
+                    help="Override: full subdir name like 'gru_rollout_cylinder_re_1000'")
     args = parser.parse_args()
     main(
         Ur=args.Ur,
-        dataset=args.dataset,
         total_time=args.total_time,
+        cfd_dataset=args.cfd_dataset,
+        model_dataset=args.model_dataset,
+        checkpoint=args.checkpoint,
+        model_subdir=args.model_subdir
     )
     

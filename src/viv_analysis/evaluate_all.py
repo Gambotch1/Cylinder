@@ -16,11 +16,12 @@ from viv_analysis.config import config
 
 # Configuration: (model_subdir, checkpoint_file, label)
 CONFIGS = [
-    ("gru_cylinder_re_1000",         "gru_best.pt",       "baseline"),
-    ("gru_rollout_cylinder_re_1000", "gru_rollout_k1.pt", "k1"),
-    ("gru_rollout_cylinder_re_1000", "gru_rollout_k2.pt", "k2"),
-    ("gru_rollout_cylinder_re_1000", "gru_rollout_k5.pt", "k5"),
-    ("gru_rollout_cylinder_re_1000", "gru_rollout_k10.pt", "k10"),
+    #("gru_cylinder_re_1000",         "gru_best.pt",       "baseline"),
+    #("gru_rollout_cylinder_re_1000", "gru_rollout_k1.pt", "k1"),
+    #("gru_rollout_cylinder_re_1000", "gru_rollout_k2.pt", "k2"),
+    #("gru_rollout_cylinder_re_1000", "gru_rollout_k5.pt", "k5"),
+    #("gru_rollout_cylinder_re_1000", "gru_rollout_k10.pt", "k10"),
+    ("gru_cylinder_re_1000_noise0.05", "gru_best.pt", "noise0.05"),
 ]
 
 Ur_LIST = [5.0, 5.5, 6.0, 6.5, 7.0]

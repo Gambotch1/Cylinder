@@ -5,11 +5,15 @@ import numpy as np
 config = {
     # ── Dataset reference parameters ──────────────────────────────────────
     "bridge_D_ref":       7.42,   # deck depth [m]
+    "bridge_B_ref":       25.9,   # deck width [m]
     "bridge_fn_hz":       0.32,   # natural frequency [Hz]
     "bridge_t_star_release": 20.0,
-    "bridge_downsample":  10,     # keep every 10th step (dt_eff = 0.002s)
-    "bridge_seq_len":     2000,    # after downsampling: ~1.8s of history
+    "bridge_downsample":  20,     # keep every 10th step (dt_eff = 0.002s)
+    "bridge_seq_len":     2500,    # after downsampling: ~1.8s of history
     "bridge_stride_train": 5,
+    "bridge_zeta":          0.01,  # structural damping ratio (assumed)
+    "bridge_rho":           1.225,  # air density [kg/m^3]
+    "bridge_mass":          24604.0,    # mass per unit span [kg/m]
 
     "cylinder_D_ref":     1.0,    # Re=200 cylinder diameter [m]
     "cylinder_dt":        0.02,   # Re=200 timestep [s]
@@ -33,7 +37,7 @@ config = {
     "lr":            1e-3,
     "weight_decay":  1e-5,
     "n_epochs":      100,
-    "batch_size":    256,
+    "batch_size":    512,
     "patience":      15,
 
     # ── Seq len and stride (set per dataset at runtime) ────────────────────
@@ -84,13 +88,10 @@ def prepare_gru_config(dataset: str, cfg: dict) -> dict:
         out["use_ur_context"] = True
 
     elif ds == "bridge":
-        # After 10x downsampling dt_eff=0.002s
-        # 2 cycles at Ur≈10.6: T=Ur*D/U≈10.6*7.42/17=4.6s, 2T=9.2s, /0.002=4600
-        # Cap at 2000 for memory; covers ~1.8s which is ~0.4 cycles at Ur=10
-        out["seq_len"]      = 2000
+        out["seq_len"]      = 2500
         out["stride_train"] = 5
         out["hidden_size"]  = cfg["hidden_size"]
-        out["use_ur_context"] = False
+        out["use_ur_context"] = True
 
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
@@ -120,3 +121,22 @@ def structural_params() -> dict:
         }
     
     return params_Re1000
+
+def bridge_structural_params() -> dict:
+    rho = config['bridge_rho']
+    D   = config['bridge_D_ref']
+    fn  = config['bridge_fn_hz']
+    m   = config['bridge_mass']
+
+    zeta   = config['bridge_zeta']
+    omega_n = 2.0 * np.pi * fn
+    k = m * omega_n**2
+    c = 2.0 * m * omega_n * zeta
+
+    params_bridge = {
+            "c": c,              # N*s/m (legacy key)
+            "k": k,                    # N/m (legacy key)
+            "m": m,                    # N/m (per unit span)
+        }
+    
+    return params_bridge

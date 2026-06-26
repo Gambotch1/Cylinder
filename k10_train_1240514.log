@@ -1,0 +1,8 @@
+Starting LSF Control Job on node: makalu88
+Using device: cuda
+Loaded scalers and UR stats: use_ur_context=Truemean=7.3045, std=1.4560
+y_scaler: mean=0.097555  scale=0.265595
+[bridge] Ur=6.7385  U=15.9999 m/s  fn=0.32  D(Ur,rel,h/D)=7.42  B(force)=25.9
+  m=2.460400e+04  c=9.893855e+02  k=9.946388e+04  rho=1.225  t_release=9.2751s
+
+Loading CFD trajectory at Ur=6.7385 for warm-start...

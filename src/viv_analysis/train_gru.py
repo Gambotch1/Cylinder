@@ -6,6 +6,7 @@ import json
 import pickle
 import sys
 from pathlib import Path
+import os
 
 import matplotlib
 
@@ -21,7 +22,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score
 from torch.utils.data import DataLoader
 
-from viv_analysis.config import config, prepare_gru_config
+from viv_analysis.config import bridge_structural_params, config, prepare_gru_config, structural_params
 from viv_analysis.preprocess import merge_dataframes, compute_kinematics, downsample
 from viv_analysis.models.gru import VIV_GRU, VIVSequenceDataset, apply_scalers_to_df, fit_scalers
 from viv_analysis.evaluate import evaluate
@@ -59,8 +60,27 @@ def _cylinder1000_split(cases: list[str], release_t: float) -> tuple:
 
 def _bridge_split(cases: list[str], fn_hz: float,
                   d_ref: float, t_star_release: float) -> tuple:
-    """Dynamic split for bridge: 60% train, 20% val, 20% test."""
-    ordered = sorted(cases, key=lambda c: float(c[2:]))
+    """
+    Split bridge cases (60/20/20) with release time from the UDF law
+    t_release = t* * D / U,  U = Ur * fn_hz * D.
+
+    Cases MUST arrive as canonical Ur labels (merge_dataframes called with
+    convert_bridge_to_ur=True). parse_ur_label raises on a raw-speed label —
+    that is the loud guard against the speed-vs-Ur double-convert that would
+    otherwise put every release time ~3.5x off, silently.
+    """
+    # hard guard: labels must be Ur, not raw speed
+    for c in cases:
+        try:
+            parse_ur_label(c)
+        except ValueError as e:
+            raise ValueError(
+                f"_bridge_split got non-Ur label '{c}'. Cases must be Ur-labelled "
+                f"(merge_dataframes(dataset='bridge', ..., convert_bridge_to_ur=True)). "
+                f"A raw-speed label here double-converts U and corrupts release times."
+            ) from e
+
+    ordered = sorted(cases, key=parse_ur_label)
     n       = len(ordered)
     n_test  = max(1, round(0.20 * n))
     n_val   = max(1, round(0.20 * n))
@@ -75,14 +95,17 @@ def _bridge_split(cases: list[str], fn_hz: float,
     val   = {remaining[i] for i in val_idx}
     train = set(cases) - test - val
 
-    # Physical release time per case: t_release = t* * D / U
-    # where U = Ur * fn_hz * d_ref
+    # Release time per case from the UDF law (D = d_ref = 7.42 for the bridge).
     rt = {}
     for case in cases:
-        ur = float(case[2:])
-        U  = ur * fn_hz * d_ref
+        ur = parse_ur_label(case)
+        U  = ur * fn_hz * d_ref               # recovers the wind speed
+        if not (1.0 < U < 100.0):
+            raise ValueError(
+                f"Recovered U={U:.2f} m/s for '{case}' is outside the plausible "
+                f"bridge sweep — likely a unit/double-convert error.")
         rt[case] = float(t_star_release * d_ref / U)
-
+        print(f"  case={case}  Ur={ur:.4f}  U={U:.4f} m/s  t_release={rt[case]:.4f}s")
     return train, val, test, rt
 
 
@@ -105,11 +128,14 @@ def split_cases(cases: list[str], dataset: str,
 
 # ── Training utilities ─────────────────────────────────────────────────────────
 
-def train_one_epoch(model, loader, optimizer, criterion, device) -> float:
+def train_one_epoch(model, loader, optimizer, criterion, device, input_noise_std=0.0):
     model.train()
     total = 0.0
     for x_b, y_b, _ in loader:
         x_b, y_b = x_b.to(device), y_b.to(device)
+        if input_noise_std > 0.0:
+            x_b = x_b.clone()
+            x_b[..., :3] = x_b[..., :3] + torch.randn_like(x_b[..., :3]) * input_noise_std
         optimizer.zero_grad()
         pred, _ = model(x_b)
         loss = criterion(pred, y_b)
@@ -248,7 +274,7 @@ def _rollout_loss_k(
                 new_row[:, idx_hddot] = hdd_s
                 window = torch.cat([window[:, 1:, :], new_row.unsqueeze(1)], dim=1)
 
-    return total_loss
+    return total_loss / rollout_k
 
 
 def run_validation(model, loader, criterion, device):
@@ -329,6 +355,7 @@ def teacher_forcing_rollout(
     with torch.no_grad():
         for i in range(start, len(ordered)):
             w = signal[i - seq_len : i]
+            w = np.array(w, copy=True)
             x = torch.from_numpy(w).unsqueeze(0).to(device)
             p, _ = model(x)
             preds.append(p.item())
@@ -432,6 +459,9 @@ def main() -> None:
     if ds in {"cylinder1000", "cylinder_re_1000", "re1000", "re1000_disp","re1000_vel","re1000_acc","re1000_Rollout"}:
         cfg["input_cols"] = ["disp","vel","acc"]
         cfg["use_ur_context"] = True
+    elif ds == "bridge":
+        cfg["input_cols"] = ["disp","vel","acc"]
+        cfg["use_ur_context"] = True
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}  |  seq_len={cfg['seq_len']}  "
@@ -456,25 +486,42 @@ def main() -> None:
 
     params_Re1000 = None
     if dataset in {"cylinder1000", "cylinder_re_1000", "re1000", "re1000_disp","re1000_vel","re1000_acc"}:
-        D = cfg["cylinder1000_D_ref"]; rho = 1.0; M_star = 2.0; fn=0.2
-        omega_n = 2 * np.pi * fn
-        cylinder_mass = M_star * rho * (np.pi * (D / 2) ** 2)
-        damper_cylinder = cylinder_mass * 2 * omega_n * 0.007
-        stiffness = cylinder_mass * omega_n ** 2
-        params_Re1000 = {
-            "m": cylinder_mass,                 # kg/m (legacy key)
-            "c": damper_cylinder,              # N*s/m (legacy key)
-            "k": stiffness,                    # N/m (legacy key)
-            "cylinder_mass": cylinder_mass,    # kg/m
-            "c_struct": damper_cylinder,       # N*s/m
-            "k_struct": stiffness,             # N/m
-        }
+        params_Re1000 = structural_params()
 
+    params_bridge = None
+    if dataset in {"bridge"}:
+        params_bridge = bridge_structural_params()
+    
     # debug
     print("raw_df type:", type(raw_df))
     print("raw_df head:", getattr(raw_df, "head", lambda: None)())
 
-    raw_df    = compute_kinematics(raw_df, dataset=dataset, structural_params=params_Re1000)
+    if dataset in {"bridge"}:
+        raw_df = compute_kinematics(raw_df, dataset=dataset, bridge_structural_params=params_bridge)
+    else:
+        raw_df    = compute_kinematics(raw_df, dataset=dataset, structural_params=params_Re1000)
+
+    # ── Quarantine truncated / non-converged bridge cases ──────────────────
+    if dataset == "bridge":
+        sizes = raw_df.groupby("case").size().sort_values()
+        print("\nPer-case length (post-downsample):")
+        print(sizes.to_string())
+        # Conservative default: drop cases under HALF the median length.
+        # READ the print above on the first run; tune these two if a borderline
+        # case should be kept/dropped, then rerun.
+        BRIDGE_MIN_FRAC  = 0.05
+        BRIDGE_ELIMINATE = set()      # explicit labels to force-drop, e.g. {"Ur5.48"}
+        med  = float(sizes.median())
+        drop = set(sizes[sizes < BRIDGE_MIN_FRAC * med].index) | \
+               (BRIDGE_ELIMINATE & set(sizes.index))
+        if drop:
+            print(f"\nQuarantining {len(drop)} case(s) "
+                  f"(< {BRIDGE_MIN_FRAC:.0%} of median {med:.0f} rows, or explicit): "
+                  f"{sorted(drop)}")
+            raw_df = raw_df[~raw_df['case'].isin(drop)].copy()
+        else:
+            print("\nNo cases quarantined.")
+
     all_cases = sorted(str(c) for c in raw_df["case"].drop_duplicates())
     print(f"Cases loaded: {all_cases}")
 
@@ -496,6 +543,11 @@ def main() -> None:
     print(f"x_scaler: mean={x_scaler.mean_} scale={x_scaler.scale_}")
     print(f"y_scaler ({cfg['target_col']}): "
           f"mean={float(y_scaler.mean_[0]):.6f} scale={float(y_scaler.scale_[0]):.6f}")
+    
+    noise_std = float(os.getenv("VIV_INPUT_NOISE", "0.0"))
+    suffix = f"_noise{noise_std}" if noise_std > 0 else ""
+    OUTPUT_DIR = ROOT_DIR / "results" / f"gru_{dataset}{suffix}"
+    print(f"input_noise_std = {noise_std}")
 
 
     train_df_s = apply_scalers_to_df(train_df, x_scaler, y_scaler, cfg["input_cols"], cfg["target_col"])
@@ -532,8 +584,9 @@ def main() -> None:
     
 
     batch_size = int(cfg["batch_size"])
-    num_workers = 14
-    pin_memory = False
+    default_workers = max(0, (os.cpu_count() or 4) - 2)
+    num_workers = int(os.getenv("VIV_NUM_WORKERS", str(min(20, default_workers))))
+    pin_memory = True
     train_loader = DataLoader( train_ds, batch_size=batch_size,
                                 shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
     val_loader   = DataLoader(val_ds, batch_size=batch_size,
@@ -566,7 +619,8 @@ def main() -> None:
 
     print(f"\nTraining for up to {cfg['n_epochs']} epochs...")
     for epoch in range(1, cfg["n_epochs"] + 1):
-        tl = train_one_epoch(model, train_loader, optimizer, criterion, device)
+        tl = train_one_epoch(model, train_loader, optimizer, criterion, device,
+                     input_noise_std=noise_std)
         vl, vp, vt, _ = run_validation(model, val_loader, criterion, device)
         scheduler.step(vl)
         train_losses.append(tl); val_losses.append(vl)
@@ -593,6 +647,7 @@ def main() -> None:
     if best_state is None:
         raise RuntimeError("Training failed to produce a best model state.")
 
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     model.load_state_dict(best_state)
     torch.save(best_state, OUTPUT_DIR / "gru_best.pt")
     print(f"Best model saved (val_loss={best_val_loss:.5f})")

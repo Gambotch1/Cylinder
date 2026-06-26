@@ -10,7 +10,7 @@ from viv_analysis.models.gru import VIV_GRU
 import pickle
 import matplotlib.pyplot as plt
 
-from viv_analysis.preprocess import compute_kinematics, merge_dataframes
+from viv_analysis.preprocess import compute_kinematics, merge_dataframes, downsample
 from viv_analysis.utils import PROJECT_ROOT
 from viv_analysis.utils import format_ur_label
 from viv_analysis.config import config
@@ -115,6 +115,7 @@ def diagnostic_teacher_forcing_vs_coupled(
     rho,
     U,
     D,
+    B,
     dt,
     use_ur_context,
     ur_value,
@@ -179,6 +180,7 @@ def diagnostic_teacher_forcing_vs_coupled(
         rho=rho,
         U=U,
         D=D,
+        B=B,
         dt=dt,
         n_steps=n_steps,
         use_ur_context=use_ur_context,
@@ -257,7 +259,8 @@ def diagnostic_true_force_newmark_replay(
     rho,
     U,
     D,
-    dt,
+    B=None,
+    dt=None,
     force_timing: str = "current",
 ):
     """
@@ -277,6 +280,10 @@ def diagnostic_true_force_newmark_replay(
     cfd_cl = ordered["cl"].to_numpy(dtype=np.float64)
     times = ordered["time"].to_numpy(dtype=np.float64)
 
+    B = D if B is None else B
+    if dt is None:
+        raise ValueError("dt must be provided for diagnostic_true_force_newmark_replay")
+
     h = np.zeros(n_steps + 1, dtype=np.float64)
     v = np.zeros(n_steps + 1, dtype=np.float64)
     a = np.zeros(n_steps + 1, dtype=np.float64)
@@ -285,7 +292,7 @@ def diagnostic_true_force_newmark_replay(
     v[0] = cfd_v[handoff_idx]
     a[0] = cfd_a[handoff_idx]
 
-    qD = 0.5 * rho * U**2 * D
+    qD = 0.5 * rho * U**2 * B
 
     for j in range(n_steps):
         if force_timing == "current":
@@ -361,8 +368,9 @@ def run_coupled_viv(
     rho:          float,   # fluid density [kg/m³]
     U:            float,   # freestream velocity [m/s]
     D:            float,   # reference depth [m]
-    dt:           float,   # timestep [s]
     n_steps:      int,     # total timesteps to simulate
+    B:          float = None,   # reference span [m]
+    dt:           float = None,   # timestep [s]
     use_ur_context: bool = False,
     ur_value:     float = 0.0,
     ur_stats:     tuple   = (0.0, 1.0),
@@ -378,6 +386,9 @@ def run_coupled_viv(
     This is the 2-way FSI loop described in the thesis.
     """
     model.eval()
+    B = D if B is None else B
+    if dt is None:
+        raise ValueError("dt must be provided for run_coupled_viv")
 
     # State vectors
     h      = np.zeros(n_steps + 1, dtype=np.float32)  # displacement
@@ -418,7 +429,7 @@ def run_coupled_viv(
             CL[i] = cl
 
             # ── Step 2: compute aerodynamic force ─────────────────────
-            F_aero = 0.5 * rho * U**2 * D * cl
+            F_aero = 0.5 * rho * U**2 * B * cl
 
             h[i+1], h_dot[i+1], h_ddot[i+1] = Newmark_beta(
                 F=F_aero,
@@ -480,33 +491,37 @@ def run_coupled_viv(
 
 def main(
     Ur: float = 6.0, # reduced velocity to simulate
-    cfd_dataset: str = "Cylinder1000", # dataset name for loading CFD data
+    cfd_dataset: str = "cylinder1000", # dataset name for loading CFD data
     model_dataset: str = "Cylinder1000", # dataset name for loading model artifacts
     total_time: float = 700.0, # total simulation time in seconds
-    artifact_dir: Optional[Path] = None,
     checkpoint: str = "gru_best.pt",
     model_subdir: Optional[str] = None,
+    handoff_offset_steps: int = 2000,
     ):
 
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    if artifact_dir is None:
-        if model_subdir is not None:
-            artifact_dir = PROJECT_ROOT / "results" / model_subdir
-        else:
-            artifact_dir = PROJECT_ROOT / "results" / f"gru_{model_dataset}"
-        artifact_dir_base = PROJECT_ROOT / "results" / f"gru_{cfd_dataset}"
 
+    if model_subdir is not None:
+        artifact_dir = PROJECT_ROOT / "results" / model_subdir
+    else:
+        artifact_dir = PROJECT_ROOT / "results" / f"gru_{model_dataset}"
+        artifact_dir_base = PROJECT_ROOT / "results" / f"gru_{cfd_dataset}"
+    
 
     # ── Load model + scalers + ur_stats ───────────────────────────────────
     with open(artifact_dir / "x_scaler.pkl", "rb") as f:
         x_scaler = pickle.load(f)
     with open(artifact_dir / "y_scaler.pkl", "rb") as f:
         y_scaler = pickle.load(f)
-    with open(artifact_dir_base / "ur_stats.pkl", "rb") as f:
-        ur_info = pickle.load(f)
+    if model_subdir is not None:
+        with open(artifact_dir / "ur_stats.pkl", "rb") as f:
+            ur_info = pickle.load(f)
+    else:
+        with open(artifact_dir_base / "ur_stats.pkl", "rb") as f:
+            ur_info = pickle.load(f)
 
 
 
@@ -521,42 +536,46 @@ def main(
 
 
     # ── Physical parameters — must match UDF exactly ───────────────────────
-    rho = 1.0
-    D   = config['cylinder1000_D_ref']
-    fn  = 0.2
-    U   = Ur * fn * D
-    M_star = 2.0
-    zeta   = 0.007
-    m = M_star * rho * (np.pi * D**2 / 4.0)
-    omega_n = 2.0 * np.pi * fn
-    k = m * omega_n**2
-    c = 2.0 * m * omega_n * zeta
-    print(f"Ur={Ur}  U={U:.4f} m/s  fn={fn:.4f} Hz")
-    print(f"m={m:.6f} kg/m  k={k:.6f}  c={c:.6f}")
+    ds = cfd_dataset.strip().lower()
+    params_Re1000 = None; bsp = None
+    if ds == "bridge":
+        from viv_analysis.config import bridge_structural_params
+        bsp = bridge_structural_params()
+        m, c, k = bsp["m"], bsp["c"], bsp["k"]
+        rho = config["bridge_rho"]
+        fn  = config["bridge_fn_hz"]
+        D   = config["bridge_D_ref"]
+        B   = config["bridge_B_ref"]
+        t_star_release = config["bridge_t_star_release"]
+        dt  = None
+    else:
+        rho = 1.0
+        D   = config['cylinder1000_D_ref']
+        B   = D
+        fn  = 0.2
+        M_star, zeta = 2.0, 0.007
+        m = M_star * rho * (np.pi * D**2 / 4.0)
+        k = m * (2*np.pi*fn)**2
+        c = 2.0 * m * (2*np.pi*fn) * zeta
+        t_star_release = 80.0
+        dt = 0.005
+        params_Re1000 = {"m": m, "c": c, "k": k,
+                         "cylinder_mass": m, "c_struct": c, "k_struct": k}
 
-    print(f"Expected steady-state period: {1/fn:.3f} s")
-
-    params_Re1000 = {
-            "m": m,                 # kg/m (legacy key)
-            "c": c,              # N*s/m (legacy key)
-            "k": k,                    # N/m (legacy key)
-            "cylinder_mass": m,    # kg/m
-            "c_struct": c,       # N*s/m
-            "k_struct": k,             # N/m
-        }
-
-    # ── Simulation setup ───────────────────────────────────────────────────
-    t_star_release = 80.0
+    U = Ur * fn * D
     t_release = t_star_release * D / U
-    dt = 0.005
-    print(f"t_release={t_release:.4f}s")
+    print(f"[{ds}] Ur={Ur}  U={U:.4f} m/s  fn={fn}  D(Ur,rel,h/D)={D}  B(force)={B}")
+    print(f"  m={m:.6e}  c={c:.6e}  k={k:.6e}  rho={rho}  t_release={t_release:.4f}s")
 
 
     # ── Build model (read hidden_size from saved metrics) ─────────────────
     input_cols = ["disp", "vel", "acc"]
     input_size = len(input_cols) + (1 if use_ur_context else 0)
     hidden_size, num_layers = 64, 2
-    metrics_path = artifact_dir_base / "metrics_gru.json"
+    if model_subdir is not None:
+        metrics_path = artifact_dir / "metrics_gru.json"
+    else:
+        metrics_path = artifact_dir_base / "metrics_gru.json"
     if metrics_path.exists():
         with open(metrics_path, "r") as f:
             saved_metrics = json.load(f)
@@ -567,11 +586,18 @@ def main(
 
     # ── Load CFD trajectory at this Ur ────────────────────────────────────
     print(f"\nLoading CFD trajectory at Ur={Ur} for warm-start...")
-    raw_df = merge_dataframes(dataset=cfd_dataset)
+    if ds == "bridge":
+        raw_df = merge_dataframes(dataset="bridge", fn_hz=fn, d_ref=D)
+        raw_df = downsample(raw_df, config["bridge_downsample"])
+    else:
+        raw_df = merge_dataframes(dataset=cfd_dataset)
     if raw_df.empty:
         raise RuntimeError("Could not load CFD data for warmup.")
     # Correct CL normalization if Fluent used a different reference velocity
-    raw_df = compute_kinematics(raw_df,dataset= cfd_dataset, structural_params=params_Re1000)
+    if ds == "bridge":
+        raw_df = compute_kinematics(raw_df, dataset="bridge", bridge_structural_params=bsp)
+    else:
+        raw_df = compute_kinematics(raw_df, dataset=cfd_dataset, structural_params=params_Re1000)
 
     case_label = format_ur_label(Ur)
     case_df = raw_df[raw_df["case"] == case_label].copy()
@@ -580,6 +606,11 @@ def main(
         raise ValueError(f"No CFD data found for case '{case_label}'."
                         f"Available cases: {available_cases}")
     print(f"  CFD trajectory has {len(case_df)} steps")
+
+    if dt is None:
+        tt = np.sort(np.unique(case_df["time"].to_numpy(dtype=np.float64)))
+        dt = float(np.median(np.diff(tt)))
+        print(f"  [bridge] Newmark dt = {dt:.6f}s  ({(1/fn)/dt:.0f} steps/cycle)")
  
     
     initial_history, initial_state, t_handoff, handoff_idx = warmup_history(
@@ -591,7 +622,7 @@ def main(
         use_ur_context=use_ur_context,
         ur_value=Ur,
         ur_stats=(ur_mean, ur_std),
-        handoff_offset_steps=2000,
+        handoff_offset_steps=handoff_offset_steps,
 
         
     )
@@ -658,6 +689,7 @@ def main(
         rho=rho,
         U=U,
         D=D,
+        B=B,
         dt=dt,
         use_ur_context=use_ur_context,
         ur_value=Ur,
@@ -682,10 +714,10 @@ def main(
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
 
-    diag_png = PROJECT_ROOT / "results" / f"diagnostic_tf_vs_coupled_Ur_{Ur}_{checkpoint}.png"
+    diag_png = PROJECT_ROOT / "results" / f"diagnostic_tf_vs_coupled_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}.png"
     fig.savefig(diag_png, dpi=150)
     plt.close(fig)
-    print(f"Saved diagnostic plot to {diag_png}")
+    print(f"Saved diagnostic plot to {diag_png}_{checkpoint}")
 
 
     replay_current = diagnostic_true_force_newmark_replay(
@@ -698,6 +730,7 @@ def main(
         rho=rho,
         U=U,
         D=D,
+        B=B,
         dt=dt,
         force_timing="current",
     )
@@ -712,6 +745,7 @@ def main(
         rho=rho,
         U=U,
         D=D,
+        B=B,
         dt=dt,
         force_timing="next",
     )
@@ -730,11 +764,11 @@ def main(
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    replay_png = PROJECT_ROOT / "results" / f"diagnostic_newmark_replay_Ur_{Ur}_{checkpoint}.png"
+    replay_png = PROJECT_ROOT / "results" / f"diagnostic_newmark_replay_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}.png"
     fig.savefig(replay_png, dpi=150)
     plt.close(fig)
 
-    print(f"Saved Newmark replay diagnostic to {replay_png}")
+    print(f"Saved Newmark replay diagnostic to {replay_png}_{checkpoint}")
 
     # ── Run coupled inference ─────────────────────────────────────────────
     n_steps = int((total_time - t_handoff) / dt)
@@ -754,6 +788,7 @@ def main(
         rho          = rho,
         U            = U,
         D            = D,
+        B            = B,
         dt           = dt,
         n_steps      = n_steps,
         device       = device,
@@ -766,7 +801,7 @@ def main(
     t    = result["time"] + t_handoff
     h    = result["displacement"]
     CL   = result["CL"]
-    FL   = 0.5 * rho * U**2 * D * CL
+    FL   = 0.5 * rho * U**2 * B * CL
 
     # ── Plot: GRU result alongside CFD ground truth for comparison ────────
     CFD_t = case_df["time"].values
@@ -805,7 +840,7 @@ def main(
     axes[3].grid(True, alpha=0.3)
 
 
-    out_png = PROJECT_ROOT / "results" / f"coupled_viv_Ur_{Ur}_{checkpoint}.png"
+    out_png = PROJECT_ROOT / "results" / f"coupled_viv_Ur_{Ur}_{checkpoint}_offset_{handoff_offset_steps}.png"
     out_png.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_png, dpi=150)
     plt.close(fig)
@@ -822,7 +857,7 @@ def main(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--Ur",type=float, default=6.0)
-    parser.add_argument("--total_time", type=float, default=700.0)
+    parser.add_argument("--total_time", type=float, default=500.0)
     parser.add_argument("--cfd_dataset", type=str, default="cylinder1000",
                     help="Dataset key for loading CFD data")
     parser.add_argument("--model_dataset", type=str, default="cylinder_re_1000",
@@ -831,6 +866,9 @@ if __name__ == "__main__":
                     help="Checkpoint filename within model artifact_dir")
     parser.add_argument("--model_subdir", type=str, default=None,
                     help="Override: full subdir name like 'gru_rollout_cylinder_re_1000'")
+    parser.add_argument("--handoff_offset", type=int, default=2000,
+                    help="CFD steps past (release+seq_len) for handoff. "
+                         "Default 2000 = existing sweep; vary for noise floor.")
     args = parser.parse_args()
     main(
         Ur=args.Ur,
@@ -838,6 +876,7 @@ if __name__ == "__main__":
         cfd_dataset=args.cfd_dataset,
         model_dataset=args.model_dataset,
         checkpoint=args.checkpoint,
-        model_subdir=args.model_subdir
+        model_subdir=args.model_subdir,
+        handoff_offset_steps=args.handoff_offset
     )
     

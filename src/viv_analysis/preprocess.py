@@ -7,6 +7,7 @@ import os
 import re
 from scipy.signal import savgol_filter
 from viv_analysis.utils import PROJECT_ROOT, format_ur_label, parse_ur_label
+from viv_analysis.config import config
 
 
 DIR = PROJECT_ROOT
@@ -28,8 +29,10 @@ CYLINDER_RE1000_FY_DIR   = CYLINDER_RE1000_ROOT / "force"
 
 # Bridge
 BRIDGE_DISP_DIR = DIR / "data" / "Bridge" / "disp"
-BRIDGE_CM_DIR   = DIR / "data" / "Bridge" / "CM"
-BRIDGE_CL_DIR   = DIR / "data" / "Bridge" / "CL"
+BRIDGE_CM_DIR   = DIR / "data" / "Bridge" / "cm"
+BRIDGE_CL_DIR   = DIR / "data" / "Bridge" / "cl"
+BRIDGE_VEL_DIR  = DIR / "data" / "Bridge" / "vel"
+BRIDGE_FY_DIR   = DIR / "data" / "Bridge" / "force"
 
 BASE_DTYPES  = {"step": "int32", "time": "float32"}
 VALUE_DTYPE  = "float32"
@@ -165,9 +168,8 @@ def downsample(df: pd.DataFrame, every_n: int) -> pd.DataFrame:
     """Keep every nth row per case, preserving case boundaries."""
     if every_n <= 1:
         return df.copy()
-    return (df.groupby("case", group_keys=False)
-              .apply(lambda g: g.iloc[::every_n])
-              .reset_index(drop=True))
+    pos = df.groupby("case", sort=False).cumcount()
+    return df[pos % every_n == 0].reset_index(drop=True)
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -228,25 +230,38 @@ def merge_dataframes(
 
 
 def _load_force(dataset: str) -> dict[str, pd.DataFrame]:
-
     ds = dataset.strip().lower()
-    if ds not in {"cylinder1000", "cylinder_re_1000", "re1000", "cylinder-re-1000"}:
+    if ds not in {"cylinder1000", "cylinder_re_1000", "re1000", "cylinder-re-1000", "bridge"}:
         return {}
-    
+
     out = {}
+    if ds == "bridge":
+        # Bridge vel-/force- files are labelled by RAW SPEED ('force-16.out' -> '16').
+        # merge_dataframes converted disp/cd/cl to Ur labels, so convert these the SAME
+        # way or the merge in compute_kinematics matches nothing and silently Savgols.
+        fn_hz = float(config["bridge_fn_hz"]); d_ref = float(config["bridge_D_ref"])
+        if BRIDGE_VEL_DIR.exists():
+            v = read_out_directory(BRIDGE_VEL_DIR, "vel")
+            if not v.empty:
+                out["vel"] = _normalize_bridge_cases_to_ur(v, fn_hz=fn_hz, d_ref=d_ref)
+        if BRIDGE_FY_DIR.exists():
+            fdf = read_out_directory(BRIDGE_FY_DIR, "force")
+            if not fdf.empty:
+                out["force"] = _normalize_bridge_cases_to_ur(fdf, fn_hz=fn_hz, d_ref=d_ref)
+        return out
+
     if CYLINDER_RE1000_VEL_DIR.exists():
-        vel_df = read_out_directory(CYLINDER_RE1000_VEL_DIR, "vel")
-        if not vel_df.empty:
-            out["vel"] = vel_df
+        v = read_out_directory(CYLINDER_RE1000_VEL_DIR, "vel")
+        if not v.empty: out["vel"] = v
     if CYLINDER_RE1000_FY_DIR.exists():
-        force_df = read_out_directory(CYLINDER_RE1000_FY_DIR, "force")
-        if not force_df.empty:
-            out["force"] = force_df
+        fdf = read_out_directory(CYLINDER_RE1000_FY_DIR, "force")
+        if not fdf.empty: out["force"] = fdf
     return out
 
 
 def compute_kinematics(df: pd.DataFrame, dataset: str | None = None, 
-                       structural_params: dict | None = None) -> pd.DataFrame:
+                       structural_params: dict | None = None,
+                       bridge_structural_params: dict | None = None) -> pd.DataFrame:
     """
     Append 'vel' and 'acc' columns computed per case via numerical
     differentiation of the smoothed displacement signal.
@@ -255,14 +270,22 @@ def compute_kinematics(df: pd.DataFrame, dataset: str | None = None,
     df = df.sort_values(["case", "time", "step"]).reset_index(drop=True)
 
     force_signal = _load_force(dataset) if dataset else {}
+    ds = (dataset or "").strip().lower()
+    
+    # pick the structural params for the force-residual path
+    sp = None
+    if ds == "bridge":
+        sp = bridge_structural_params if bridge_structural_params is not None else None
+    elif structural_params is not None:
+        sp = structural_params
+    
+    if force_signal and sp is not None:
 
-    if force_signal and structural_params is not None:
-
-        m = structural_params['m']
-        c = structural_params['c']
-        k = structural_params['k']
-        print(f"[compute_kinematics] m={structural_params['m']:.6e}  "
-              f"c={structural_params['c']:.6e}  k={structural_params['k']:.6e}")
+        m = sp['m']
+        c = sp['c']
+        k = sp['k']
+        print(f"[compute_kinematics] m={sp['m']:.6e}  "
+              f"c={sp['c']:.6e}  k={sp['k']:.6e}")
 
         if "vel" in force_signal:
             df = df.merge(force_signal["vel"], on=["case", "step", "time"], how="left", validate="one_to_one")

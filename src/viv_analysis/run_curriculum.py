@@ -1,5 +1,6 @@
 # run_curriculum.py
 import copy
+import argparse
 import pickle
 import sys
 
@@ -105,8 +106,20 @@ def run_phase(
 
 
 def main():
-    dataset = sys.argv[1] if len(sys.argv) > 1 else "cylinder1000"
-    OUTPUT_DIR = PROJECT_ROOT / "results" / f"gru_rollout_{dataset}"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("dataset", nargs="?", default="cylinder1000",
+                        help="Dataset key (case-insensitive), e.g. cylinder1000")
+    parser.add_argument("--mode", choices=["curriculum", "direct"], default="curriculum",
+                        help="Train the full curriculum or a direct fixed-k run")
+    parser.add_argument("--rollout_k", type=int, default=10,
+                        help="Rollout horizon for direct mode")
+    args = parser.parse_args()
+
+    dataset = args.dataset.strip().lower()
+    OUTPUT_DIR = PROJECT_ROOT / "results" / (
+        f"gru_rollout_{dataset}" if args.mode == "curriculum"
+        else f"gru_direct_k{args.rollout_k}_{dataset}"
+    )
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -214,40 +227,52 @@ def main():
     optimizer = torch.optim.Adam(
         model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
 
-    # ── Curriculum (structural fix: actually call run_phase) ──────────────
-    curriculum = [
-        (1,  10),   # warm-up: identical to one-step baseline
-        (2,   5),
-        (5,   5),
-        (10, 15),
-    ]
+    if args.mode == "curriculum":
+        # ── Curriculum (structural fix: actually call run_phase) ──────────
+        curriculum = [
+            (1,  10),   # warm-up: identical to one-step baseline
+            (2,   5),
+            (5,   5),
+            (10, 15),
+        ]
 
-    for k, n_epochs in curriculum:
-        # Issue 2 fix: halve LR at each phase transition (keep Adam moments)
-        if k > 1:
-            for g in optimizer.param_groups:
-                g["lr"] = g["lr"] * 0.5
+        for k, n_epochs in curriculum:
+            # Issue 2 fix: halve LR at each phase transition (keep Adam moments)
+            if k > 1:
+                for g in optimizer.param_groups:
+                    g["lr"] = g["lr"] * 0.5
 
-        ckpt_path = OUTPUT_DIR / f"gru_rollout_k{k}.pt"
+            ckpt_path = OUTPUT_DIR / f"gru_rollout_k{k}.pt"
+            run_phase(
+                model, optimizer,
+                train_df_s, val_df_s,
+                dataset_kwargs, physics_kwargs,
+                rollout_k=k, epochs=n_epochs,
+                checkpoint_path=ckpt_path,
+            )
+    else:
+        # Direct training-duration control: no curriculum, fixed rollout horizon.
+        ckpt_path = OUTPUT_DIR / f"gru_rollout_k{args.rollout_k}.pt"
         run_phase(
             model, optimizer,
             train_df_s, val_df_s,
             dataset_kwargs, physics_kwargs,
-            rollout_k=k, epochs=n_epochs,
+            rollout_k=args.rollout_k, epochs=int(cfg["n_epochs"]),
             checkpoint_path=ckpt_path,
         )
 
+    sample_k = 1 if args.mode == "curriculum" else int(args.rollout_k)
     sample_ds = VIVSequenceDataset(
         train_df_s,
         stride=int(cfg["stride_train"]),
-        rollout_k=1,
+        rollout_k=sample_k,
         **dataset_kwargs,
     )
     sample_idx = min(100, len(sample_ds) - 1)
     x, y, case_name = sample_ds[sample_idx]
     print(f"Case: {case_name}")
     print(f"x.shape: {x.shape} (should be [seq_len, input_size])")
-    print(f"y.shape: {y.shape} (should be [{curriculum[0][0]}])")  # k=1 initially
+    print(f"y.shape: {y.shape} (should be [{sample_k}])")
     print(f"x last row (kinematics at window-end time): {x[-1]}")
     print(f"y[0] (CL target): {y if y.dim() == 0 else y[0]}")
 

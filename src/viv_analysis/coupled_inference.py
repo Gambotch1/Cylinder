@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 import torch
 from viv_analysis.models.gru import VIV_GRU
 import pickle
@@ -122,6 +123,7 @@ def diagnostic_teacher_forcing_vs_coupled(
     ur_stats,
     device,
     n_steps=500,
+    tf_batch_size=4096,
 ):
     ordered = case_df.sort_values("time").reset_index(drop=True)
 
@@ -135,33 +137,47 @@ def diagnostic_teacher_forcing_vs_coupled(
     # ------------------------------------------------------------
     # 1. Teacher forcing: true CFD kinematics → GRU → CL
     # ------------------------------------------------------------
-    tf_cl = []
+    # Scale the whole trajectory once (StandardScaler is row-wise, so this is
+    # identical to scaling each window separately) instead of re-slicing the
+    # DataFrame and re-fitting/transforming per step — needed now that n_steps
+    # can span the full post-release record (1e5+ steps) rather than a short window.
+    kinematics_full_scaled = x_scaler.transform(
+        ordered[input_cols].to_numpy(dtype=np.float32)
+    )
+    if use_ur_context:
+        ur_col_full = np.full((len(ordered), 1), ur_scaled, dtype=np.float32)
+        kinematics_full_scaled = np.hstack([kinematics_full_scaled, ur_col_full])
+
+    # Every TF window is driven by true CFD kinematics, never by the model's
+    # own output, so the n_steps windows are independent of each other and can
+    # be batched through the GRU instead of run one at a time (h0 still resets
+    # to zero per window — same convention VIVSequenceDataset trained on).
+    # sliding_window_view is a zero-copy strided view; only the per-batch
+    # slice below gets materialized, so this stays cheap even for 1e5+ steps.
+    all_windows = sliding_window_view(kinematics_full_scaled, window_shape=seq_len, axis=0)
+    all_windows = np.transpose(all_windows, (0, 2, 1))  # (n_windows, seq_len, n_features)
+
+    start_k = handoff_idx - seq_len
+    if start_k < 0 or start_k + n_steps > all_windows.shape[0]:
+        raise ValueError(
+            f"Teacher-forcing window range out of bounds: start_k={start_k}, "
+            f"n_steps={n_steps}, n_windows={all_windows.shape[0]}"
+        )
+    tf_windows = all_windows[start_k : start_k + n_steps]
+
+    tf_cl = np.empty(n_steps, dtype=np.float32)
     model.eval()
 
     with torch.no_grad():
-        for j in range(n_steps):
-            i = handoff_idx + j
+        for start in range(0, n_steps, tf_batch_size):
+            end = min(start + tf_batch_size, n_steps)
+            batch = np.ascontiguousarray(tf_windows[start:end])
 
-            win = ordered.iloc[i - seq_len : i][input_cols].to_numpy(dtype=np.float32)
+            x = torch.from_numpy(batch).to(device)
+            cl_s, _ = model(x)  # (B,)
 
-            if len(win) != seq_len:
-                raise ValueError(
-                    f"Bad teacher-forcing window at j={j}: "
-                    f"got {len(win)}, expected {seq_len}"
-                )
-
-            win_s = x_scaler.transform(win)
-
-            if use_ur_context:
-                ur_col = np.full((seq_len, 1), ur_scaled, dtype=np.float32)
-                win_s = np.hstack([win_s, ur_col])
-
-            x = torch.from_numpy(win_s.astype(np.float32)).unsqueeze(0).to(device)
-            cl_s, _ = model(x)
-            cl = float(y_scaler.inverse_transform([[cl_s.item()]])[0, 0])
-            tf_cl.append(cl)
-
-    tf_cl = np.array(tf_cl, dtype=np.float32)
+            cl_s = cl_s.detach().cpu().numpy().reshape(-1, 1)
+            tf_cl[start:end] = y_scaler.inverse_transform(cl_s).reshape(-1)
 
     # ------------------------------------------------------------
     # 2. Coupled: self-generated kinematics → GRU → CL
@@ -197,6 +213,7 @@ def diagnostic_teacher_forcing_vs_coupled(
     # ------------------------------------------------------------
     cfd_cl = ordered["cl"].to_numpy(dtype=np.float32)[handoff_idx : handoff_idx + n_steps]
     cfd_h = ordered["disp"].to_numpy(dtype=np.float32)[handoff_idx : handoff_idx + n_steps]
+    cfd_v = ordered["vel"].to_numpy(dtype=np.float32)[handoff_idx : handoff_idx + n_steps]
     times = ordered["time"].to_numpy(dtype=np.float32)[handoff_idx : handoff_idx + n_steps]
 
     def rmse(a, b):
@@ -244,6 +261,7 @@ def diagnostic_teacher_forcing_vs_coupled(
         "tf_cl": tf_cl,
         "coupled_cl": coupled_cl,
         "cfd_h": cfd_h,
+        "cfd_v": cfd_v,
         "coupled_h": coupled_h,
         "horizon_rows": horizon_rows,
         "coupled_result": coupled,
@@ -673,6 +691,13 @@ def main(
         f"history_shape={initial_history.shape}"
     )
 
+    # Run TF-vs-coupled over the full post-release CFD record (not a short
+    # window) so a Welch PSD on the dumped arrays has the resolution to
+    # separate the lock-in peak from the broadband floor.
+    n_steps_tf = len(case_df) - handoff_idx - 1
+    print(f"\nTF-vs-coupled diagnostic over full post-release record: "
+          f"{n_steps_tf} steps ({n_steps_tf * dt:.1f}s)")
+
     diag = diagnostic_teacher_forcing_vs_coupled(
         model=model,
         x_scaler=x_scaler,
@@ -695,8 +720,19 @@ def main(
         ur_value=Ur,
         ur_stats=(ur_mean, ur_std),
         device=device,
-        n_steps=3840,
+        n_steps=n_steps_tf,
     )
+
+    tf_residual_path = PROJECT_ROOT / "results" / f"tf_residual_Ur{Ur}.npz"
+    np.savez(
+        tf_residual_path,
+        cl_true=diag["cfd_cl"],
+        cl_tf=diag["tf_cl"],
+        vel=diag["cfd_v"],
+        dt=dt,
+        fn=fn,
+    )
+    print(f"Saved TF residual arrays to {tf_residual_path}")
 
     fig, axes = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
 

@@ -430,20 +430,27 @@ def run_coupled_viv(
     max_abs_z_seen = 0.0
     n_ood_warnings = 0
 
-    
+
     # Use CFD warm-start history, then update it with coupled predictions.
     ur_mean, ur_std = ur_stats
     ur_std_safe = float(ur_std) if abs(float(ur_std)) > 0 else 1.0
     ur_scaled = (ur_value - float(ur_mean)) / ur_std_safe
 
-    with torch.no_grad():
-        for i in range(n_steps):  
+    # Precompute scaling math once: StandardScaler.transform/inverse_transform
+    # do input validation on every call, which is real overhead at n_steps~1e5.
+    # (x - mean) / scale and (z * scale + mean) are exactly what sklearn does
+    # internally, just without the per-call validation cost.
+    x_mean = x_scaler.mean_.astype(np.float32)
+    x_scale = x_scaler.scale_.astype(np.float32)
+    y_mean = float(y_scaler.mean_[0])
+    y_scale = float(y_scaler.scale_[0])
+
+    with torch.inference_mode():
+        for i in range(n_steps):
 
             x = torch.from_numpy(history).unsqueeze(0).to(device)
             cl_scaled, _ = model(x)
-            cl = float(y_scaler.inverse_transform(
-                np.array([[cl_scaled.item()]], dtype=np.float32)
-            )[0,0])
+            cl = float(cl_scaled.item()) * y_scale + y_mean
             CL[i] = cl
 
             # ── Step 2: compute aerodynamic force ─────────────────────
@@ -464,7 +471,7 @@ def run_coupled_viv(
             # iteration the window ends at i, matching the training convention:
             #   predict CL[i+1] from kinematics [..., h[i]].
             new_kinematics_raw = np.array([h[i], h_dot[i], h_ddot[i]], dtype=np.float32)
-            new_kinematics_scaled = x_scaler.transform(new_kinematics_raw.reshape(1, -1))[0]
+            new_kinematics_scaled = (new_kinematics_raw - x_mean) / x_scale
 
             if use_ur_context:
                 new_row = np.append(new_kinematics_scaled, ur_scaled).astype(np.float32)
@@ -477,7 +484,7 @@ def run_coupled_viv(
                     f"h={h[i+1]}, v={h_dot[i+1]}, a={h_ddot[i+1]}, CL={cl}"
                 )
 
-            zmax = float(np.max(np.abs(new_kinematics_scaled)))
+            zmax = float(max(abs(v) for v in new_kinematics_scaled))
             max_abs_z_seen = max(max_abs_z_seen, zmax)
 
             if zmax > 6.0 and n_ood_warnings < 10:

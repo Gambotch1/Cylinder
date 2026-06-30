@@ -757,7 +757,7 @@ def main(
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
 
-    diag_png = PROJECT_ROOT / "results" / f"diagnostic_tf_vs_coupled_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}.png"
+    diag_png = PROJECT_ROOT / "results" / f"diagnostic_tf_vs_coupled_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
     fig.savefig(diag_png, dpi=150)
     plt.close(fig)
     print(f"Saved diagnostic plot to {diag_png}_{checkpoint}")
@@ -807,7 +807,7 @@ def main(
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    replay_png = PROJECT_ROOT / "results" / f"diagnostic_newmark_replay_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}.png"
+    replay_png = PROJECT_ROOT / "results" / f"diagnostic_newmark_replay_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
     fig.savefig(replay_png, dpi=150)
     plt.close(fig)
 
@@ -883,7 +883,7 @@ def main(
     axes[3].grid(True, alpha=0.3)
 
 
-    out_png = PROJECT_ROOT / "results" / f"coupled_viv_Ur_{Ur}_{checkpoint}_offset_{handoff_offset_steps}.png"
+    out_png = PROJECT_ROOT / "results" / f"coupled_viv_Ur_{Ur}_{checkpoint}_offset_{handoff_offset_steps}_{model_subdir}.png"
     out_png.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_png, dpi=150)
     plt.close(fig)

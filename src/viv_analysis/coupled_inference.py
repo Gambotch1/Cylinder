@@ -393,6 +393,8 @@ def run_coupled_viv(
     ur_value:     float = 0.0,
     ur_stats:     tuple   = (0.0, 1.0),
     device:       str = "cpu",
+    e_forcing:    np.ndarray = None,  # additive residual forcing on CL, shape (n_steps,)
+    gru_off:      bool = False,       # if True, zero GRU lift (forcing-only null control)
 ) -> dict:
     """
     Fully coupled GRU-structural VIV simulation.
@@ -430,6 +432,15 @@ def run_coupled_viv(
     max_abs_z_seen = 0.0
     n_ood_warnings = 0
 
+    if e_forcing is None or len(e_forcing) == 0:
+        _e = np.zeros(n_steps, dtype=np.float32)
+    else:
+        _e = np.asarray(e_forcing, dtype=np.float32)
+        if len(_e) < n_steps:
+            raise ValueError(
+                f"e_forcing length {len(_e)} < n_steps {n_steps}; pad or tile before passing."
+            )
+        _e = _e[:n_steps]
 
     # Use CFD warm-start history, then update it with coupled predictions.
     ur_mean, ur_std = ur_stats
@@ -450,7 +461,8 @@ def run_coupled_viv(
 
             x = torch.from_numpy(history).unsqueeze(0).to(device)
             cl_scaled, _ = model(x)
-            cl = float(cl_scaled.item()) * y_scale + y_mean
+            cl_det = 0.0 if gru_off else float(cl_scaled.item()) * y_scale + y_mean
+            cl = cl_det + _e[i]           # additive residual forcing
             CL[i] = cl
 
             # ── Step 2: compute aerodynamic force ─────────────────────
@@ -522,6 +534,11 @@ def main(
     checkpoint: str = "gru_best.pt",
     model_subdir: Optional[str] = None,
     handoff_offset_steps: int = 2000,
+    residual_npz: Optional[str] = None,
+    noise_mode: str = "none",
+    noise_scale: float = 1.0,
+    noise_seed: int = 0,
+    gru_off: bool = False,
     ):
 
     
@@ -817,6 +834,18 @@ def main(
     n_steps = int((total_time - t_handoff) / dt)
     print(f"\nRunning coupled inference for {total_time}s ({n_steps} steps)...")
     print(f"{n_steps} steps) ...")
+
+    # ── Precompute stochastic forcing vector ──────────────────────────────
+    e_forcing = np.zeros(n_steps, dtype=np.float32)
+    if noise_mode != "none" and residual_npz is not None:
+        from viv_analysis.residual_forcing import make_forcing
+        d_npz = np.load(residual_npz)
+        resid = np.asarray(d_npz["cl_true"], float) - np.asarray(d_npz["cl_tf"], float)
+        e_forcing = make_forcing(resid, n_steps, mode=noise_mode,
+                                 scale=noise_scale, seed=noise_seed)
+        print(f"[stochastic] mode={noise_mode} scale={noise_scale} "
+              f"resid_std={resid.std():.4f} e_std={e_forcing.std():.4f}")
+
     result = run_coupled_viv(
         model        = model,
         x_scaler     = x_scaler,
@@ -836,8 +865,10 @@ def main(
         n_steps      = n_steps,
         device       = device,
         use_ur_context = use_ur_context,
-        ur_value=Ur,
+        ur_value     = Ur,
         ur_stats     = (ur_mean, ur_std),
+        e_forcing    = e_forcing,
+        gru_off      = gru_off,
     )
 
     # ── Plot ───────────────────────────────────────────────────────────────
@@ -845,6 +876,14 @@ def main(
     h    = result["displacement"]
     CL   = result["CL"]
     FL   = 0.5 * rho * U**2 * B * CL
+
+    # ── Save coupled trajectory for harness ───────────────────────────────
+    h_cfd_tail = case_df.sort_values("time")["disp"].to_numpy(dtype=np.float32)
+    h_cfd_tail = h_cfd_tail[handoff_idx : handoff_idx + n_steps]
+    _mode_tag = f"{noise_mode}_gruoff" if gru_off else noise_mode
+    npz_out = PROJECT_ROOT / "results" / f"coupled_{cfd_dataset}_Ur{Ur}_{_mode_tag}.npz"
+    np.savez(npz_out, t=t, h=h, cl=CL, h_cfd=h_cfd_tail, D=D, Ur=float(Ur))
+    print(f"Saved coupled trajectory -> {npz_out}")
 
     # ── Plot: GRU result alongside CFD ground truth for comparison ────────
     CFD_t = case_df["time"].values
@@ -912,6 +951,14 @@ if __name__ == "__main__":
     parser.add_argument("--handoff_offset", type=int, default=2000,
                     help="CFD steps past (release+seq_len) for handoff. "
                          "Default 2000 = existing sweep; vary for noise floor.")
+    parser.add_argument("--residual_npz", default=None,
+                    help="npz with cl_true, cl_tf (the TF-residual you measured)")
+    parser.add_argument("--noise_mode", default="none",
+                    choices=["surrogate", "replay", "white", "none"])
+    parser.add_argument("--noise_scale", type=float, default=1.0)
+    parser.add_argument("--noise_seed", type=int, default=0)
+    parser.add_argument("--gru_off", action="store_true",
+                    help="zero the GRU lift; forcing only (resonance null control)")
     args = parser.parse_args()
     main(
         Ur=args.Ur,
@@ -920,6 +967,11 @@ if __name__ == "__main__":
         model_dataset=args.model_dataset,
         checkpoint=args.checkpoint,
         model_subdir=args.model_subdir,
-        handoff_offset_steps=args.handoff_offset
+        handoff_offset_steps=args.handoff_offset,
+        residual_npz=args.residual_npz,
+        noise_mode=args.noise_mode,
+        noise_scale=args.noise_scale,
+        noise_seed=args.noise_seed,
+        gru_off=args.gru_off,
     )
     

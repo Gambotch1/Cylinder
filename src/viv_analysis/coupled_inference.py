@@ -12,8 +12,8 @@ import pickle
 import matplotlib.pyplot as plt
 
 from viv_analysis.preprocess import compute_kinematics, merge_dataframes, downsample
-from viv_analysis.utils import PROJECT_ROOT
-from viv_analysis.utils import format_ur_label
+from viv_analysis.utils import PROJECT_ROOT, format_ur_label
+from viv_analysis.self_excitation import build_seed_history, analyze_run, measure_cfd_amplitude, measure_mu_from_cfd
 from viv_analysis.config import config
 
 
@@ -123,7 +123,7 @@ def diagnostic_teacher_forcing_vs_coupled(
     ur_stats,
     device,
     n_steps=500,
-    tf_batch_size=4096,
+    tf_batch_size=1024,
 ):
     ordered = case_df.sort_values("time").reset_index(drop=True)
 
@@ -395,6 +395,11 @@ def run_coupled_viv(
     device:       str = "cpu",
     e_forcing:    np.ndarray = None,  # additive residual forcing on CL, shape (n_steps,)
     gru_off:      bool = False,       # if True, zero GRU lift (forcing-only null control)
+    # Optional closure / forcing parameters
+    forcing_mode: str = "v1_additive",
+    fn: Optional[float] = None,
+    a_ref: Optional[float] = None,
+    mu: float = 0.0,
 ) -> dict:
     """
     Fully coupled GRU-structural VIV simulation.
@@ -456,13 +461,44 @@ def run_coupled_viv(
     y_mean = float(y_scaler.mean_[0])
     y_scale = float(y_scaler.scale_[0])
 
+    # ── Closure / forcing-mode setup ───────────────────────────────────
+    # Validate required inputs for non-default forcing modes and precompute
+    # oscillator frequency used by v2/v3 laws.
+    if forcing_mode != "v1_additive":
+        if fn is None or a_ref is None or a_ref <= 0:
+            raise ValueError(
+                f"forcing_mode={forcing_mode} requires fn and a_ref>0 "
+                f"(got fn={fn}, a_ref={a_ref})")
+    omega_n = 2.0 * np.pi * float(fn) if fn is not None else None
+
+    # Component logging arrays (for decomposition/diagnostics)
+    CL_det_arr = np.zeros(n_steps, dtype=np.float32)
+    CL_vdp_arr = np.zeros(n_steps, dtype=np.float32)
+
     with torch.inference_mode():
         for i in range(n_steps):
 
             x = torch.from_numpy(history).unsqueeze(0).to(device)
             cl_scaled, _ = model(x)
             cl_det = 0.0 if gru_off else float(cl_scaled.item()) * y_scale + y_mean
-            cl = cl_det + _e[i]           # additive residual forcing
+
+            # Forcing law selection:
+            # - v1_additive: additive residual forcing (legacy)
+            # - v2_multiplicative: amplitude-gained noise: (a_env/a_ref)*_e[i]
+            # - v3_coherent: VdP-like coherent closure term
+            cl_vdp = 0.0
+            if forcing_mode == "v3_coherent":
+                a_env = np.sqrt(h[i] ** 2 + (h_dot[i] / omega_n) ** 2)
+                cl_vdp = mu * (1.0 - (a_env / a_ref) ** 2) * (h_dot[i] / (omega_n * a_ref))
+                cl = cl_det + cl_vdp + _e[i]
+            elif forcing_mode == "v2_multiplicative":
+                a_env = np.sqrt(h[i] ** 2 + (h_dot[i] / omega_n) ** 2)
+                cl = cl_det + (a_env / a_ref) * _e[i]
+            else:  # v1_additive
+                cl = cl_det + _e[i]
+
+            CL_det_arr[i] = cl_det
+            CL_vdp_arr[i] = cl_vdp
             CL[i] = cl
 
             # ── Step 2: compute aerodynamic force ─────────────────────
@@ -519,6 +555,9 @@ def run_coupled_viv(
         "velocity": h_dot[:n_steps],
         "acceleration": h_ddot[:n_steps],
         "CL": CL[:n_steps],
+        "CL_det": CL_det_arr,
+        "CL_vdp": CL_vdp_arr,
+        "e_forcing": _e[:n_steps].copy(),
         "max_abs_scaled_kinematics": float(max_abs_z_seen),
         "n_ood_warnings": int(n_ood_warnings),
     }
@@ -539,6 +578,12 @@ def main(
     noise_scale: float = 1.0,
     noise_seed: int = 0,
     gru_off: bool = False,
+    ad_seed: Optional[float] = None,
+    cfd_target_AD: float = 0.23,
+    forcing_mode: str = "v1_additive",
+    mu: Optional[float] = None,
+    make_tf_residual: bool = False,
+    run_replay_diag: bool = False,
     ):
 
     
@@ -629,17 +674,24 @@ def main(
     # ── Load CFD trajectory at this Ur ────────────────────────────────────
     print(f"\nLoading CFD trajectory at Ur={Ur} for warm-start...")
     if ds == "bridge":
-        raw_df = merge_dataframes(dataset="bridge", fn_hz=fn, d_ref=D)
-        raw_df = downsample(raw_df, config["bridge_downsample"])
+        from viv_analysis.preprocess import load_bridge_df_cached
+
+        raw_df = load_bridge_df_cached(
+            fn_hz=fn,
+            d_ref=D,
+            bridge_structural_params=bsp,
+        )
     else:
         raw_df = merge_dataframes(dataset=cfd_dataset)
+        if raw_df.empty:
+            raise RuntimeError("Could not load CFD data for warmup.")
+        raw_df = compute_kinematics(
+            raw_df,
+            dataset=cfd_dataset,
+            structural_params=params_Re1000,
+        )
     if raw_df.empty:
         raise RuntimeError("Could not load CFD data for warmup.")
-    # Correct CL normalization if Fluent used a different reference velocity
-    if ds == "bridge":
-        raw_df = compute_kinematics(raw_df, dataset="bridge", bridge_structural_params=bsp)
-    else:
-        raw_df = compute_kinematics(raw_df, dataset=cfd_dataset, structural_params=params_Re1000)
 
     case_label = format_ur_label(Ur)
     case_df = raw_df[raw_df["case"] == case_label].copy()
@@ -700,6 +752,39 @@ def main(
 
     print(f"Model loaded: input_size={input_size}  hidden_size={hidden_size}")
 
+    # ── Attractor test: seed with artificial A/D ───────────────────────
+    if ad_seed is not None:
+        print(f"\n[ATTRACTOR TEST] Seeding loop with artificial A/D = {ad_seed}")
+        initial_history, initial_state = build_seed_history(
+            ad_seed=ad_seed, seq_len=seq_len, dt=dt, D=D, fn=fn,
+            x_scaler=x_scaler, use_ur_context=use_ur_context,
+            ur_value=Ur, ur_stats=(ur_mean, ur_std),
+        )
+        t_handoff = 0.0
+        n_steps = int(total_time / dt)
+
+        result = run_coupled_viv(
+            model=model, x_scaler=x_scaler, y_scaler=y_scaler,
+            initial_history=initial_history, initial_state=initial_state,
+            seq_len=seq_len, input_cols=input_cols,
+            m=m, c=c, k=k, rho=rho, U=U, D=D, B=B, dt=dt, n_steps=n_steps,
+            use_ur_context=use_ur_context, ur_value=Ur, ur_stats=(ur_mean, ur_std),
+            device=device, e_forcing=None, gru_off=False,
+        )
+
+        h = result["displacement"]
+        diag = analyze_run(h, D=D, dt=dt, fn=fn, ad_cfd_ref=cfd_target_AD)
+        print(f"[ATTRACTOR] seed A/D={ad_seed}  final A/D={diag['ad_final']:.4f}  "
+              f"target={cfd_target_AD}  f_dom={diag['f_dominant']:.3f}  "
+              f"converged={diag['converged']}")
+
+        # save envelope for the two-sided figure
+        np.savez(PROJECT_ROOT / "results" / f"attractor_Ur{Ur}_seed{ad_seed}.npz",
+                 t=result["time"], h=h, cl=result["CL"], D=D, Ur=float(Ur),
+                 ad_seed=ad_seed, ad_final=diag["ad_final"],
+                 env_t=diag["env_t"], env_ad=diag["env_ad"],
+                 cfd_target_AD=cfd_target_AD)
+        return
 
     # Guards 
     expected_features = len(input_cols) + (1 if use_ur_context else 0)
@@ -722,116 +807,128 @@ def main(
     print(f"\nTF-vs-coupled diagnostic over full post-release record: "
           f"{n_steps_tf} steps ({n_steps_tf * dt:.1f}s)")
 
-    diag = diagnostic_teacher_forcing_vs_coupled(
-        model=model,
-        x_scaler=x_scaler,
-        y_scaler=y_scaler,
-        case_df=case_df,
-        initial_history=initial_history,
-        initial_state=initial_state,
-        handoff_idx=handoff_idx,
-        seq_len=seq_len,
-        input_cols=input_cols,
-        m=m,
-        c=c,
-        k=k,
-        rho=rho,
-        U=U,
-        D=D,
-        B=B,
-        dt=dt,
-        use_ur_context=use_ur_context,
-        ur_value=Ur,
-        ur_stats=(ur_mean, ur_std),
-        device=device,
-        n_steps=n_steps_tf,
-    )
+    diag = None
+    if make_tf_residual:
+        diag = diagnostic_teacher_forcing_vs_coupled(
+            model=model,
+            x_scaler=x_scaler,
+            y_scaler=y_scaler,
+            case_df=case_df,
+            initial_history=initial_history,
+            initial_state=initial_state,
+            handoff_idx=handoff_idx,
+            seq_len=seq_len,
+            input_cols=input_cols,
+            m=m,
+            c=c,
+            k=k,
+            rho=rho,
+            U=U,
+            D=D,
+            B=B,
+            dt=dt,
+            use_ur_context=use_ur_context,
+            ur_value=Ur,
+            ur_stats=(ur_mean, ur_std),
+            device=device,
+            n_steps=n_steps_tf,
+            tf_batch_size=1024,
+        )
 
-    tf_residual_path = PROJECT_ROOT / "results" / f"tf_residual_Ur{Ur}.npz"
-    np.savez(
-        tf_residual_path,
-        cl_true=diag["cfd_cl"],
-        cl_tf=diag["tf_cl"],
-        vel=diag["cfd_v"],
-        dt=dt,
-        fn=fn,
-    )
-    print(f"Saved TF residual arrays to {tf_residual_path}")
+        tf_residual_path = PROJECT_ROOT / "results" / f"tf_residual_Ur{Ur}.npz"
+        np.savez(
+            tf_residual_path,
+            cl_true=diag["cfd_cl"],
+            cl_tf=diag["tf_cl"],
+            vel=diag["cfd_v"],
+            dt=dt,
+            fn=fn,
+        )
+        print(f"Saved TF residual arrays to {tf_residual_path}")
 
-    fig, axes = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
+        fig, axes = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
 
-    axes[0].plot(diag["time"], diag["cfd_cl"], color="black", lw=0.8, label="CFD CL")
-    axes[0].plot(diag["time"], diag["tf_cl"], color="tab:blue", lw=0.8, label="GRU teacher forcing")
-    axes[0].plot(diag["time"], diag["coupled_cl"], color="tab:orange", lw=0.8, label="GRU coupled")
-    axes[0].set_ylabel("$C_L$")
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
+        axes[0].plot(diag["time"], diag["cfd_cl"], color="black", lw=0.8, label="CFD CL")
+        axes[0].plot(diag["time"], diag["tf_cl"], color="tab:blue", lw=0.8, label="GRU teacher forcing")
+        axes[0].plot(diag["time"], diag["coupled_cl"], color="tab:orange", lw=0.8, label="GRU coupled")
+        axes[0].set_ylabel("$C_L$")
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
 
-    axes[1].plot(diag["time"], diag["cfd_h"] / D, color="black", lw=0.8, label="CFD h/D")
-    axes[1].plot(diag["time"], diag["coupled_h"] / D, color="tab:green", lw=0.8, label="Coupled h/D")
-    axes[1].set_ylabel("$h/D$")
-    axes[1].set_xlabel("Time [s]")
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
+        axes[1].plot(diag["time"], diag["cfd_h"] / D, color="black", lw=0.8, label="CFD h/D")
+        axes[1].plot(diag["time"], diag["coupled_h"] / D, color="tab:green", lw=0.8, label="Coupled h/D")
+        axes[1].set_ylabel("$h/D$")
+        axes[1].set_xlabel("Time [s]")
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
 
-    diag_png = PROJECT_ROOT / "results" / f"diagnostic_tf_vs_coupled_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
-    fig.savefig(diag_png, dpi=150)
-    plt.close(fig)
-    print(f"Saved diagnostic plot to {diag_png}_{checkpoint}")
+        diag_png = PROJECT_ROOT / "results" / f"diagnostic_tf_vs_coupled_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
+        fig.savefig(diag_png, dpi=150)
+        plt.close(fig)
+        print(f"Saved diagnostic plot to {diag_png}_{checkpoint}")
+    else:
+        print("[info] --make_tf_residual not set; skipping TF diagnostic (diag plot and residual generation)")
 
+    if run_replay_diag:
+        replay_current = diagnostic_true_force_newmark_replay(
+            case_df=case_df,
+            handoff_idx=handoff_idx,
+            n_steps=5000,
+            m=m,
+            c=c,
+            k=k,
+            rho=rho,
+            U=U,
+            D=D,
+            B=B,
+            dt=dt,
+            force_timing="current",
+        )
 
-    replay_current = diagnostic_true_force_newmark_replay(
-        case_df=case_df,
-        handoff_idx=handoff_idx,
-        n_steps=5000,
-        m=m,
-        c=c,
-        k=k,
-        rho=rho,
-        U=U,
-        D=D,
-        B=B,
-        dt=dt,
-        force_timing="current",
-    )
+        replay_next = diagnostic_true_force_newmark_replay(
+            case_df=case_df,
+            handoff_idx=handoff_idx,
+            n_steps=5000,
+            m=m,
+            c=c,
+            k=k,
+            rho=rho,
+            U=U,
+            D=D,
+            B=B,
+            dt=dt,
+            force_timing="next",
+        )
 
-    replay_next = diagnostic_true_force_newmark_replay(
-        case_df=case_df,
-        handoff_idx=handoff_idx,
-        n_steps=5000,
-        m=m,
-        c=c,
-        k=k,
-        rho=rho,
-        U=U,
-        D=D,
-        B=B,
-        dt=dt,
-        force_timing="next",
-    )
+        best_replay = (
+            replay_current
+            if replay_current["max_abs_h_over_D"] <= replay_next["max_abs_h_over_D"]
+            else replay_next
+        )
 
-    best_replay = (
-    replay_current
-    if replay_current["max_abs_h_over_D"] <= replay_next["max_abs_h_over_D"]
-    else replay_next
-    )
+        fig, ax = plt.subplots(figsize=(12, 4), constrained_layout=True)
+        ax.plot(best_replay["time"], best_replay["h_cfd"] / D, color="black", lw=0.8, label="CFD h/D")
+        ax.plot(best_replay["time"], best_replay["h_replay"] / D, color="tab:purple", lw=0.8, label=f"Newmark replay ({best_replay['force_timing']})")
+        ax.set_xlabel("Time [s]")
+        ax.set_ylabel("$h/D$")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
 
-    fig, ax = plt.subplots(figsize=(12, 4), constrained_layout=True)
-    ax.plot(best_replay["time"], best_replay["h_cfd"] / D, color="black", lw=0.8, label="CFD h/D")
-    ax.plot(best_replay["time"], best_replay["h_replay"] / D, color="tab:purple", lw=0.8, label=f"Newmark replay ({best_replay['force_timing']})")
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("$h/D$")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+        replay_png = PROJECT_ROOT / "results" / f"diagnostic_newmark_replay_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
+        fig.savefig(replay_png, dpi=150)
+        plt.close(fig)
 
-    replay_png = PROJECT_ROOT / "results" / f"diagnostic_newmark_replay_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
-    fig.savefig(replay_png, dpi=150)
-    plt.close(fig)
-
-    print(f"Saved Newmark replay diagnostic to {replay_png}_{checkpoint}")
+        print(f"Saved Newmark replay diagnostic to {replay_png}_{checkpoint}")
+    else:
+        print("[info] --run_replay_diag not set; skipping Newmark replay diagnostic")
 
     # ── Run coupled inference ─────────────────────────────────────────────
     n_steps = int((total_time - t_handoff) / dt)
+    if n_steps <= 0:
+        raise ValueError(
+            f"total_time={total_time}s is before handoff t={t_handoff:.2f}s "
+            f"(total_time is absolute sim end-time, not duration); need > {t_handoff:.1f}"
+        )
     print(f"\nRunning coupled inference for {total_time}s ({n_steps} steps)...")
     print(f"{n_steps} steps) ...")
 
@@ -840,11 +937,31 @@ def main(
     if noise_mode != "none" and residual_npz is not None:
         from viv_analysis.residual_forcing import make_forcing
         d_npz = np.load(residual_npz)
+        if "Ur" in d_npz and abs(float(d_npz["Ur"]) - Ur) > 1e-6:
+            raise ValueError(f"residual_npz is Ur={float(d_npz['Ur'])} but run is Ur={Ur}")
         resid = np.asarray(d_npz["cl_true"], float) - np.asarray(d_npz["cl_tf"], float)
-        e_forcing = make_forcing(resid, n_steps, mode=noise_mode,
-                                 scale=noise_scale, seed=noise_seed)
+        skip = int(5.0 / float(d_npz["dt"]))          # match the diagnostic's --skip_s 5
+        resid = resid[skip:]
+        e_forcing = make_forcing(resid, n_steps, mode=noise_mode, scale=noise_scale, seed=noise_seed)
         print(f"[stochastic] mode={noise_mode} scale={noise_scale} "
               f"resid_std={resid.std():.4f} e_std={e_forcing.std():.4f}")
+    # Closure / coherent forcing parameters: measure CFD amplitude and (optionally)
+    # derive the negative-damping mu from the CFD growth transient for v3_coherent.
+    qD = 0.5 * rho * U**2 * B
+    amp = measure_cfd_amplitude(case_df, handoff_idx, D)
+    a_ref = amp["a_ref_peak"]                       # PEAK physical amplitude
+    print(f"[closure] CFD RMS A/D={amp['rms_AD']:.4f}  a_ref(peak)={a_ref:.4f} m")
+
+    mu_used = mu
+    if forcing_mode == "v3_coherent" and mu is None:
+        mm = measure_mu_from_cfd(case_df, t_release, m, c, D, dt, fn, a_ref, qD)
+        mu_used = mm["mu"]
+        print(f"[closure] measured growth lambda={mm['lam']:.4f}/s (R2={mm['r2']:.3f}, "
+              f"n={mm['n']}, t=[{mm.get('t0',0):.0f},{mm.get('t1',0):.0f}]s) "
+              f"-> mu={mu_used:.4f}")
+        if mm["r2"] < 0.9:
+            print(f"  [warn] growth fit R2={mm['r2']:.2f} < 0.9 -- transient not cleanly "
+                  f"exponential; mu is unreliable, inspect the envelope before trusting v3.")
 
     result = run_coupled_viv(
         model        = model,
@@ -869,6 +986,10 @@ def main(
         ur_stats     = (ur_mean, ur_std),
         e_forcing    = e_forcing,
         gru_off      = gru_off,
+        forcing_mode = forcing_mode,
+        fn = fn,
+        a_ref = a_ref,
+        mu = (mu_used or 0.0),
     )
 
     # ── Plot ───────────────────────────────────────────────────────────────
@@ -880,9 +1001,17 @@ def main(
     # ── Save coupled trajectory for harness ───────────────────────────────
     h_cfd_tail = case_df.sort_values("time")["disp"].to_numpy(dtype=np.float32)
     h_cfd_tail = h_cfd_tail[handoff_idx : handoff_idx + n_steps]
-    _mode_tag = f"{noise_mode}_gruoff" if gru_off else noise_mode
-    npz_out = PROJECT_ROOT / "results" / f"coupled_{cfd_dataset}_Ur{Ur}_{_mode_tag}.npz"
-    np.savez(npz_out, t=t, h=h, cl=CL, h_cfd=h_cfd_tail, D=D, Ur=float(Ur))
+    # canonical subdir name (use provided subdir or fallback to model_dataset)
+    _sub = model_subdir or f"gru_{model_dataset}"
+    # short tags to ensure filenames are unique per experimental factors
+    _gru_tag = "_gruoff" if gru_off else ""
+    _noise_scale_tag = f"s{noise_scale:.6g}"
+    _exp_tag = f"{_sub}_forc-{forcing_mode}_noise-{noise_mode}{_gru_tag}_{_noise_scale_tag}_seed{noise_seed}"
+    npz_out = PROJECT_ROOT / "results" / f"coupled_{cfd_dataset}_Ur{Ur}_{_exp_tag}_mu{mu_used:.4g}.npz"
+    np.savez(npz_out, t=t, h=h, cl=CL, h_cfd=h_cfd_tail, D=D, Ur=float(Ur),
+             model_subdir=_sub, forcing_mode=forcing_mode, noise_mode=noise_mode,
+             gru_off=bool(gru_off), noise_scale=float(noise_scale), noise_seed=int(noise_seed),
+             cl_det=result.get("CL_det"), cl_vdp=result.get("CL_vdp"), e=result.get("e_forcing"))
     print(f"Saved coupled trajectory -> {npz_out}")
 
     # ── Plot: GRU result alongside CFD ground truth for comparison ────────
@@ -899,7 +1028,7 @@ def main(
                     label=f"handoff t={t_handoff:.1f}s")
     axes[0].axhline(0, color="gray", lw=0.5, ls=":")
     axes[0].set_ylabel(r"$h/D$")
-    axes[0].set_title(f"Coupled GRU-Structural VIV  —  $U_r={Ur}$  (post-release warm-start)")
+    axes[0].set_title(f"Coupled GRU-Structural VIV  —  $U_r={Ur}_{_exp_tag}$ (post-release warm-start)")
     axes[0].legend(loc="upper right")
     axes[0].grid(True, alpha=0.3)
  
@@ -922,7 +1051,7 @@ def main(
     axes[3].grid(True, alpha=0.3)
 
 
-    out_png = PROJECT_ROOT / "results" / f"coupled_viv_Ur_{Ur}_{checkpoint}_offset_{handoff_offset_steps}_{model_subdir}.png"
+    out_png = PROJECT_ROOT / "results" / f"coupled_viv_Ur_{Ur}_{checkpoint}_offset_{handoff_offset_steps}_{_exp_tag}_mu{mu_used:.4g}.png"
     out_png.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_png, dpi=150)
     plt.close(fig)
@@ -959,6 +1088,18 @@ if __name__ == "__main__":
     parser.add_argument("--noise_seed", type=int, default=0)
     parser.add_argument("--gru_off", action="store_true",
                     help="zero the GRU lift; forcing only (resonance null control)")
+    parser.add_argument("--ad_seed", type=float, default=None, 
+                    help="Run self-excitation attractor test. Specify initial A/D (e.g., 0.1 or 0.3)")
+    parser.add_argument("--cfd_target_AD", type=float, default=0.23, 
+                    help="The expected true limit-cycle A/D for convergence checking")
+    parser.add_argument("--forcing_mode", default="v1_additive",
+                    choices=["v1_additive", "v2_multiplicative", "v3_coherent"])
+    parser.add_argument("--mu", type=float, default=None,
+                    help="v3 negative-damping strength. If omitted, MEASURED from CFD growth.")
+    parser.add_argument("--make_tf_residual", action="store_true",
+                    help="Regenerate TF residual and diagnostic plot. Run once per Ur. Required for new Ur with --noise_mode surrogate.")
+    parser.add_argument("--run_replay_diag", action="store_true",
+                    help="Run Newmark replay diagnostic (oracle for force/timing validation). Safe to run on demand.")
     args = parser.parse_args()
     main(
         Ur=args.Ur,
@@ -973,5 +1114,11 @@ if __name__ == "__main__":
         noise_scale=args.noise_scale,
         noise_seed=args.noise_seed,
         gru_off=args.gru_off,
+        ad_seed=args.ad_seed,
+        cfd_target_AD=args.cfd_target_AD,
+        forcing_mode=args.forcing_mode,
+        mu=args.mu,
+        make_tf_residual=args.make_tf_residual,
+        run_replay_diag=args.run_replay_diag,
     )
     

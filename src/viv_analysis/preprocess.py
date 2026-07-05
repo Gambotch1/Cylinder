@@ -342,6 +342,66 @@ def print_summary(df: pd.DataFrame) -> None:
     print(df.groupby("case", sort=True).size().to_string())
 
 
+# ── Cached bridge loading ──────────────────────────────────────────────────
+# Bump this whenever compute_kinematics, read_out_files, merge logic, or the
+# raw .out files change. Stale caches are the silent-bug risk here.
+BRIDGE_CACHE_VERSION = 1
+
+
+def bridge_cache_path() -> Path:
+    return (
+        PROJECT_ROOT / "data" / "cache"
+        / f"bridge_ds{config['bridge_downsample']}"
+        f"_trim{INITIAL_TRIM_STEPS}"
+        f"_v{BRIDGE_CACHE_VERSION}.parquet"
+    )
+
+
+def load_bridge_df_cached(
+    fn_hz: float,
+    d_ref: float,
+    bridge_structural_params: dict,
+    force_rebuild: bool = False,
+) -> pd.DataFrame:
+    """
+    Load the fully preprocessed bridge dataframe (merged, downsampled,
+    kinematics computed) from a parquet cache; build it once if absent.
+    """
+    cache = bridge_cache_path()
+
+    if cache.exists() and not force_rebuild:
+        print(f"[cache] loading preprocessed bridge df from {cache}")
+        df = pd.read_parquet(cache)
+        # cheap sanity guard against a truncated/stale file
+        expected = {"case", "step", "time", "disp", "cd", "cl", "vel", "acc"}
+        missing = expected - set(df.columns)
+        if missing or df.empty:
+            raise RuntimeError(
+                f"Bridge cache at {cache} is invalid "
+                f"(empty={df.empty}, missing={missing}). "
+                f"Delete it and rebuild."
+            )
+        return df
+
+    print("[cache] no cache found — building (this is the slow path, ~1h)")
+    raw = merge_dataframes(dataset="bridge", fn_hz=fn_hz, d_ref=d_ref)
+    if raw.empty:
+        raise RuntimeError("merge_dataframes returned empty — check data dirs.")
+    raw = downsample(raw, config["bridge_downsample"])
+    raw = compute_kinematics(
+        raw,
+        dataset="bridge",
+        bridge_structural_params=bridge_structural_params,
+    )
+
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    tmp = cache.with_name(cache.name + f".tmp.{os.getpid()}")
+    raw.to_parquet(tmp, index=False)
+    tmp.rename(cache)  # atomic on the same filesystem
+    print(f"[cache] wrote {cache}  ({cache.stat().st_size/1e6:.0f} MB)")
+    return raw
+
+
 def main() -> None:
     df = merge_dataframes()
     if df.empty:

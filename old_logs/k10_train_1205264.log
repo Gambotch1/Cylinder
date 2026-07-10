@@ -1,0 +1,209 @@
+Starting LSF Control Job on node: makalu83
+ur_stats mean=6.5000 std=2.5909  y_scaler mean=0.000299 scale=0.269071
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+train (computed): ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Building training manifold cloud...
+Cloud: 200,000 pts.  In-manifold NN-dist p95=0.011 p99=0.037
+Ur=6.0  U=0.4800  handoff t=76.67s  n_steps=124666
+window_conv = current
+
+============================================================
+Steady-state A/D (this script) = 0.2444
+No reference for this (Ur, offset); sanity-check A/D against a production run.
+============================================================
+
+Fraction of steps off-manifold (NN-dist > p99): 89.3%
+First off-manifold crossing: t=78.1s
+Interpretation: crossing precedes/coincides => OFF-MANIFOLD (try input-noise training next). Stays below threshold while diverging => in-distribution error compounding (noise won't help; points at credit-assignment / stability penalty).
+
+Saved plot: /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur6.0_offset1000_current_gru_best.pt.png
+Saved log:  /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur6.0_offset1000_current_gru_best.pt.csv
+ur_stats mean=6.5000 std=2.5909  y_scaler mean=0.000299 scale=0.269071
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+train (computed): ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Building training manifold cloud...
+Cloud: 200,000 pts.  In-manifold NN-dist p95=0.011 p99=0.037
+Ur=6.0  U=0.4800  handoff t=79.17s  n_steps=124166
+window_conv = current
+
+============================================================
+Steady-state A/D (this script) = 0.2441
+Production reference (Ur=6.0, offset 1500) = 0.4137  -> *** MISMATCH — DIAGNOSIS UNTRUSTWORTHY ***
+============================================================
+
+Fraction of steps off-manifold (NN-dist > p99): 89.1%
+First off-manifold crossing: t=83.0s
+Interpretation: crossing precedes/coincides => OFF-MANIFOLD (try input-noise training next). Stays below threshold while diverging => in-distribution error compounding (noise won't help; points at credit-assignment / stability penalty).
+
+Saved plot: /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur6.0_offset1500_current_gru_best.pt.png
+Saved log:  /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur6.0_offset1500_current_gru_best.pt.csv
+ur_stats mean=6.5000 std=2.5909  y_scaler mean=0.000299 scale=0.269071
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+train (computed): ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Building training manifold cloud...
+Cloud: 200,000 pts.  In-manifold NN-dist p95=0.011 p99=0.037
+Ur=6.5  U=0.5200  handoff t=71.54s  n_steps=125691
+window_conv = current
+
+============================================================
+Steady-state A/D (this script) = 0.1658
+No reference for this (Ur, offset); sanity-check A/D against a production run.
+============================================================
+
+Fraction of steps off-manifold (NN-dist > p99): 95.8%
+First off-manifold crossing: t=71.7s
+Interpretation: crossing precedes/coincides => OFF-MANIFOLD (try input-noise training next). Stays below threshold while diverging => in-distribution error compounding (noise won't help; points at credit-assignment / stability penalty).
+
+Saved plot: /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur6.5_offset1000_current_gru_best.pt.png
+Saved log:  /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur6.5_offset1000_current_gru_best.pt.csv
+ur_stats mean=6.5000 std=2.5909  y_scaler mean=0.000299 scale=0.269071
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+train (computed): ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Building training manifold cloud...
+Cloud: 200,000 pts.  In-manifold NN-dist p95=0.011 p99=0.037
+Ur=6.5  U=0.5200  handoff t=74.04s  n_steps=125191
+window_conv = current
+
+============================================================
+Steady-state A/D (this script) = 0.1657
+No reference for this (Ur, offset); sanity-check A/D against a production run.
+============================================================
+
+Fraction of steps off-manifold (NN-dist > p99): 96.5%
+First off-manifold crossing: t=74.0s
+Interpretation: crossing precedes/coincides => OFF-MANIFOLD (try input-noise training next). Stays below threshold while diverging => in-distribution error compounding (noise won't help; points at credit-assignment / stability penalty).
+
+Saved plot: /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur6.5_offset1500_current_gru_best.pt.png
+Saved log:  /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur6.5_offset1500_current_gru_best.pt.csv
+ur_stats mean=6.5000 std=2.5909  y_scaler mean=0.000299 scale=0.269071
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+train (computed): ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Building training manifold cloud...
+Cloud: 200,000 pts.  In-manifold NN-dist p95=0.011 p99=0.037
+Ur=6.5  U=0.5200  handoff t=69.04s  n_steps=126191
+window_conv = current
+
+============================================================
+Steady-state A/D (this script) = 0.1660
+No reference for this (Ur, offset); sanity-check A/D against a production run.
+============================================================
+
+Fraction of steps off-manifold (NN-dist > p99): 95.6%
+First off-manifold crossing: t=69.0s
+Interpretation: crossing precedes/coincides => OFF-MANIFOLD (try input-noise training next). Stays below threshold while diverging => in-distribution error compounding (noise won't help; points at credit-assignment / stability penalty).
+
+Saved plot: /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur6.5_offset500_current_gru_best.pt.png
+Saved log:  /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur6.5_offset500_current_gru_best.pt.csv
+ur_stats mean=6.5000 std=2.5909  y_scaler mean=0.000299 scale=0.269071
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+train (computed): ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Building training manifold cloud...
+Cloud: 200,000 pts.  In-manifold NN-dist p95=0.011 p99=0.037
+Ur=7.0  U=0.5600  handoff t=67.14s  n_steps=126571
+window_conv = current
+
+============================================================
+Steady-state A/D (this script) = 0.0954
+No reference for this (Ur, offset); sanity-check A/D against a production run.
+============================================================
+
+Fraction of steps off-manifold (NN-dist > p99): 81.4%
+First off-manifold crossing: t=67.1s
+Interpretation: crossing precedes/coincides => OFF-MANIFOLD (try input-noise training next). Stays below threshold while diverging => in-distribution error compounding (noise won't help; points at credit-assignment / stability penalty).
+
+Saved plot: /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur7.0_offset1000_current_gru_best.pt.png
+Saved log:  /scratch/jote9827/Github/Cylinder/results/diagnostics/offmanifold_Ur7.0_offset1000_current_gru_best.pt.csv
+
+------------------------------------------------------------
+Sender: LSF System <schwan@makalu83>
+Subject: Job 1205264: <direct_k10> in cluster <wuerfel> Done
+
+Job <direct_k10> was submitted from host <makalu49> by user <jote9827> in cluster <wuerfel> at Sun Jun 21 21:53:50 2026
+Job was executed on host(s) <makalu83>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Sun Jun 21 21:54:10 2026
+</home/jote9827> was used as the home directory.
+</scratch/jote9827/Github/Cylinder> was used as the working directory.
+Started at Sun Jun 21 21:54:10 2026
+Terminated at Sun Jun 21 22:21:09 2026
+Results reported at Sun Jun 21 22:21:09 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J direct_k10                # Job name
+#BSUB -q BatchGPU                  # Target the massive GPU queue you found!
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -R "rusage[mem=32000]"       # Request 32GB of RAM
+#BSUB -W 12:00                     # Max run time (12 hours)
+#BSUB -o k10_train_%J.log          # Output log file (%J is the LSF Job ID)
+
+
+echo "Starting LSF Control Job on node: $HOSTNAME"
+
+# 1. Activate your Conda environment
+
+# 2. Navigate to your project folder
+cd /scratch/jote9827/Github/Cylinder
+source .venv/bin/activate
+
+# 3. Run the Python script 
+   python -m viv_analysis.diagnose_off_manifold \
+       --Ur 6.0 --handoff_offset 1000 \
+       --checkpoint gru_best.pt \
+       --model_subdir gru_cylinder_re_1000_noise0.05 \
+       --total_time 700
+
+    python -m viv_analysis.diagnose_off_manifold \
+       --Ur 6.0 --handoff_offset 1500 \
+       --checkpoint gru_best.pt \
+       --model_subdir gru_cylinder_re_1000_noise0.05 \
+       --total_time 700
+
+    python -m viv_analysis.diagnose_off_manifold \
+       --Ur 6.5 --handoff_offset 1000 \
+       --checkpoint gru_best.pt \
+       --model_subdir gru_cylinder_re_1000_noise0.05 \
+       --total_time 700
+    
+    python -m viv_analysis.diagnose_off_manifold \
+       --Ur 6.5 --handoff_offset 1500 \
+       --checkpoint gru_best.pt \
+       --model_subdir gru_cylinder_re_1000_noise0.05 \
+       --total_time 700
+
+    python -m viv_analysis.diagnose_off_manifold \
+       --Ur 6.5 --handoff_offset 500 \
+       --checkpoint gru_best.pt \
+       --model_subdir gru_cylinder_re_1000_noise0.05 \
+       --total_time 700
+    
+    python -m viv_analysis.diagnose_off_manifold \
+       --Ur 7.0 --handoff_offset 1000 \
+
+(... more ...)
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   1568.80 sec.
+    Max Memory :                                 679.69 MB
+    Average Memory :                             587.30 MB
+    Total Requested Memory :                     32000.00 MB
+    Delta Memory :                               31320.31 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                13
+    Run time :                                   1618 sec.
+    Turnaround time :                            1639 sec.
+
+The output (if any) is above this job summary.
+

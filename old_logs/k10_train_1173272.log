@@ -1,0 +1,256 @@
+Starting LSF Control Job on node: makalu94
+/scratch/jote9827/miniconda3/lib/python3.10/site-packages/sklearn/base.py:442: InconsistentVersionWarning: Trying to unpickle estimator StandardScaler from version 1.8.0 when using version 1.7.2. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+Using device: cuda
+Loaded scalers and UR stats: use_ur_context=Truemean=5.0556, std=1.5580
+y_scaler: mean=0.000299  scale=0.269071
+Ur=6.0  U=0.4800 m/s  fn=0.2000 Hz
+m=0.251327 kg/m  k=0.396880  c=0.004422
+Expected steady-state period: 5.000 s
+t_release=66.6667s
+
+Loading CFD trajectory at Ur=6.0 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+  CFD trajectory has 139901 steps
+  Warm-start window: CFD steps 15734]  (post-release)
+  Handoff at t=79.1700s   (5.00s after release)
+  Initial state at handoff: h=-0.097588  h_dot=0.048502  h_ddot=0.193730
+  Warm-start raw stats:
+    disp range: [-0.10359, 0.10242]
+    vel  range: [-0.14488, 0.13852]
+    acc  range: [-0.20032, 0.20577]
+Model loaded: input_size=4  hidden_size=64
+Model/input check: input_size=4, history_shape=(1000, 4)
+
+Teacher-forcing vs coupled diagnostic
+--------------------------------------
+n_steps = 3840
+RMSE TF CL vs CFD CL       = 0.065698
+RMSE coupled CL vs TF CL   = 0.069195
+RMSE coupled CL vs CFD CL  = 0.133844
+Max |coupled CL - TF CL|   = 0.121839
+Max |coupled h - CFD h|/D  = 0.416267
+
+By horizon:
+    10 steps (0.050s): TF-CFD CL RMSE=0.09982, CPL-TF CL RMSE=0.01079, max |h_err|/D=0.00010
+    50 steps (0.250s): TF-CFD CL RMSE=0.09634, CPL-TF CL RMSE=0.07389, max |h_err|/D=0.00217
+   100 steps (0.500s): TF-CFD CL RMSE=0.08851, CPL-TF CL RMSE=0.09812, max |h_err|/D=0.00949
+   250 steps (1.250s): TF-CFD CL RMSE=0.06241, CPL-TF CL RMSE=0.07496, max |h_err|/D=0.04128
+   500 steps (2.500s): TF-CFD CL RMSE=0.07477, CPL-TF CL RMSE=0.08254, max |h_err|/D=0.04384
+Saved diagnostic plot to /scratch/jote9827/Github/Cylinder/results/diagnostic_tf_vs_coupled_Ur_6.0_gru_best.pt.png
+
+True-force Newmark replay [current]
+-----------------------------------------
+RMSE h       = 2.456487e-04 m
+RMSE v       = 5.143090e-04 m/s
+RMSE a       = 4.076340e-04 m/s²
+Max |h err|/D= 0.000955
+
+True-force Newmark replay [next]
+-----------------------------------------
+RMSE h       = 9.343438e-04 m
+RMSE v       = 1.478053e-03 m/s
+RMSE a       = 1.478780e-03 m/s²
+Max |h err|/D= 0.004218
+Saved Newmark replay diagnostic to /scratch/jote9827/Github/Cylinder/results/diagnostic_newmark_replay_Ur_6.0_gru_best.pt.png
+
+Running coupled inference for 200.0s (24166 steps)...
+24166 steps) ...
+
+Saved coupled VIV plot to /scratch/jote9827/Github/Cylinder/results/coupled_viv_Ur_6.0_gru_best.pt.png
+
+Steady-state A/D = 0.0513
+Displacement range: -0.0976 to 0.0992 m
+CL range: -0.0510 to 0.1206
+/scratch/jote9827/miniconda3/lib/python3.10/site-packages/sklearn/base.py:442: InconsistentVersionWarning: Trying to unpickle estimator StandardScaler from version 1.8.0 when using version 1.7.2. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+Using device: cuda
+Loaded scalers and UR stats: use_ur_context=Truemean=5.0556, std=1.5580
+y_scaler: mean=0.000299  scale=0.269071
+Ur=6.0  U=0.4800 m/s  fn=0.2000 Hz
+m=0.251327 kg/m  k=0.396880  c=0.004422
+Expected steady-state period: 5.000 s
+t_release=66.6667s
+
+Loading CFD trajectory at Ur=6.0 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+  CFD trajectory has 139901 steps
+  Warm-start window: CFD steps 16234]  (post-release)
+  Handoff at t=81.6700s   (5.00s after release)
+  Initial state at handoff: h=0.081390  h_dot=-0.091608  h_ddot=-0.155058
+  Warm-start raw stats:
+    disp range: [-0.10359, 0.10512]
+    vel  range: [-0.14488, 0.14591]
+    acc  range: [-0.20161, 0.20577]
+Model loaded: input_size=4  hidden_size=64
+Model/input check: input_size=4, history_shape=(1000, 4)
+
+Teacher-forcing vs coupled diagnostic
+--------------------------------------
+n_steps = 3840
+RMSE TF CL vs CFD CL       = 0.063989
+RMSE coupled CL vs TF CL   = 0.066891
+RMSE coupled CL vs CFD CL  = 0.129772
+Max |coupled CL - TF CL|   = 0.122311
+Max |coupled h - CFD h|/D  = 0.424045
+
+By horizon:
+    10 steps (0.050s): TF-CFD CL RMSE=0.07842, CPL-TF CL RMSE=0.00957, max |h_err|/D=0.00008
+    50 steps (0.250s): TF-CFD CL RMSE=0.06962, CPL-TF CL RMSE=0.05579, max |h_err|/D=0.00167
+   100 steps (0.500s): TF-CFD CL RMSE=0.05786, CPL-TF CL RMSE=0.06439, max |h_err|/D=0.00674
+   250 steps (1.250s): TF-CFD CL RMSE=0.04421, CPL-TF CL RMSE=0.05405, max |h_err|/D=0.02033
+   500 steps (2.500s): TF-CFD CL RMSE=0.06613, CPL-TF CL RMSE=0.08581, max |h_err|/D=0.05987
+Saved diagnostic plot to /scratch/jote9827/Github/Cylinder/results/diagnostic_tf_vs_coupled_Ur_6.0_gru_best.pt.png
+
+True-force Newmark replay [current]
+-----------------------------------------
+RMSE h       = 1.971715e-04 m
+RMSE v       = 5.042145e-04 m/s
+RMSE a       = 3.079358e-04 m/s²
+Max |h err|/D= 0.000767
+
+True-force Newmark replay [next]
+-----------------------------------------
+RMSE h       = 8.706329e-04 m
+RMSE v       = 1.430449e-03 m/s
+RMSE a       = 1.378247e-03 m/s²
+Max |h err|/D= 0.003933
+Saved Newmark replay diagnostic to /scratch/jote9827/Github/Cylinder/results/diagnostic_newmark_replay_Ur_6.0_gru_best.pt.png
+
+Running coupled inference for 200.0s (23666 steps)...
+23666 steps) ...
+
+Saved coupled VIV plot to /scratch/jote9827/Github/Cylinder/results/coupled_viv_Ur_6.0_gru_best.pt.png
+
+Steady-state A/D = 0.0558
+Displacement range: -0.1038 to 0.0982 m
+CL range: -0.0732 to 0.0437
+/scratch/jote9827/miniconda3/lib/python3.10/site-packages/sklearn/base.py:442: InconsistentVersionWarning: Trying to unpickle estimator StandardScaler from version 1.8.0 when using version 1.7.2. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+Using device: cuda
+Loaded scalers and UR stats: use_ur_context=Truemean=5.0556, std=1.5580
+y_scaler: mean=0.000299  scale=0.269071
+Ur=6.0  U=0.4800 m/s  fn=0.2000 Hz
+m=0.251327 kg/m  k=0.396880  c=0.004422
+Expected steady-state period: 5.000 s
+t_release=66.6667s
+
+Loading CFD trajectory at Ur=6.0 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+  CFD trajectory has 139901 steps
+  Warm-start window: CFD steps 16734]  (post-release)
+  Handoff at t=84.1700s   (5.00s after release)
+  Initial state at handoff: h=-0.053591  h_dot=0.122469  h_ddot=0.103748
+  Warm-start raw stats:
+    disp range: [-0.10307, 0.10512]
+    vel  range: [-0.14456, 0.14591]
+    acc  range: [-0.20161, 0.20076]
+Model loaded: input_size=4  hidden_size=64
+Model/input check: input_size=4, history_shape=(1000, 4)
+
+Teacher-forcing vs coupled diagnostic
+--------------------------------------
+n_steps = 3840
+RMSE TF CL vs CFD CL       = 0.063642
+RMSE coupled CL vs TF CL   = 0.066666
+RMSE coupled CL vs CFD CL  = 0.129471
+Max |coupled CL - TF CL|   = 0.116287
+Max |coupled h - CFD h|/D  = 0.417757
+
+By horizon:
+    10 steps (0.050s): TF-CFD CL RMSE=0.06206, CPL-TF CL RMSE=0.00725, max |h_err|/D=0.00006
+    50 steps (0.250s): TF-CFD CL RMSE=0.05167, CPL-TF CL RMSE=0.04187, max |h_err|/D=0.00125
+   100 steps (0.500s): TF-CFD CL RMSE=0.03958, CPL-TF CL RMSE=0.04306, max |h_err|/D=0.00478
+   250 steps (1.250s): TF-CFD CL RMSE=0.04742, CPL-TF CL RMSE=0.05054, max |h_err|/D=0.00970
+   500 steps (2.500s): TF-CFD CL RMSE=0.06469, CPL-TF CL RMSE=0.06930, max |h_err|/D=0.06925
+Saved diagnostic plot to /scratch/jote9827/Github/Cylinder/results/diagnostic_tf_vs_coupled_Ur_6.0_gru_best.pt.png
+
+True-force Newmark replay [current]
+-----------------------------------------
+RMSE h       = 1.325600e-04 m
+RMSE v       = 4.637462e-04 m/s
+RMSE a       = 2.023621e-04 m/s²
+Max |h err|/D= 0.000515
+
+True-force Newmark replay [next]
+-----------------------------------------
+RMSE h       = 7.892777e-04 m
+RMSE v       = 1.346302e-03 m/s
+RMSE a       = 1.249928e-03 m/s²
+Max |h err|/D= 0.003595
+Saved Newmark replay diagnostic to /scratch/jote9827/Github/Cylinder/results/diagnostic_newmark_replay_Ur_6.0_gru_best.pt.png
+
+Running coupled inference for 700.0s (123166 steps)...
+123166 steps) ...
+
+Saved coupled VIV plot to /scratch/jote9827/Github/Cylinder/results/coupled_viv_Ur_6.0_gru_best.pt.png
+
+Steady-state A/D = 0.0000
+Displacement range: -0.1029 to 0.1070 m
+CL range: -0.0447 to 0.0519
+Job finished successfully!
+
+------------------------------------------------------------
+Sender: LSF System <schwan@makalu94>
+Subject: Job 1173272: <direct_k10> in cluster <wuerfel> Done
+
+Job <direct_k10> was submitted from host <makalu49> by user <jote9827> in cluster <wuerfel> at Wed Jun 17 15:35:50 2026
+Job was executed on host(s) <makalu94>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Wed Jun 17 15:36:10 2026
+</home/jote9827> was used as the home directory.
+</scratch/jote9827/Github/Cylinder> was used as the working directory.
+Started at Wed Jun 17 15:36:10 2026
+Terminated at Wed Jun 17 15:44:51 2026
+Results reported at Wed Jun 17 15:44:51 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J direct_k10                # Job name
+#BSUB -q BatchGPU                  # Target the massive GPU queue you found!
+#BSUB -gpu "num=1:mode=exclusive_process" # Request 1 GPU
+#BSUB -R "rusage[mem=32000]"       # Request 32GB of RAM
+#BSUB -W 12:00                     # Max run time (12 hours)
+#BSUB -o k10_train_%J.log          # Output log file (%J is the LSF Job ID)
+
+echo "Starting LSF Control Job on node: $HOSTNAME"
+
+# 1. Activate your Conda environment
+source /scratch/jote9827/miniconda3/etc/profile.d/conda.sh
+conda activate base
+
+# 2. Navigate to your project folder
+cd /scratch/jote9827/Github/Cylinder
+
+# 3. Run the Python script (with the original batch size if you want!)
+python -m src.viv_analysis.coupled_inference --checkpoint gru_best.pt --handoff_offset 1500
+python -m src.viv_analysis.coupled_inference --checkpoint gru_best.pt --handoff_offset 2000
+python -m src.viv_analysis.coupled_inference --checkpoint gru_best.pt --handoff_offset 2500
+
+echo "Job finished successfully!"
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   495.55 sec.
+    Max Memory :                                 694.58 MB
+    Average Memory :                             513.57 MB
+    Total Requested Memory :                     32000.00 MB
+    Delta Memory :                               31305.42 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                13
+    Run time :                                   521 sec.
+    Turnaround time :                            541 sec.
+
+The output (if any) is above this job summary.
+

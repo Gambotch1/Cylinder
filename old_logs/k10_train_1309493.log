@@ -1,0 +1,124 @@
+Starting LSF Control Job on node: makalu93
+Using device: cuda
+Loaded scalers and UR stats: use_ur_context=Truemean=7.3045, std=1.4560
+y_scaler: mean=0.097555  scale=0.265595
+[bridge] Ur=4.6327  U=10.9999 m/s  fn=0.32  D(Ur,rel,h/D)=7.42  B(force)=25.9
+  m=2.460400e+04  c=9.893855e+02  k=9.946388e+04  rho=1.225  t_release=13.4911s
+
+Loading CFD trajectory at Ur=4.6327 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.460400e+04  c=9.893855e+02  k=9.946388e+04
+  CFD trajectory has 149996 steps
+  [bridge] Newmark dt = 0.001999s  (1563 steps/cycle)
+  Warm-start window: CFD steps 11241]  (post-release)
+  Handoff at t=22.4920s   (5.00s after release)
+  Initial state at handoff: h=-0.001432  h_dot=0.012915  h_ddot=0.004853
+  Warm-start raw stats:
+    disp range: [-0.01189, -0.00113]
+    vel  range: [-0.00986, 0.01291]
+    acc  range: [-0.01670, 0.02199]
+Model loaded: input_size=4  hidden_size=64
+Model/input check: input_size=4, history_shape=(2500, 4)
+
+TF-vs-coupled diagnostic over full post-release record: 138754 steps (277.4s)
+
+Teacher-forcing vs coupled diagnostic
+--------------------------------------
+n_steps = 138754
+RMSE TF CL vs CFD CL       = 0.017512
+RMSE coupled CL vs TF CL   = 1.023385
+RMSE coupled CL vs CFD CL  = 1.022212
+Max |coupled CL - TF CL|   = 2.299109
+Max |coupled h - CFD h|/D  = 0.006709
+
+By horizon:
+    10 steps (0.020s): TF-CFD CL RMSE=0.00490, CPL-TF CL RMSE=0.00019, max |h_err|/D=0.00000
+    50 steps (0.100s): TF-CFD CL RMSE=0.00487, CPL-TF CL RMSE=0.00096, max |h_err|/D=0.00000
+   100 steps (0.200s): TF-CFD CL RMSE=0.01019, CPL-TF CL RMSE=0.00307, max |h_err|/D=0.00000
+   250 steps (0.500s): TF-CFD CL RMSE=0.01173, CPL-TF CL RMSE=0.01746, max |h_err|/D=0.00004
+   500 steps (0.999s): TF-CFD CL RMSE=0.01031, CPL-TF CL RMSE=0.04299, max |h_err|/D=0.00020
+Saved TF residual arrays to /scratch/jote9827/Github/Cylinder/results/tf_residual_Ur4.6327.npz
+Saved diagnostic plot to /scratch/jote9827/Github/Cylinder/results/diagnostic_tf_vs_coupled_Ur_4.6327_gru_best.pt_handoff_2000_gru_bridge_noise0.05.png_gru_best.pt
+
+True-force Newmark replay [current]
+-----------------------------------------
+RMSE h       = 4.453507e-04 m
+RMSE v       = 5.192168e-04 m/s
+RMSE a       = 1.819854e-03 m/s²
+Max |h err|/D= 0.000109
+
+True-force Newmark replay [next]
+-----------------------------------------
+RMSE h       = 4.520165e-04 m
+RMSE v       = 5.310370e-04 m/s
+RMSE a       = 1.828877e-03 m/s²
+Max |h err|/D= 0.000111
+Saved Newmark replay diagnostic to /scratch/jote9827/Github/Cylinder/results/diagnostic_newmark_replay_Ur_4.6327_gru_best.pt_handoff_2000_gru_bridge_noise0.05.png_gru_best.pt
+
+Running coupled inference for 200.0s (88802 steps)...
+88802 steps) ...
+
+Saved coupled VIV plot to /scratch/jote9827/Github/Cylinder/results/coupled_viv_Ur_4.6327_gru_best.pt_offset_2000_gru_bridge_noise0.05.png
+
+Steady-state A/D = 0.0001
+Displacement range: -0.0014 to 0.0301 m
+CL range: 0.0009 to 1.3109
+
+------------------------------------------------------------
+Sender: LSF System <schwan@makalu93>
+Subject: Job 1309493: <direct_k10> in cluster <wuerfel> Done
+
+Job <direct_k10> was submitted from host <makalu49> by user <jote9827> in cluster <wuerfel> at Sun Jun 28 20:34:33 2026
+Job was executed on host(s) <makalu93>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Sun Jun 28 20:34:53 2026
+</home/jote9827> was used as the home directory.
+</scratch/jote9827/Github/Cylinder> was used as the working directory.
+Started at Sun Jun 28 20:34:53 2026
+Terminated at Sun Jun 28 21:51:49 2026
+Results reported at Sun Jun 28 21:51:49 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J direct_k10                # Job name
+#BSUB -q BatchGPU                  # Target the massive GPU queue you found!
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -R "rusage[mem=32000]"       # Request 32GB of RAM
+#BSUB -W 12:00                     # Max run time (12 hours)
+#BSUB -o k10_train_%J.log          # Output log file (%J is the LSF Job ID)
+
+
+echo "Starting LSF Control Job on node: $HOSTNAME"
+
+# 1. Activate your Conda environment
+
+# 2. Navigate to your project folder
+cd /scratch/jote9827/Github/Cylinder
+source .venv/bin/activate
+
+export VIV_NUM_WORKERS=0
+
+# 3. Run the Python script 
+python -u -m src.viv_analysis.coupled_inference --Ur 4.6327 \
+    --cfd_dataset bridge --model_subdir gru_bridge_noise0.05 \
+    --total_time 200 --handoff_offset 2000
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   4592.30 sec.
+    Max Memory :                                 19575.74 MB
+    Average Memory :                             11182.46 MB
+    Total Requested Memory :                     32000.00 MB
+    Delta Memory :                               12424.26 MB
+    Max Swap :                                   2 MB
+    Max Processes :                              4
+    Max Threads :                                13
+    Run time :                                   4614 sec.
+    Turnaround time :                            4636 sec.
+
+The output (if any) is above this job summary.
+

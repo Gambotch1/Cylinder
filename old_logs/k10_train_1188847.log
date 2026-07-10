@@ -1,0 +1,138 @@
+Starting LSF Control Job on node: makalu94
+Dataset: cylinder_re_1000
+Device: cuda  |  seq_len=1000  stride_train=8
+input feature:s: ['disp', 'vel', 'acc']  |  use_ur_context=True
+raw_df type: <class 'pandas.DataFrame'>
+raw_df head:    case  step   time          disp        cd        cl
+0  Ur10   100  0.500 -1.807822e-10  0.587466  0.011033
+1  Ur10   101  0.505 -1.807822e-10  0.590567  0.011228
+2  Ur10   102  0.510 -1.807822e-10  0.593611  0.011394
+3  Ur10   103  0.515 -1.807822e-10  0.596598  0.011564
+4  Ur10   104  0.520 -1.807822e-10  0.599543  0.011755
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+Cases loaded: ['Ur10', 'Ur11', 'Ur12', 'Ur2', 'Ur2.5', 'Ur3', 'Ur3.5', 'Ur4', 'Ur4.25', 'Ur4.5', 'Ur4.75', 'Ur5', 'Ur5.25', 'Ur5.5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur6.5', 'Ur7', 'Ur8', 'Ur9']
+train (computed): ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Train: ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Val:   ['Ur4.25', 'Ur5.25', 'Ur6.5', 'Ur9']
+Test:  ['Ur11', 'Ur4.75', 'Ur5.5', 'Ur7']
+x_scaler: mean=[7.05753791e-04 6.60902091e-05 2.28440592e-04] scale=[0.08447787 0.10889112 0.15732116]
+y_scaler (cl): mean=0.000299 scale=0.269071
+input_noise_std = 0.05
+Using Ur context feature: mean=6.5000, std=2.5909
+Dataset sizes — train: 156088 val: 500744 test: 505913
+GRU parameters: 40,513
+
+Training for up to 100 epochs...
+Epoch   1/100  train=0.13261  val=0.00149  R²=0.9948  lr=1.00e-03
+Epoch   2/100  train=0.00528  val=0.00136  R²=0.9953  lr=1.00e-03
+Epoch   3/100  train=0.00307  val=0.00113  R²=0.9961  lr=1.00e-03
+Epoch   4/100  train=0.00218  val=0.00142  R²=0.9951  lr=1.00e-03
+Epoch   5/100  train=0.00170  val=0.00216  R²=0.9925  lr=1.00e-03
+Epoch   6/100  train=0.00150  val=0.00189  R²=0.9934  lr=1.00e-03
+Epoch   7/100  train=0.00144  val=0.00184  R²=0.9936  lr=1.00e-03
+Epoch   8/100  train=0.00123  val=0.00168  R²=0.9941  lr=1.00e-03
+Epoch   9/100  train=0.00125  val=0.00181  R²=0.9937  lr=5.00e-04
+Epoch  10/100  train=0.00081  val=0.00182  R²=0.9936  lr=5.00e-04
+Epoch  11/100  train=0.00078  val=0.00190  R²=0.9934  lr=5.00e-04
+Epoch  12/100  train=0.00077  val=0.00210  R²=0.9927  lr=5.00e-04
+Epoch  13/100  train=0.00081  val=0.00202  R²=0.9929  lr=5.00e-04
+Epoch  14/100  train=0.00078  val=0.00208  R²=0.9927  lr=5.00e-04
+Epoch  15/100  train=0.00072  val=0.00224  R²=0.9922  lr=2.50e-04
+Epoch  16/100  train=0.00058  val=0.00233  R²=0.9919  lr=2.50e-04
+Epoch  17/100  train=0.00058  val=0.00254  R²=0.9911  lr=2.50e-04
+Epoch  18/100  train=0.00058  val=0.00256  R²=0.9910  lr=2.50e-04
+Early stopping at epoch 18
+Best model saved (val_loss=0.00113)
+
+Validation: {
+  "mae": 0.006917055230587721,
+  "rmse": 0.009048993013051117,
+  "r2": 0.9960538744926453
+}
+Test:       {
+  "mae": 0.005617060232907534,
+  "rmse": 0.007116055490144096,
+  "r2": 0.9983306527137756
+}
+
+Teacher forcing rollout on test cases:
+  Ur11: R²=0.9987  RMSE=0.0084
+  Ur4.75: R²=0.9964  RMSE=0.0089
+  Ur5.5: R²=0.9994  RMSE=0.0039
+  Ur7: R²=0.9982  RMSE=0.0061
+  Ur10: CFD=0.3070  GRU=0.3042  amp_err=0.89%  R²=0.9993  [train]
+  Ur11: CFD=0.3277  GRU=0.3300  amp_err=0.70%  R²=0.9987  [test]
+  Ur12: CFD=0.3379  GRU=0.3419  amp_err=1.19%  R²=0.9993  [train]
+  Ur3.5: CFD=1.0767  GRU=1.0800  amp_err=0.30%  R²=0.9993  [train]
+  Ur4: CFD=0.0853  GRU=0.1017  amp_err=19.17%  R²=0.9667  [train]
+  Ur4.25: CFD=0.1366  GRU=0.1271  amp_err=6.98%  R²=0.9866  [val]
+  Ur4.5: CFD=0.1844  GRU=0.1731  amp_err=6.12%  R²=0.9937  [train]
+  Ur4.75: CFD=0.2110  GRU=0.1995  amp_err=5.42%  R²=0.9964  [test]
+  Ur5: CFD=0.2228  GRU=0.2144  amp_err=3.78%  R²=0.9979  [train]
+  Ur5.25: CFD=0.2230  GRU=0.2189  amp_err=1.84%  R²=0.9991  [val]
+  Ur5.5: CFD=0.2194  GRU=0.2187  amp_err=0.36%  R²=0.9994  [test]
+  Ur5.75: CFD=0.2089  GRU=0.2119  amp_err=1.42%  R²=0.9991  [train]
+  Ur6: CFD=0.1902  GRU=0.1965  amp_err=3.31%  R²=0.9984  [train]
+  Ur6.25: CFD=0.1724  GRU=0.1780  amp_err=3.27%  R²=0.9983  [train]
+  Ur6.5: CFD=0.1785  GRU=0.1791  amp_err=0.36%  R²=0.9979  [val]
+  Ur7: CFD=0.2058  GRU=0.2014  amp_err=2.12%  R²=0.9982  [test]
+  Ur8: CFD=0.2366  GRU=0.2283  amp_err=3.48%  R²=0.9987  [train]
+  Ur9: CFD=0.2551  GRU=0.2443  amp_err=4.27%  R²=0.9951  [val]
+
+All outputs saved to /scratch/jote9827/Github/Cylinder/results/gru_cylinder_re_1000_noise0.05
+
+------------------------------------------------------------
+Sender: LSF System <schwan@makalu94>
+Subject: Job 1188847: <direct_k10> in cluster <wuerfel> Done
+
+Job <direct_k10> was submitted from host <makalu49> by user <jote9827> in cluster <wuerfel> at Thu Jun 18 15:55:38 2026
+Job was executed on host(s) <makalu94>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Thu Jun 18 15:55:58 2026
+</home/jote9827> was used as the home directory.
+</scratch/jote9827/Github/Cylinder> was used as the working directory.
+Started at Thu Jun 18 15:55:58 2026
+Terminated at Thu Jun 18 17:09:55 2026
+Results reported at Thu Jun 18 17:09:55 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J direct_k10                # Job name
+#BSUB -q BatchGPU                  # Target the massive GPU queue you found!
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -R "rusage[mem=32000]"       # Request 32GB of RAM
+#BSUB -W 12:00                     # Max run time (12 hours)
+#BSUB -o k10_train_%J.log          # Output log file (%J is the LSF Job ID)
+
+
+echo "Starting LSF Control Job on node: $HOSTNAME"
+
+# 1. Activate your Conda environment
+
+# 2. Navigate to your project folder
+cd /scratch/jote9827/Github/Cylinder
+source .venv/bin/activate
+
+# 3. Run the Python script 
+VIV_INPUT_NOISE=0.05 python -m src.viv_analysis.train_gru cylinder_re_1000
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   4916.09 sec.
+    Max Memory :                                 19423.21 MB
+    Average Memory :                             19070.11 MB
+    Total Requested Memory :                     32000.00 MB
+    Delta Memory :                               12576.79 MB
+    Max Swap :                                   256 KB
+    Max Processes :                              18
+    Max Threads :                                67
+    Run time :                                   4437 sec.
+    Turnaround time :                            4457 sec.
+
+The output (if any) is above this job summary.
+

@@ -1,0 +1,77 @@
+Starting LSF Control Job on node: makalu97
+ur_stats mean=6.5000 std=2.5909  y_scaler mean=0.000299 scale=0.269071
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+train (computed): ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Building training manifold cloud...
+Cloud: 200,000 pts.  Threshold calibration: noised (sigma=0.05).  In-manifold NN-dist p95=0.098 p99=0.124
+Ur=6.0  U=0.4800  handoff t=76.67s  n_steps=124666
+window_conv = current
+
+============================================================
+Steady-state A/D (this script) = 0.2440
+No --ad_reference given; sanity-check A/D against a production run for THIS model.
+============================================================
+
+Coupled NN-dist: median=0.056  p90=0.075  max=0.099   (in-manifold p99=0.124)
+Fraction of steps off-manifold (> p99): 0.0%
+Interpretation: with the threshold calibrated to the model's own training distribution, a stabilized surrogate sits mostly under p99 (low median, brief excursions at the cycle extremes). A trace that pins far above p99 and stays there — with amplitude divergence — is genuine off-manifold runaway.
+
+Saved plot: /scratch/jote9827/Github/Cylinder/results/offmanifold_Ur6.0_offset1000_current_gru_best.pt.png
+Saved log:  /scratch/jote9827/Github/Cylinder/results/offmanifold_Ur6.0_offset1000_current_gru_best.pt.csv
+
+------------------------------------------------------------
+Sender: LSF System <schwan@makalu97>
+Subject: Job 1208520: <direct_k10> in cluster <wuerfel> Done
+
+Job <direct_k10> was submitted from host <makalu49> by user <jote9827> in cluster <wuerfel> at Mon Jun 22 14:33:14 2026
+Job was executed on host(s) <makalu97>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Mon Jun 22 14:33:34 2026
+</home/jote9827> was used as the home directory.
+</scratch/jote9827/Github/Cylinder> was used as the working directory.
+Started at Mon Jun 22 14:33:34 2026
+Terminated at Mon Jun 22 14:36:47 2026
+Results reported at Mon Jun 22 14:36:47 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J direct_k10                # Job name
+#BSUB -q BatchGPU                  # Target the massive GPU queue you found!
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -R "rusage[mem=32000]"       # Request 32GB of RAM
+#BSUB -W 12:00                     # Max run time (12 hours)
+#BSUB -o k10_train_%J.log          # Output log file (%J is the LSF Job ID)
+
+
+echo "Starting LSF Control Job on node: $HOSTNAME"
+
+# 1. Activate your Conda environment
+
+# 2. Navigate to your project folder
+cd /scratch/jote9827/Github/Cylinder
+source .venv/bin/activate
+
+# 3. Run the Python script 
+python -m src.viv_analysis.diagnose_off_manifold --Ur 6.0 --handoff_offset 1000 \
+    --model_subdir gru_cylinder_re_1000_noise0.05 --noise_std 0.05 --total_time 700 --checkpoint gru_best.pt
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   173.50 sec.
+    Max Memory :                                 604.20 MB
+    Average Memory :                             536.73 MB
+    Total Requested Memory :                     32000.00 MB
+    Delta Memory :                               31395.80 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                13
+    Run time :                                   193 sec.
+    Turnaround time :                            213 sec.
+
+The output (if any) is above this job summary.
+

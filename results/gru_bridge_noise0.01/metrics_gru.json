@@ -1,0 +1,144 @@
+{
+  "dataset": "bridge",
+  "gru_config": {
+    "bridge_D_ref": 7.42,
+    "bridge_B_ref": 25.9,
+    "bridge_fn_hz": 0.32,
+    "bridge_t_star_release": 20.0,
+    "bridge_downsample": 20,
+    "bridge_seq_len": 2500,
+    "bridge_stride_train": 5,
+    "bridge_zeta": 0.01,
+    "bridge_rho": 1.225,
+    "bridge_mass": 24604.0,
+    "cylinder_D_ref": 1.0,
+    "cylinder_dt": 0.02,
+    "cylinder_t_release": 60.0,
+    "cylinder1000_D_ref": 0.4,
+    "cylinder1000_dt": 0.005,
+    "cylinder1000_t_release": 16.0,
+    "cylinder1000_U_inf": 1.0,
+    "cylinder1000_zeta": 0.007,
+    "cylinder1000_rho": 1.0,
+    "cylinder1000_fn": 0.2,
+    "cylinder1000_M_star": 2.0,
+    "hidden_size": 64,
+    "num_layers": 2,
+    "dropout": 0.1,
+    "lr": 0.001,
+    "weight_decay": 1e-05,
+    "n_epochs": 100,
+    "batch_size": 512,
+    "patience": 15,
+    "seq_len": 2500,
+    "stride_train": 5,
+    "stride_val": 1,
+    "use_ur_context": true,
+    "hl_range": [
+      500,
+      2500
+    ],
+    "hl_step": 100,
+    "lam_range": [
+      1e-08,
+      0.001
+    ],
+    "n_trials": 50,
+    "n_jobs": -1,
+    "n_models": 15,
+    "n_hidden_nodes": 300,
+    "alpha_reg": 1.0,
+    "n_ensemble": 10,
+    "seed": 123,
+    "target_col": "cl",
+    "input_cols": [
+      "disp",
+      "vel",
+      "acc"
+    ],
+    "motion_type": "heave",
+    "viv_dataset": [
+      "cylinder",
+      "cylinder1000",
+      "bridge"
+    ]
+  },
+  "case_split": {
+    "train": [
+      "Ur10.1078",
+      "Ur5.0539",
+      "Ur5.2645",
+      "Ur5.6856",
+      "Ur5.8962",
+      "Ur6.3174",
+      "Ur6.4227",
+      "Ur6.8438",
+      "Ur6.9491",
+      "Ur7.3703",
+      "Ur7.5809",
+      "Ur8.2126",
+      "Ur8.4232",
+      "Ur8.6338",
+      "Ur8.8443",
+      "Ur9.2655"
+    ],
+    "val": [
+      "Ur4.8433",
+      "Ur5.5804",
+      "Ur6.1068",
+      "Ur6.7385",
+      "Ur7.265",
+      "Ur8.002"
+    ],
+    "test": [
+      "Ur4.6327",
+      "Ur5.4751",
+      "Ur6.0015",
+      "Ur6.528",
+      "Ur7.1597",
+      "Ur7.7914"
+    ]
+  },
+  "val_metrics": {
+    "mae": 0.006290579680353403,
+    "rmse": 0.012232883615312336,
+    "r2": 0.9988589286804199
+  },
+  "test_metrics": {
+    "mae": 0.005560638383030891,
+    "rmse": 0.009214958508869673,
+    "r2": 0.9994227886199951
+  },
+  "tf_results": {
+    "Ur4.6327": {
+      "mae": 0.006460235919803381,
+      "rmse": 0.014492205613534974,
+      "r2": 0.9992509484291077
+    },
+    "Ur5.4751": {
+      "mae": 0.00522215012460947,
+      "rmse": 0.006712701544576599,
+      "r2": 0.999761164188385
+    },
+    "Ur6.0015": {
+      "mae": 0.00450310530140996,
+      "rmse": 0.005777676996426099,
+      "r2": 0.9993647336959839
+    },
+    "Ur6.528": {
+      "mae": 0.005240346770733595,
+      "rmse": 0.006707710184763954,
+      "r2": 0.9990994334220886
+    },
+    "Ur7.1597": {
+      "mae": 0.00928082037717104,
+      "rmse": 0.012171027015809405,
+      "r2": 0.9993557929992676
+    },
+    "Ur7.7914": {
+      "mae": 0.0062428186647593975,
+      "rmse": 0.007941519463510129,
+      "r2": 0.9988653063774109
+    }
+  }
+}

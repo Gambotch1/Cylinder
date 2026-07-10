@@ -1,0 +1,100 @@
+Sender: LSF System <schwan@makalu94>
+Subject: Job 1560537[3]: <attr_ur5[1-5]> in cluster <wuerfel> Done
+
+Job <attr_ur5[1-5]> was submitted from host <makalu56> by user <jote9827> in cluster <wuerfel> at Wed Jul  8 23:41:59 2026
+Job was executed on host(s) <makalu94>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Wed Jul  8 23:42:19 2026
+</home/jote9827> was used as the home directory.
+</scratch/jote9827/Github/Cylinder> was used as the working directory.
+Started at Wed Jul  8 23:42:19 2026
+Terminated at Wed Jul  8 23:46:00 2026
+Results reported at Wed Jul  8 23:46:00 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J "attr_ur5[1-5]"
+#BSUB -q BatchGPU
+#BSUB -gpu "num=1:mode=shared"
+#BSUB -R "rusage[mem=24000]"
+#BSUB -W 1:00
+#BSUB -o logs/attr_%I.log
+
+mkdir -p logs
+
+cd /scratch/jote9827/Github/Cylinder
+source .venv/bin/activate
+export VIV_NUM_WORKERS=0
+export OMP_NUM_THREADS=4
+
+UR=5.0
+TARG=0.4156
+SUB="gru_cylinder_re_1000_noise0.05"
+
+case $LSB_JOBINDEX in
+  1) OFF=0; SCL=1.0 ;;
+  2) OFF=500; SCL=1.0 ;;
+  3) OFF=1095; SCL=1.0 ;;
+  4) OFF=30000; SCL=1.3 ;;
+  5) OFF=30000; SCL=1.5 ;;
+esac
+
+python -u -m src.viv_analysis.coupled_inference \
+  --cfd_dataset cylinder1000 --model_dataset cylinder_re_1000 \
+  --model_subdir $SUB --Ur $UR \
+  --handoff_offset $OFF --cfd_scale $SCL \
+  --cfd_target_AD $TARG --total_time 700
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   203.97 sec.
+    Max Memory :                                 788.14 MB
+    Average Memory :                             711.75 MB
+    Total Requested Memory :                     24000.00 MB
+    Delta Memory :                               23211.86 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                14
+    Run time :                                   221 sec.
+    Turnaround time :                            241 sec.
+
+The output (if any) follows:
+
+Using device: cuda
+Loaded scalers and UR stats: use_ur_context=Truemean=6.5000, std=2.5909
+y_scaler: mean=0.000299  scale=0.269071
+[cylinder1000] Ur=5.0  U=0.4000 m/s  fn=0.2  D(Ur,rel,h/D)=0.4  B(force)=0.4
+  m=2.513274e-01  c=4.421583e-03  k=3.968803e-01  rho=1.0  t_release=80.0000s
+
+Loading CFD trajectory at Ur=5.0 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+  CFD trajectory has 139901 steps
+  Warm-start window: CFD steps 17995]  (post-release)
+  Handoff at t=90.4750s   (5.00s after release)
+  Initial state at handoff: h=-0.063181  h_dot=0.150510  h_ddot=0.126852
+  Warm-start raw stats (scaled by 1.0):
+    disp range: [-0.12777, 0.09878]
+    vel  range: [-0.14645, 0.14987]
+    acc  range: [-0.16217, 0.21601]
+Model loaded: input_size=4  hidden_size=64
+Model/input check: input_size=4, history_shape=(1000, 4)
+
+TF-vs-coupled diagnostic over full post-release record: 121905 steps (609.5s)
+[info] --make_tf_residual not set; skipping TF diagnostic (diag plot and residual generation)
+[info] --run_replay_diag not set; skipping Newmark replay diagnostic
+
+Running coupled inference for 700.0s (121905 steps)...
+121905 steps) ...
+[closure] CFD RMS A/D=0.2936  a_ref(peak)=0.1661 m
+Saved coupled trajectory -> /scratch/jote9827/Github/Cylinder/results/coupled_cylinder1000_Ur5.0_gru_cylinder_re_1000_noise0.05_forc-v1_additive_noise-none_scale1_s1_seed0_handoff_1095_muNone.npz
+
+Saved coupled VIV plot to /scratch/jote9827/Github/Cylinder/results/coupled_viv_Ur5.0_gru_cylinder_re_1000_noise0.05_forc-v1_additive_noise-none_scale1_s1_seed0_handoff_1095_muNone.png
+
+Steady-state A/D = 0.3923
+Displacement range: -0.1585 to 0.1556 m
+CL range: -0.1594 to 0.1969

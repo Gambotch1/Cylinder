@@ -1,0 +1,154 @@
+{
+  "dataset": "cylinder1000",
+  "coordinate_mode": "nondimensional",
+  "nd_inputs": true,
+  "use_ur_context": false,
+  "holdout_ur": 5.5,
+  "holdout_label": "Ur5.5",
+  "gru_config": {
+    "bridge_D_ref": 7.42,
+    "bridge_B_ref": 25.9,
+    "bridge_fn_hz": 0.32,
+    "bridge_t_star_release": 20.0,
+    "bridge_downsample": 20,
+    "bridge_seq_len": 2500,
+    "bridge_stride_train": 5,
+    "bridge_zeta": 0.01,
+    "bridge_rho": 1.225,
+    "bridge_mass": 24604.0,
+    "cylinder_D_ref": 1.0,
+    "cylinder_dt": 0.02,
+    "cylinder_t_release": 60.0,
+    "cylinder1000_D_ref": 0.4,
+    "cylinder1000_dt": 0.005,
+    "cylinder1000_t_release": 16.0,
+    "cylinder1000_U_inf": 1.0,
+    "cylinder1000_zeta": 0.007,
+    "cylinder1000_rho": 1.0,
+    "cylinder1000_fn": 0.2,
+    "cylinder1000_M_star": 2.0,
+    "hidden_size": 64,
+    "num_layers": 2,
+    "dropout": 0.1,
+    "lr": 0.001,
+    "weight_decay": 1e-05,
+    "n_epochs": 1,
+    "batch_size": 512,
+    "patience": 15,
+    "seq_len": 1000,
+    "stride_train": 8,
+    "stride_val": 1,
+    "use_ur_context": false,
+    "hl_range": [
+      500,
+      2500
+    ],
+    "hl_step": 100,
+    "lam_range": [
+      1e-08,
+      0.001
+    ],
+    "n_trials": 50,
+    "n_jobs": -1,
+    "n_models": 15,
+    "n_hidden_nodes": 300,
+    "alpha_reg": 1.0,
+    "n_ensemble": 10,
+    "seed": 123,
+    "target_col": "cl",
+    "input_cols": [
+      "disp",
+      "vel",
+      "acc"
+    ],
+    "motion_type": "heave",
+    "viv_dataset": [
+      "cylinder",
+      "cylinder1000",
+      "bridge"
+    ],
+    "nd_inputs": true
+  },
+  "case_split": {
+    "train": [
+      "Ur10",
+      "Ur12",
+      "Ur3.5",
+      "Ur4",
+      "Ur4.5",
+      "Ur5",
+      "Ur5.75",
+      "Ur6",
+      "Ur6.25",
+      "Ur8"
+    ],
+    "val": [
+      "Ur4.25",
+      "Ur5.25",
+      "Ur6.5",
+      "Ur9"
+    ],
+    "test": [
+      "Ur11",
+      "Ur4.75",
+      "Ur5.5",
+      "Ur7"
+    ]
+  },
+  "scaler_fit_cases": [
+    "Ur10",
+    "Ur12",
+    "Ur3.5",
+    "Ur4",
+    "Ur4.5",
+    "Ur5",
+    "Ur5.75",
+    "Ur6",
+    "Ur6.25",
+    "Ur8"
+  ],
+  "ur_stats_fit_cases": [
+    "Ur10",
+    "Ur12",
+    "Ur3.5",
+    "Ur4",
+    "Ur4.5",
+    "Ur5",
+    "Ur5.75",
+    "Ur6",
+    "Ur6.25",
+    "Ur8"
+  ],
+  "val_metrics": {
+    "mae": 0.1038937121629715,
+    "rmse": 0.16081610100795554,
+    "r2": -0.24632108211517334
+  },
+  "test_metrics": {
+    "mae": 0.06161973252892494,
+    "rmse": 0.07808507256651427,
+    "r2": 0.7989985942840576
+  },
+  "tf_results": {
+    "Ur11": {
+      "mae": 0.089814193546772,
+      "rmse": 0.10410673583096486,
+      "r2": 0.7954196333885193
+    },
+    "Ur4.75": {
+      "mae": 0.07261180132627487,
+      "rmse": 0.09086452966436512,
+      "r2": 0.6179956197738647
+    },
+    "Ur5.5": {
+      "mae": 0.03805563971400261,
+      "rmse": 0.0481341905108701,
+      "r2": 0.9038119316101074
+    },
+    "Ur7": {
+      "mae": 0.04495587572455406,
+      "rmse": 0.0531080613410119,
+      "r2": 0.8661090731620789
+    }
+  }
+}

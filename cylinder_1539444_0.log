@@ -1,0 +1,76 @@
+Using device: cuda
+Loaded scalers and UR stats: use_ur_context=Truemean=6.5000, std=2.5909
+y_scaler: mean=0.000299  scale=0.269071
+[cylinder1000] Ur=4.0  U=0.3200 m/s  fn=0.2  D(Ur,rel,h/D)=0.4  B(force)=0.4
+  m=2.513274e-01  c=4.421583e-03  k=3.968803e-01  rho=1.0  t_release=100.0000s
+
+Loading CFD trajectory at Ur=4.0 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+  CFD trajectory has 139901 steps
+  Warm-start window: CFD steps 22900]  (post-release)
+  Handoff at t=115.0000s   (5.00s after release)
+  Initial state at handoff: h=0.090706  h_dot=0.125372  h_ddot=-0.101886
+  Warm-start raw stats:
+    disp range: [-0.11598, 0.09008]
+    vel  range: [-0.11511, 0.15122]
+    acc  range: [-0.11014, 0.15360]
+Model loaded: input_size=4  hidden_size=64
+
+[ATTRACTOR TEST] Seeding loop with artificial A/D = 0.75
+[ATTRACTOR] seed A/D=0.75  final A/D=0.0116  target=0.35  f_dom=0.167  converged=False
+
+------------------------------------------------------------
+Sender: LSF System <schwan@makalu83>
+Subject: Job 1539444: <cylinder_inference> in cluster <wuerfel> Done
+
+Job <cylinder_inference> was submitted from host <makalu56> by user <jote9827> in cluster <wuerfel> at Tue Jul  7 14:14:01 2026
+Job was executed on host(s) <makalu83>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Tue Jul  7 14:14:21 2026
+</home/jote9827> was used as the home directory.
+</scratch/jote9827/Github/Cylinder> was used as the working directory.
+Started at Tue Jul  7 14:14:21 2026
+Terminated at Tue Jul  7 14:16:48 2026
+Results reported at Tue Jul  7 14:16:48 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J cylinder_inference
+#BSUB -q BatchGPU
+#BSUB -gpu "num=1:mode=shared"
+#BSUB -R "rusage[mem=24000]"
+#BSUB -W 3:00
+#BSUB -o cylinder_%J_%I.log
+cd /scratch/jote9827/Github/Cylinder
+source .venv/bin/activate
+export VIV_NUM_WORKERS=0
+export OMP_NUM_THREADS=4
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+
+# decay from above
+python -u -m src.viv_analysis.coupled_inference \
+  --cfd_dataset cylinder1000 --model_subdir gru_cylinder_re_1000_noise0.05 \
+  --model_dataset cylinder_re_1000 \
+  --Ur 4 --ad_seed 0.75 --cfd_target_AD 0.35 --total_time 300
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   129.00 sec.
+    Max Memory :                                 789.82 MB
+    Average Memory :                             663.39 MB
+    Total Requested Memory :                     24000.00 MB
+    Delta Memory :                               23210.18 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                14
+    Run time :                                   147 sec.
+    Turnaround time :                            167 sec.
+
+The output (if any) is above this job summary.
+

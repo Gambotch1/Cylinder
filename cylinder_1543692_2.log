@@ -1,0 +1,93 @@
+Using device: cuda
+Loaded scalers and UR stats: use_ur_context=Truemean=6.5000, std=2.5909
+y_scaler: mean=0.000299  scale=0.269071
+[cylinder1000] Ur=4.0  U=0.3200 m/s  fn=0.2  D(Ur,rel,h/D)=0.4  B(force)=0.4
+  m=2.513274e-01  c=4.421583e-03  k=3.968803e-01  rho=1.0  t_release=100.0000s
+
+Loading CFD trajectory at Ur=4.0 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+  CFD trajectory has 139901 steps
+  Warm-start window: CFD steps 21000]  (post-release)
+  Handoff at t=105.5000s   (5.00s after release)
+  Initial state at handoff: h=0.017143  h_dot=-0.036379  h_ddot=-0.035503
+  Warm-start raw stats:
+    disp range: [-0.01161, 0.03343]
+    vel  range: [-0.03620, 0.02653]
+    acc  range: [-0.04383, 0.02342]
+Model loaded: input_size=4  hidden_size=64
+Model/input check: input_size=4, history_shape=(1000, 4)
+
+TF-vs-coupled diagnostic over full post-release record: 118900 steps (594.5s)
+[info] --make_tf_residual not set; skipping TF diagnostic (diag plot and residual generation)
+[info] --run_replay_diag not set; skipping Newmark replay diagnostic
+
+Running coupled inference for 700.0s (118900 steps)...
+118900 steps) ...
+[closure] CFD RMS A/D=0.3508  a_ref(peak)=0.1985 m
+Saved coupled trajectory -> /scratch/jote9827/Github/Cylinder/results/coupled_cylinder1000_Ur4.0_gru_cylinder_re_1000_noise0.05_forc-v1_additive_noise-none_s1_seed0_muNone.npz
+
+Saved coupled VIV plot to /scratch/jote9827/Github/Cylinder/results/coupled_viv_Ur=4.0 — v1_additive, none, mu=None.png
+
+Steady-state A/D = 0.0006
+Displacement range: -0.0550 to 0.0376 m
+CL range: -0.4183 to 0.1151
+
+------------------------------------------------------------
+Sender: LSF System <schwan@makalu94>
+Subject: Job 1543692[2]: <cylinder_forcing[1-6]> in cluster <wuerfel> Done
+
+Job <cylinder_forcing[1-6]> was submitted from host <makalu56> by user <jote9827> in cluster <wuerfel> at Tue Jul  7 23:35:35 2026
+Job was executed on host(s) <makalu94>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Tue Jul  7 23:35:55 2026
+</home/jote9827> was used as the home directory.
+</scratch/jote9827/Github/Cylinder> was used as the working directory.
+Started at Tue Jul  7 23:35:55 2026
+Terminated at Tue Jul  7 23:39:31 2026
+Results reported at Tue Jul  7 23:39:31 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J cylinder_forcing[1-6]
+#BSUB -q BatchGPU
+#BSUB -gpu "num=1:mode=shared"
+#BSUB -R "rusage[mem=24000]"
+#BSUB -W 3:00
+#BSUB -o cylinder_%J_%I.log
+cd /scratch/jote9827/Github/Cylinder
+source .venv/bin/activate
+export VIV_NUM_WORKERS=0
+export OMP_NUM_THREADS=4
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+RES=results/tf_residual_Ur6.7385.npz
+COMMON="--Ur 4 --cfd_dataset cylinder1000 --model_subdir gru_cylinder_re_1000_noise0.05 \
+  --model_dataset cylinder_re_1000 --cfd_target_AD 0.4956 --total_time 700"
+case $LSB_JOBINDEX in
+  1) python -u -m src.viv_analysis.coupled_inference $COMMON --handoff_offset 1600 ;;   # A: 0.46× CFD state — the A/B partner
+  2) python -u -m src.viv_analysis.coupled_inference $COMMON --handoff_offset 100  ;;   # 0.25× — basin depth
+  3) python -u -m src.viv_analysis.coupled_inference $COMMON --handoff_offset 3100 ;;   # 0.70× — near-cycle control
+  4) python -u -m src.viv_analysis.coupled_inference $COMMON --ad_seed 0.35 ;;          # B: analytic at 0.7× — where does sine start failing?
+  5) python -u -m src.viv_analysis.coupled_inference $COMMON --handoff_offset 30000 --cfd_scale 1.3 ;;  # from above (needs patch)
+  6) python -u -m src.viv_analysis.coupled_inference $COMMON --handoff_offset 30000 --cfd_scale 1.5 ;;
+esac
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   200.22 sec.
+    Max Memory :                                 818.82 MB
+    Average Memory :                             667.94 MB
+    Total Requested Memory :                     24000.00 MB
+    Delta Memory :                               23181.18 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                14
+    Run time :                                   215 sec.
+    Turnaround time :                            236 sec.
+
+The output (if any) is above this job summary.
+

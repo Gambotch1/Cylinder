@@ -1,0 +1,117 @@
+Starting LSF Control Job on node: makalu87
+Using device: cuda
+Loaded scalers and UR stats: use_ur_context=Truemean=7.3045, std=1.4560
+y_scaler: mean=0.097555  scale=0.265595
+[bridge] Ur=6.7385  U=15.9999 m/s  fn=0.32  D(Ur,rel,h/D)=7.42  B(force)=25.9
+  m=2.460400e+04  c=9.893855e+02  k=9.946388e+04  rho=1.225  t_release=9.2751s
+
+Loading CFD trajectory at Ur=6.7385 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.460400e+04  c=9.893855e+02  k=9.946388e+04
+  CFD trajectory has 127609 steps
+  [bridge] Newmark dt = 0.001999s  (1563 steps/cycle)
+  Warm-start window: CFD steps 9133]  (post-release)
+  Handoff at t=18.2760s   (5.00s after release)
+  Initial state at handoff: h=0.017205  h_dot=-0.058792  h_ddot=-0.085019
+  Warm-start raw stats:
+    disp range: [-0.00054, 0.03977]
+    vel  range: [-0.05861, 0.03751]
+    acc  range: [-0.11765, 0.07807]
+Model loaded: input_size=4  hidden_size=64
+Model/input check: input_size=4, history_shape=(2500, 4)
+
+TF-vs-coupled diagnostic over full post-release record: 118475 steps (236.8s)
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/scratch/jote9827/Github/Cylinder/src/viv_analysis/coupled_inference.py", line 1039, in <module>
+    main(
+  File "/scratch/jote9827/Github/Cylinder/src/viv_analysis/coupled_inference.py", line 767, in main
+    diag = diagnostic_teacher_forcing_vs_coupled(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/jote9827/Github/Cylinder/src/viv_analysis/coupled_inference.py", line 177, in diagnostic_teacher_forcing_vs_coupled
+    cl_s, _ = model(x)  # (B,)
+              ^^^^^^^^
+  File "/scratch/jote9827/Github/Cylinder/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/jote9827/Github/Cylinder/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/jote9827/Github/Cylinder/src/viv_analysis/models/gru.py", line 54, in forward
+    out, hn = self.gru(x, h0)
+              ^^^^^^^^^^^^^^^
+  File "/scratch/jote9827/Github/Cylinder/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/jote9827/Github/Cylinder/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/jote9827/Github/Cylinder/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1393, in forward
+    result = _VF.gru(
+             ^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 39.22 GiB. GPU 0 has a total capacity of 39.49 GiB of which 36.23 GiB is free. Including non-PyTorch memory, this process has 3.26 GiB memory in use. Of the allocated memory 2.75 GiB is allocated by PyTorch, and 21.19 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+------------------------------------------------------------
+Sender: LSF System <schwan@makalu87>
+Subject: Job 1401299: <direct_k10> in cluster <wuerfel> Exited
+
+Job <direct_k10> was submitted from host <makalu49> by user <jote9827> in cluster <wuerfel> at Fri Jul  3 17:14:24 2026
+Job was executed on host(s) <makalu87>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Fri Jul  3 21:52:04 2026
+</home/jote9827> was used as the home directory.
+</scratch/jote9827/Github/Cylinder> was used as the working directory.
+Started at Fri Jul  3 21:52:04 2026
+Terminated at Fri Jul  3 22:53:38 2026
+Results reported at Fri Jul  3 22:53:38 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J direct_k10                # Job name
+#BSUB -q BatchGPU                  # Target the massive GPU queue you found!
+#BSUB -gpu "num=1:mode=exclusive_process:mps=no:j_exclusive=yes"  # Request 1 GPU
+#BSUB -R "rusage[mem=32000]"       # Request 32GB of RAM
+#BSUB -W 12:00                     # Max run time (12 hours)
+#BSUB -o k10_train_%J.log          # Output log file (%J is the LSF Job ID)
+
+
+echo "Starting LSF Control Job on node: $HOSTNAME"
+
+# 1. Activate your Conda environment
+
+# 2. Navigate to your project folder
+cd /scratch/jote9827/Github/Cylinder
+source .venv/bin/activate
+
+export VIV_NUM_WORKERS=0
+
+# 3. Run the Python script 
+RES=results/tf_residual_Ur6.7385.npz
+COMMON="--Ur 6.7385 --cfd_dataset bridge --model_subdir gru_bridge_noise0.05 \
+  --total_time 200 --handoff_offset 2000 --residual_npz $RES \
+  --noise_seed 0"
+
+# v2 — multiplicative (amplitude-gained noise)      → expect ~0 (collapse)
+python -u -m src.viv_analysis.coupled_inference $COMMON \
+  --noise_mode surrogate --noise_scale 1.0 --forcing_mode v2_multiplicative
+------------------------------------------------------------
+
+Exited with exit code 1.
+
+Resource usage summary:
+
+    CPU time :                                   3651.83 sec.
+    Max Memory :                                 19154.11 MB
+    Average Memory :                             12465.95 MB
+    Total Requested Memory :                     32000.00 MB
+    Delta Memory :                               12845.89 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                12
+    Run time :                                   3688 sec.
+    Turnaround time :                            20354 sec.
+
+The output (if any) is above this job summary.
+

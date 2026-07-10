@@ -24,7 +24,7 @@ CONFIGS = [
     ("gru_cylinder_re_1000_noise0.05", "gru_best.pt", "noise0.05"),
 ]
 
-Ur_LIST = [5.0, 5.5, 6.0, 6.5, 7.0]
+Ur_LIST = [4.0, 5.0, 5.5, 6.0, 6.5, 7.0]
 
 # Physical parameters (must match coupled_inference.py)
 D = config['cylinder1000_D_ref']

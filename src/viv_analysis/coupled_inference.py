@@ -17,6 +17,16 @@ from viv_analysis.self_excitation import build_seed_history, analyze_run, measur
 from viv_analysis.config import config
 
 
+def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float) -> np.ndarray:
+    """Physical [h, hdot, hddot] (last axis) -> model input coords.
+    Identity unless nd_inputs; else divide by [D, U, U^2/D]."""
+    if not nd_inputs:
+        return kin
+    if D <= 0 or U <= 0:
+        raise ValueError(f"to_model_coords requires D>0, U>0 (got D={D}, U={U})")
+    return kin / np.array([D, U, U * U / D], dtype=np.float32)
+
+
 def Newmark_beta( F, h, h_dot, h_ddot, dt, m, c, k, beta=0.25, gamma=0.5):
     """
     Newmark-beta
@@ -44,10 +54,14 @@ def warmup_history(
     seq_len,
     input_cols,
     x_scaler,
+    nd_inputs: bool,
+    D: float,
+    U: float,
     use_ur_context,
     ur_value,
     ur_stats,
     handoff_offset_steps: int = 0,
+    cfd_scale: float = 1.0,
 ):
     ordered = cfd_case_df.sort_values("time").reset_index(drop=True)
     times = ordered["time"].to_numpy(dtype=np.float32)
@@ -79,6 +93,8 @@ def warmup_history(
         )
 
     kinematics = win[input_cols].to_numpy(dtype=np.float32)
+    kinematics = kinematics * float(cfd_scale)
+    kinematics = to_model_coords(kinematics, nd_inputs, D, U)
     kinematics_scaled = x_scaler.transform(kinematics)
 
     if use_ur_context:
@@ -91,9 +107,9 @@ def warmup_history(
         history = kinematics_scaled
 
     initial_state = {
-        "h": float(ordered["disp"].iloc[handoff_idx]),
-        "h_dot": float(ordered["vel"].iloc[handoff_idx]),
-        "h_ddot": float(ordered["acc"].iloc[handoff_idx]),
+        "h": float(ordered["disp"].iloc[handoff_idx]) * float(cfd_scale),
+        "h_dot": float(ordered["vel"].iloc[handoff_idx]) * float(cfd_scale),
+        "h_ddot": float(ordered["acc"].iloc[handoff_idx]) * float(cfd_scale),
     }
 
     handoff_time = float(times[handoff_idx])
@@ -122,6 +138,7 @@ def diagnostic_teacher_forcing_vs_coupled(
     ur_value,
     ur_stats,
     device,
+    nd_inputs: bool,
     n_steps=500,
     tf_batch_size=1024,
 ):
@@ -142,7 +159,7 @@ def diagnostic_teacher_forcing_vs_coupled(
     # DataFrame and re-fitting/transforming per step — needed now that n_steps
     # can span the full post-release record (1e5+ steps) rather than a short window.
     kinematics_full_scaled = x_scaler.transform(
-        ordered[input_cols].to_numpy(dtype=np.float32)
+        to_model_coords(ordered[input_cols].to_numpy(dtype=np.float32), nd_inputs, D, U)
     )
     if use_ur_context:
         ur_col_full = np.full((len(ordered), 1), ur_scaled, dtype=np.float32)
@@ -203,6 +220,7 @@ def diagnostic_teacher_forcing_vs_coupled(
         ur_value=ur_value,
         ur_stats=ur_stats,
         device=device,
+        nd_inputs=nd_inputs,
     )
 
     coupled_cl = coupled["CL"]
@@ -393,6 +411,7 @@ def run_coupled_viv(
     ur_value:     float = 0.0,
     ur_stats:     tuple   = (0.0, 1.0),
     device:       str = "cpu",
+    nd_inputs:    bool = False,
     e_forcing:    np.ndarray = None,  # additive residual forcing on CL, shape (n_steps,)
     gru_off:      bool = False,       # if True, zero GRU lift (forcing-only null control)
     # Optional closure / forcing parameters
@@ -460,6 +479,7 @@ def run_coupled_viv(
     x_scale = x_scaler.scale_.astype(np.float32)
     y_mean = float(y_scaler.mean_[0])
     y_scale = float(y_scaler.scale_[0])
+    nd_div = np.array([D, U, U * U / D], dtype=np.float32) if nd_inputs else None
 
     # ── Closure / forcing-mode setup ───────────────────────────────────
     # Validate required inputs for non-default forcing modes and precompute
@@ -519,7 +539,8 @@ def run_coupled_viv(
             # iteration the window ends at i, matching the training convention:
             #   predict CL[i+1] from kinematics [..., h[i]].
             new_kinematics_raw = np.array([h[i], h_dot[i], h_ddot[i]], dtype=np.float32)
-            new_kinematics_scaled = (new_kinematics_raw - x_mean) / x_scale
+            new_kinematics_t = new_kinematics_raw / nd_div if nd_inputs else new_kinematics_raw
+            new_kinematics_scaled = (new_kinematics_t - x_mean) / x_scale
 
             if use_ur_context:
                 new_row = np.append(new_kinematics_scaled, ur_scaled).astype(np.float32)
@@ -573,6 +594,8 @@ def main(
     checkpoint: str = "gru_best.pt",
     model_subdir: Optional[str] = None,
     handoff_offset_steps: int = 2000,
+    cfd_scale: float = 1.0,
+    nd_inputs: bool = False,
     residual_npz: Optional[str] = None,
     noise_mode: str = "none",
     noise_scale: float = 1.0,
@@ -713,12 +736,14 @@ def main(
         seq_len=seq_len,
         input_cols=input_cols,
         x_scaler=x_scaler,
+        nd_inputs=nd_inputs,
+        D=D,
+        U=U,
         use_ur_context=use_ur_context,
         ur_value=Ur,
         ur_stats=(ur_mean, ur_std),
         handoff_offset_steps=handoff_offset_steps,
-
-        
+        cfd_scale=cfd_scale,
     )
     print(f"  Warm-start window: CFD steps "
           f"{handoff_idx}]  (post-release)")
@@ -731,7 +756,9 @@ def main(
 
         # Sanity check: warm-start kinematics should NOT all be zero
     raw_kin = case_df.iloc[handoff_idx - seq_len : handoff_idx][input_cols].to_numpy()
-    print(f"  Warm-start raw stats:")
+    raw_kin = raw_kin * float(cfd_scale)
+    raw_kin = to_model_coords(raw_kin, nd_inputs, D, U)
+    print(f"  Warm-start raw stats (scaled by {cfd_scale}):")
     print(f"    disp range: [{raw_kin[:,0].min():.5f}, {raw_kin[:,0].max():.5f}]")
     print(f"    vel  range: [{raw_kin[:,1].min():.5f}, {raw_kin[:,1].max():.5f}]")
     print(f"    acc  range: [{raw_kin[:,2].min():.5f}, {raw_kin[:,2].max():.5f}]")
@@ -755,10 +782,17 @@ def main(
     # ── Attractor test: seed with artificial A/D ───────────────────────
     if ad_seed is not None:
         print(f"\n[ATTRACTOR TEST] Seeding loop with artificial A/D = {ad_seed}")
+        
+        from viv_analysis.self_excitation import dominant_freq
+        cfd_fdom = dominant_freq(case_df["disp"].to_numpy(), dt, fn)
+        print(f"  Measured CFD true frequency: {cfd_fdom:.3f} Hz")
+        
         initial_history, initial_state = build_seed_history(
             ad_seed=ad_seed, seq_len=seq_len, dt=dt, D=D, fn=fn,
+            nd_inputs=nd_inputs, U=U,
             x_scaler=x_scaler, use_ur_context=use_ur_context,
             ur_value=Ur, ur_stats=(ur_mean, ur_std),
+            freq=cfd_fdom,
         )
         t_handoff = 0.0
         n_steps = int(total_time / dt)
@@ -769,6 +803,7 @@ def main(
             seq_len=seq_len, input_cols=input_cols,
             m=m, c=c, k=k, rho=rho, U=U, D=D, B=B, dt=dt, n_steps=n_steps,
             use_ur_context=use_ur_context, ur_value=Ur, ur_stats=(ur_mean, ur_std),
+            nd_inputs=nd_inputs,
             device=device, e_forcing=None, gru_off=False,
         )
 
@@ -831,11 +866,12 @@ def main(
             ur_value=Ur,
             ur_stats=(ur_mean, ur_std),
             device=device,
+            nd_inputs=nd_inputs,
             n_steps=n_steps_tf,
             tf_batch_size=1024,
         )
 
-        tf_residual_path = PROJECT_ROOT / "results" / f"tf_residual_Ur{Ur}.npz"
+        tf_residual_path = PROJECT_ROOT / "results" / f"tf_residual_Ur{Ur}_off{handoff_offset_steps}.npz"
         np.savez(
             tf_residual_path,
             cl_true=diag["cfd_cl"],
@@ -981,6 +1017,7 @@ def main(
         dt           = dt,
         n_steps      = n_steps,
         device       = device,
+        nd_inputs    = nd_inputs,
         use_ur_context = use_ur_context,
         ur_value     = Ur,
         ur_stats     = (ur_mean, ur_std),
@@ -1005,13 +1042,16 @@ def main(
     _sub = model_subdir or f"gru_{model_dataset}"
     # short tags to ensure filenames are unique per experimental factors
     _gru_tag = "_gruoff" if gru_off else ""
+    _nd_tag = "_nd" if nd_inputs else ""
     _noise_scale_tag = f"s{noise_scale:.6g}"
-    _exp_tag = f"{_sub}_forc-{forcing_mode}_noise-{noise_mode}{_gru_tag}_{_noise_scale_tag}_seed{noise_seed}"
-    npz_out = PROJECT_ROOT / "results" / f"coupled_{cfd_dataset}_Ur{Ur}_{_exp_tag}_mu{mu_used:.4g}.npz"
+    _cfd_scale_tag = f"_scale{cfd_scale:g}"
+    _exp_tag = f"{_sub}_forc-{forcing_mode}_noise-{noise_mode}{_gru_tag}{_nd_tag}{_cfd_scale_tag}_{_noise_scale_tag}_seed{noise_seed}_handoff_{handoff_offset_steps}"
+    npz_out = PROJECT_ROOT / "results" / f"coupled_{cfd_dataset}_Ur{Ur}_{_exp_tag}_mu{mu_used}.npz"
     np.savez(npz_out, t=t, h=h, cl=CL, h_cfd=h_cfd_tail, D=D, Ur=float(Ur),
              model_subdir=_sub, forcing_mode=forcing_mode, noise_mode=noise_mode,
              gru_off=bool(gru_off), noise_scale=float(noise_scale), noise_seed=int(noise_seed),
-             cl_det=result.get("CL_det"), cl_vdp=result.get("CL_vdp"), e=result.get("e_forcing"))
+             cl_det=result.get("CL_det"), cl_vdp=result.get("CL_vdp"), e=result.get("e_forcing"),
+             h_dot=result["velocity"], h_ddot=result["acceleration"])
     print(f"Saved coupled trajectory -> {npz_out}")
 
     # ── Plot: GRU result alongside CFD ground truth for comparison ────────
@@ -1028,7 +1068,7 @@ def main(
                     label=f"handoff t={t_handoff:.1f}s")
     axes[0].axhline(0, color="gray", lw=0.5, ls=":")
     axes[0].set_ylabel(r"$h/D$")
-    axes[0].set_title(f"Coupled GRU-Structural VIV  —  $U_r={Ur}_{_exp_tag}$ (post-release warm-start)")
+    axes[0].set_title(f"Coupled GRU-Structural VIV  —  Ur={Ur} — {forcing_mode}, {noise_mode}, mu={mu_used} (post-release warm-start)")
     axes[0].legend(loc="upper right")
     axes[0].grid(True, alpha=0.3)
  
@@ -1051,7 +1091,7 @@ def main(
     axes[3].grid(True, alpha=0.3)
 
 
-    out_png = PROJECT_ROOT / "results" / f"coupled_viv_Ur_{Ur}_{checkpoint}_offset_{handoff_offset_steps}_{_exp_tag}_mu{mu_used:.4g}.png"
+    out_png = PROJECT_ROOT / "results" / f"coupled_viv_Ur{Ur}_{_exp_tag}_mu{mu_used}.png"
     out_png.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_png, dpi=150)
     plt.close(fig)
@@ -1080,6 +1120,10 @@ if __name__ == "__main__":
     parser.add_argument("--handoff_offset", type=int, default=2000,
                     help="CFD steps past (release+seq_len) for handoff. "
                          "Default 2000 = existing sweep; vary for noise floor.")
+    parser.add_argument("--cfd_scale", type=float, default=1.0,
+                    help="Scale factor for physical CFD kinematics at handoff")
+    parser.add_argument("--nd_inputs", action="store_true",
+                    help="Use non-dimensional physical inputs [h/D, hdot/U, hddot/(U^2/D)]")
     parser.add_argument("--residual_npz", default=None,
                     help="npz with cl_true, cl_tf (the TF-residual you measured)")
     parser.add_argument("--noise_mode", default="none",
@@ -1109,6 +1153,8 @@ if __name__ == "__main__":
         checkpoint=args.checkpoint,
         model_subdir=args.model_subdir,
         handoff_offset_steps=args.handoff_offset,
+        cfd_scale=args.cfd_scale,
+        nd_inputs=args.nd_inputs,
         residual_npz=args.residual_npz,
         noise_mode=args.noise_mode,
         noise_scale=args.noise_scale,

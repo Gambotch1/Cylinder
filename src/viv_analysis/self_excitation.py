@@ -35,11 +35,22 @@ run_coupled_viv with e_forcing=None). numpy + scipy.
 import numpy as np
 
 
+def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float) -> np.ndarray:
+    """Twin of coupled_inference.to_model_coords; kept local to avoid a circular import."""
+    if not nd_inputs:
+        return kin
+    if D <= 0 or U <= 0:
+        raise ValueError(f"to_model_coords requires D>0, U>0 (got D={D}, U={U})")
+    return kin / np.array([D, U, U * U / D], dtype=np.float32)
+
+
 def build_seed_history(
     ad_seed,          # seed amplitude as A/D (dimensionless)
     seq_len,
     dt,
     D,
+    nd_inputs,
+    U,
     fn,               # structural frequency [Hz] -> seed frequency
     x_scaler,
     use_ur_context,
@@ -80,6 +91,7 @@ def build_seed_history(
                 f"w*dt={w*dt:.4f} may be too large for this dt.")
 
     kin = np.column_stack([disp, vel, acc]).astype(np.float32)
+    kin = to_model_coords(kin, nd_inputs, float(D), float(U))
     kin_scaled = x_scaler.transform(kin)
 
     if use_ur_context:
@@ -225,7 +237,7 @@ def _selftest():
     class _S:
         mean_ = np.zeros(3); scale_ = np.array([0.02, 0.05, 0.1])
         def transform(self, x): return (x - self.mean_) / self.scale_
-    hist, st = build_seed_history(0.5 * 0.05, 1000, dt, D, fn, _S(),
+    hist, st = build_seed_history(0.5 * 0.05, 1000, dt, D, False, 1.0, fn, _S(),
                                   use_ur_context=True, ur_value=6.0,
                                   ur_stats=(6.0, 1.0))
     print(f"  seed history shape={hist.shape}  init h_dot={st['h_dot']:.5f}")

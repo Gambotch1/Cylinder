@@ -138,22 +138,50 @@ def dominant_freq(h, dt, fn, band=(0.3, 3.0)):
     return float(f[m][np.argmax(np.abs(F[m]))])
 
 
-def analyze_run(h, D, dt, fn, ad_cfd_ref, ad_tol=0.20, stat_tol=0.10):
-    """Did the free run converge to the CFD limit cycle?"""
+def analyze_run(h, D, dt, fn, ad_cfd_ref, f_cfd_ref=None,
+    ad_tol=0.10, stat_tol=0.10, freq_bins_tol=1.0):
+
+    
     tc, env = amplitude_envelope(h, D, dt, fn)
     tail = env[int(0.7 * len(env)):]
+
     ad_final = float(np.mean(tail))
-    stationary = bool(np.std(tail) / (abs(ad_final) + 1e-30) < stat_tol)
-    fdom = dominant_freq(h, dt, fn)
-    ad_match = bool(abs(ad_final - ad_cfd_ref) / (ad_cfd_ref + 1e-30) < ad_tol)
-    f_match = bool(abs(fdom - fn) / fn < 0.15) if np.isfinite(fdom) else False
-    return dict(
-        ad_final=ad_final, ad_cfd_ref=float(ad_cfd_ref),
-        ad_match=ad_match, stationary=stationary,
-        f_dominant=fdom, f_match=f_match,
-        converged=bool(ad_match and stationary and f_match),
-        env_t=tc, env_ad=env,
+    stationary = bool(
+        np.std(tail) / (abs(ad_final) + 1e-30) < stat_tol
     )
+
+    fdom = dominant_freq(h, dt, fn)
+
+    ad_match = bool(
+        abs(ad_final - ad_cfd_ref) /
+        (abs(ad_cfd_ref) + 1e-30)
+        <= ad_tol
+    )
+
+    f_ref = float(fn if f_cfd_ref is None else f_cfd_ref)
+
+    fft_tail_n = len(np.asarray(h)[int(0.6 * len(h)):])
+    fft_bin = 1.0 / (fft_tail_n * dt)
+
+    f_match = bool(
+        np.isfinite(fdom)
+        and abs(fdom - f_ref) <= freq_bins_tol * fft_bin + 1e-12
+    )
+
+    return {
+        "ad_final": ad_final,
+        "ad_cfd_ref": float(ad_cfd_ref),
+        "ad_match": ad_match,
+        "stationary": stationary,
+        "f_dominant": float(fdom),
+        "f_cfd_ref": f_ref,
+        "fft_bin": float(fft_bin),
+        "f_error": float(abs(fdom - f_ref)),
+        "f_match": f_match,
+        "converged": bool(ad_match and stationary and f_match),
+        "env_t": tc,
+        "env_ad": env,
+    }
 
 def measure_growth_rate(h, dt, fn, D, floor_frac=0.05, hi_frac=0.45):
     """

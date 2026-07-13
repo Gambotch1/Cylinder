@@ -1,0 +1,23 @@
+Using device: cuda
+[coord] Using coordinate mode from artifact (run_config.json (coordinate_mode=nondimensional)): nondimensional
+Loaded scalers and UR stats: use_ur_context=Truemean=6.5000, std=2.5909
+y_scaler: mean=0.000299  scale=0.269071
+[cylinder1000] Ur=5.5  U=0.4400 m/s  fn=0.2  D(Ur,rel,h/D)=0.4  B(force)=0.4
+  m=2.513274e-01  c=4.421583e-03  k=3.968803e-01  rho=1.0  t_release=72.7273s
+
+Loading CFD trajectory at Ur=5.5 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+  CFD trajectory has 139901 steps
+  Warm-start window: CFD steps 17446]  (post-release)
+  Handoff at t=87.7300s   (5.00s after release)
+  Initial state at handoff: h=0.091731  h_dot=0.136904  h_ddot=-0.165927
+  Warm-start raw stats (scaled by 1.0):
+    disp range: [-0.33464, 0.31420]
+    vel  range: [-0.40085, 0.41759]
+    acc  range: [-0.47238, 0.51172]
+Model loaded: input_size=4  hidden_size=64
+
+[ATTRACTOR TEST] Seeding loop with artificial A/D = 0.1927046
+  Measured CFD true frequency: 0.214 Hz
+[ATTRACTOR] seed A/D=0.1927046  final A/D=0.3524  target=0.350372  f_dom=0.214  converged=False

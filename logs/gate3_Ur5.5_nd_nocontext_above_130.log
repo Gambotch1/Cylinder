@@ -1,0 +1,33 @@
+Using device: cuda
+[coord] Using coordinate mode from artifact (run_config.json (coordinate_mode=nondimensional)): nondimensional
+Loaded scalers and UR stats: use_ur_context=Falsemean=6.5000, std=2.5909
+y_scaler: mean=0.000299  scale=0.269071
+[cylinder1000] Ur=5.5  U=0.4400 m/s  fn=0.2  D(Ur,rel,h/D)=0.4  B(force)=0.4
+  m=2.513274e-01  c=4.421583e-03  k=3.968803e-01  rho=1.0  t_release=72.7273s
+
+Loading CFD trajectory at Ur=5.5 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+  CFD trajectory has 139901 steps
+  Warm-start window: CFD steps 17446]  (post-release)
+  Handoff at t=87.7300s   (5.00s after release)
+  Initial state at handoff: h=0.091731  h_dot=0.136904  h_ddot=-0.165927
+  Warm-start raw stats (scaled by 1.0):
+    disp range: [-0.33464, 0.31420]
+    vel  range: [-0.40085, 0.41759]
+    acc  range: [-0.47238, 0.51172]
+Model loaded: input_size=3  hidden_size=64
+
+[ATTRACTOR TEST] Seeding loop with artificial A/D = 0.4554836
+  Measured CFD true frequency: 0.214 Hz
+WARNING OOD step=31891: max|z|=6.00, h=5.0761e-01, v=1.3179e-02, a=-8.2765e-01, CL=-2.0602e-01
+WARNING OOD step=31892: max|z|=6.00, h=5.0766e-01, v=9.0412e-03, a=-8.2764e-01, CL=-2.0589e-01
+WARNING OOD step=31893: max|z|=6.00, h=5.0770e-01, v=4.9063e-03, a=-8.2632e-01, CL=-2.0576e-01
+WARNING OOD step=31894: max|z|=6.00, h=5.0771e-01, v=7.9191e-04, a=-8.1944e-01, CL=-2.0564e-01
+WARNING OOD step=31895: max|z|=6.00, h=5.0770e-01, v=-3.3191e-03, a=-8.2498e-01, CL=-2.0556e-01
+WARNING OOD step=31896: max|z|=6.00, h=5.0768e-01, v=-7.4574e-03, a=-8.3031e-01, CL=-2.0544e-01
+WARNING OOD step=31897: max|z|=6.00, h=5.0763e-01, v=-1.1616e-02, a=-8.3318e-01, CL=-2.0526e-01
+WARNING OOD step=32354: max|z|=6.00, h=-5.0643e-01, v=-1.4294e-01, a=8.2284e-01, CL=1.3387e-01
+WARNING OOD step=32355: max|z|=6.01, h=-5.0713e-01, v=-1.3882e-01, a=8.2329e-01, CL=1.3471e-01
+WARNING OOD step=32356: max|z|=6.02, h=-5.0781e-01, v=-1.3469e-01, a=8.3029e-01, CL=1.3553e-01
+[ATTRACTOR] seed A/D=0.4554836  final A/D=2.5423  target=0.350372  f_dom=0.200  converged=False

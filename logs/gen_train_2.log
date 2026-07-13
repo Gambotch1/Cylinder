@@ -1,0 +1,186 @@
+============================================================
+Mode:        production
+Array index: 2
+Arm:         dim_context
+Epochs:      100
+Output:      results/generalization_Ur5.5_holdout_dim_context
+Command:
+ python -u -m src.viv_analysis.train_gru --cfd_dataset cylinder1000 --holdout_ur 5.5 --epochs 100 --batch_size 512 --seq_len 1000 --noise_std 0.05 --seed 123 --num_workers 0 --use_ur_context --exp_subdir generalization_Ur5.5_holdout_dim_context
+============================================================
+Dataset: cylinder1000
+Device: cuda  |  seq_len=1000  coord_mode=dimensional  use_ur_context=True
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+Cases loaded (before split): ['Ur10', 'Ur11', 'Ur12', 'Ur2', 'Ur2.5', 'Ur3', 'Ur3.5', 'Ur4', 'Ur4.25', 'Ur4.5', 'Ur4.75', 'Ur5', 'Ur5.25', 'Ur5.5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur6.5', 'Ur7', 'Ur8', 'Ur9']
+train (computed): ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Holdout: ur=5.5  label=Ur5.5
+Train: ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Val:   ['Ur4.25', 'Ur5.25', 'Ur6.5', 'Ur9']
+Test:  ['Ur11', 'Ur4.75', 'Ur5.5', 'Ur7']
+
+x_scaler: mean=[7.05753791e-04 6.60902091e-05 2.28440592e-04] scale=[0.08447787 0.10889112 0.15732116]
+y_scaler (cl): mean=0.000299 scale=0.269071
+Using Ur context feature: mean=6.5000, std=2.5909 (fitted from 10 training cases)
+
+Run config saved to /scratch/jote9827/Github/Cylinder/results/generalization_Ur5.5_holdout_dim_context/run_config.json
+
+Scaler-fit cases:   ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Ur-stats-fit cases: ['Ur10', 'Ur12', 'Ur3.5', 'Ur4', 'Ur4.5', 'Ur5', 'Ur5.75', 'Ur6', 'Ur6.25', 'Ur8']
+Noise std: 0.05  (applied to standardized model inputs, after scaler transform)
+
+Dataset sizes — train: 156088 val: 500744 test: 505913
+GRU parameters: 40,513
+Random seed: 123 (controlled reproducibility)
+
+Training for up to 100 epochs (noise_std=0.05 in standardized space)...
+Epoch   1/100  train=0.13666  val=0.00147  R²=0.9949  lr=1.00e-03
+Epoch   2/100  train=0.00539  val=0.00135  R²=0.9953  lr=1.00e-03
+Epoch   3/100  train=0.00362  val=0.00193  R²=0.9933  lr=1.00e-03
+Epoch   4/100  train=0.00244  val=0.00097  R²=0.9966  lr=1.00e-03
+Epoch   5/100  train=0.00197  val=0.00093  R²=0.9968  lr=1.00e-03
+Epoch   6/100  train=0.00180  val=0.00122  R²=0.9957  lr=1.00e-03
+Epoch   7/100  train=0.00176  val=0.00102  R²=0.9965  lr=1.00e-03
+Epoch   8/100  train=0.00166  val=0.00077  R²=0.9973  lr=1.00e-03
+Epoch   9/100  train=0.00139  val=0.00091  R²=0.9968  lr=1.00e-03
+Epoch  10/100  train=0.00144  val=0.00097  R²=0.9966  lr=1.00e-03
+Epoch  11/100  train=0.00121  val=0.00089  R²=0.9969  lr=1.00e-03
+Epoch  12/100  train=0.00135  val=0.00113  R²=0.9960  lr=1.00e-03
+Epoch  13/100  train=0.00112  val=0.00128  R²=0.9955  lr=1.00e-03
+Epoch  14/100  train=0.00105  val=0.00149  R²=0.9948  lr=5.00e-04
+Epoch  15/100  train=0.00075  val=0.00107  R²=0.9962  lr=5.00e-04
+Epoch  16/100  train=0.00072  val=0.00108  R²=0.9962  lr=5.00e-04
+Epoch  17/100  train=0.00072  val=0.00127  R²=0.9956  lr=5.00e-04
+Epoch  18/100  train=0.00079  val=0.00102  R²=0.9964  lr=5.00e-04
+Epoch  19/100  train=0.00070  val=0.00139  R²=0.9952  lr=5.00e-04
+Epoch  20/100  train=0.00071  val=0.00123  R²=0.9957  lr=2.50e-04
+Epoch  21/100  train=0.00057  val=0.00109  R²=0.9962  lr=2.50e-04
+Epoch  22/100  train=0.00054  val=0.00109  R²=0.9962  lr=2.50e-04
+Epoch  23/100  train=0.00056  val=0.00115  R²=0.9960  lr=2.50e-04
+Early stopping at epoch 23
+
+Best model saved (val_loss=0.00077)
+
+Validation: {
+  "mae": 0.005202297121286392,
+  "rmse": 0.007472868777667499,
+  "r2": 0.9973087906837463
+}
+Test:       {
+  "mae": 0.004485399927943945,
+  "rmse": 0.0059917978303964375,
+  "r2": 0.9988164901733398
+}
+
+Teacher forcing rollout on test cases:
+  Ur11: R²=0.9986  RMSE=0.0086
+  Ur4.75: R²=0.9980  RMSE=0.0066
+  Ur5.5: R²=0.9997  RMSE=0.0026
+  Ur7: R²=0.9992  RMSE=0.0042
+  Ur10: CFD=0.3070  GRU=0.3106  amp_err=1.17%  R²=0.9991  [train]
+  Ur11: CFD=0.3277  GRU=0.3336  amp_err=1.81%  R²=0.9986  [test]
+  Ur12: CFD=0.3379  GRU=0.3400  amp_err=0.63%  R²=0.9998  [train]
+  Ur3.5: CFD=1.0767  GRU=1.0757  amp_err=0.10%  R²=0.9998  [train]
+  Ur4: CFD=0.0853  GRU=0.0898  amp_err=5.16%  R²=0.9866  [train]
+  Ur4.25: CFD=0.1366  GRU=0.1310  amp_err=4.11%  R²=0.9934  [val]
+  Ur4.5: CFD=0.1844  GRU=0.1772  amp_err=3.92%  R²=0.9966  [train]
+  Ur4.75: CFD=0.2110  GRU=0.2036  amp_err=3.49%  R²=0.9980  [test]
+  Ur5: CFD=0.2228  GRU=0.2173  amp_err=2.44%  R²=0.9989  [train]
+  Ur5.25: CFD=0.2230  GRU=0.2204  amp_err=1.17%  R²=0.9995  [val]
+  Ur5.5: CFD=0.2194  GRU=0.2184  amp_err=0.46%  R²=0.9997  [test]
+  Ur5.75: CFD=0.2089  GRU=0.2100  amp_err=0.54%  R²=0.9997  [train]
+  Ur6: CFD=0.1902  GRU=0.1935  amp_err=1.76%  R²=0.9995  [train]
+  Ur6.25: CFD=0.1724  GRU=0.1739  amp_err=0.87%  R²=0.9996  [train]
+  Ur6.5: CFD=0.1785  GRU=0.1751  amp_err=1.93%  R²=0.9991  [val]
+  Ur7: CFD=0.2058  GRU=0.2002  amp_err=2.70%  R²=0.9992  [test]
+  Ur8: CFD=0.2366  GRU=0.2317  amp_err=2.05%  R²=0.9993  [train]
+  Ur9: CFD=0.2551  GRU=0.2482  amp_err=2.72%  R²=0.9957  [val]
+
+All outputs saved to /scratch/jote9827/Github/Cylinder/results/generalization_Ur5.5_holdout_dim_context
+
+------------------------------------------------------------
+Sender: LSF System <schwan@makalu85>
+Subject: Job 1585173[2]: <gen_train[1-4]> in cluster <wuerfel> Done
+
+Job <gen_train[1-4]> was submitted from host <makalu56> by user <jote9827> in cluster <wuerfel> at Fri Jul 10 21:57:09 2026
+Job was executed on host(s) <makalu85>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Fri Jul 10 21:57:29 2026
+</home/jote9827> was used as the home directory.
+</scratch/jote9827/Github/Cylinder> was used as the working directory.
+Started at Fri Jul 10 21:57:29 2026
+Terminated at Fri Jul 10 23:11:51 2026
+Results reported at Fri Jul 10 23:11:51 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J "gen_train[1-4]"
+#BSUB -q BatchGPU
+#BSUB -gpu "num=1:mode=shared"
+#BSUB -R "rusage[mem=32000]"
+#BSUB -W 48:00
+#BSUB -o logs/gen_train_%I.log
+
+set -euo pipefail
+
+mkdir -p logs
+cd /scratch/jote9827/Github/Cylinder
+source .venv/bin/activate
+
+export VIV_NUM_WORKERS=0
+export OMP_NUM_THREADS=4
+
+: "${LSB_JOBINDEX:?LSB_JOBINDEX is not set}"
+
+MODE="${MODE:-production}"
+SEED=123
+NOISE=0.05
+BATCH_SIZE=512
+SEQ_LEN=1000
+
+case "$MODE" in
+  smoke)
+    EPOCHS=1
+    PREFIX="smoke_generalization_Ur5.5_holdout"
+    ;;
+  production)
+    EPOCHS=100
+    PREFIX="generalization_Ur5.5_holdout"
+    ;;
+  *)
+    echo "Invalid MODE='$MODE'; expected smoke or production" >&2
+    exit 2
+    ;;
+esac
+
+ARGS=(
+  --cfd_dataset cylinder1000
+  --holdout_ur 5.5
+  --epochs "$EPOCHS"
+  --batch_size "$BATCH_SIZE"
+  --seq_len "$SEQ_LEN"
+  --noise_std "$NOISE"
+  --seed "$SEED"
+  --num_workers 0
+)
+
+(... more ...)
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   4947.59 sec.
+    Max Memory :                                 26284.94 MB
+    Average Memory :                             24699.66 MB
+    Total Requested Memory :                     32000.00 MB
+    Delta Memory :                               5715.06 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                18
+    Run time :                                   4460 sec.
+    Turnaround time :                            4482 sec.
+
+The output (if any) is above this job summary.
+

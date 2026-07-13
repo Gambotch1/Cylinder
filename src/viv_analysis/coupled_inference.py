@@ -27,6 +27,65 @@ def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float) -> np.
     return kin / np.array([D, U, U * U / D], dtype=np.float32)
 
 
+def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None) -> bool:
+    """
+    Load artifact coordinate mode metadata and resolve against CLI.
+    
+    Returns the resolved nd_inputs boolean.
+    Raises ValueError if CLI and artifact disagree.
+    """
+    artifact_nd_inputs = None
+    metadata_source = None
+    
+    # Try run_config.json first
+    run_config_path = artifact_dir / "run_config.json"
+    if run_config_path.exists():
+        try:
+            with open(run_config_path, "r") as f:
+                run_config = json.load(f)
+            artifact_nd_inputs = bool(run_config.get("nd_inputs", False))
+            metadata_source = f"run_config.json (coordinate_mode={run_config.get('coordinate_mode', '?')})"
+        except Exception as e:
+            print(f"[warn] Could not read run_config.json: {e}")
+    
+    # Fall back to ur_stats.pkl
+    if artifact_nd_inputs is None:
+        ur_stats_path = artifact_dir / "ur_stats.pkl"
+        if ur_stats_path.exists():
+            try:
+                with open(ur_stats_path, "rb") as f:
+                    ur_stats_dict = pickle.load(f)
+                artifact_nd_inputs = bool(ur_stats_dict.get("nd_inputs", False))
+                metadata_source = "ur_stats.pkl"
+            except Exception as e:
+                print(f"[warn] Could not read ur_stats.pkl: {e}")
+    
+    # Resolve CLI vs artifact
+    if cli_nd_inputs is None:
+        # CLI not specified; use artifact if available
+        if artifact_nd_inputs is not None:
+            print(f"[coord] Using coordinate mode from artifact ({metadata_source}): "
+                  f"{'nondimensional' if artifact_nd_inputs else 'dimensional'}")
+            return artifact_nd_inputs
+        else:
+            # Legacy: no metadata; default to dimensional
+            print(f"[warn] [coord] No artifact metadata found; "
+                  f"assuming legacy dimensional mode. (No run_config.json or nd_inputs in ur_stats.pkl)")
+            return False
+    else:
+        # CLI specified
+        if artifact_nd_inputs is not None and cli_nd_inputs != artifact_nd_inputs:
+            raise ValueError(
+                f"Coordinate mode mismatch: CLI specifies "
+                f"{'--nd_inputs' if cli_nd_inputs else '--dim_inputs'} "
+                f"but artifact was trained in "
+                f"{'nondimensional' if artifact_nd_inputs else 'dimensional'} mode "
+                f"({metadata_source}). "
+                f"This would silently corrupt inference. Use matching coordinate mode."
+            )
+        return cli_nd_inputs
+
+
 def Newmark_beta( F, h, h_dot, h_ddot, dt, m, c, k, beta=0.25, gamma=0.5):
     """
     Newmark-beta
@@ -633,6 +692,16 @@ def main(
         with open(artifact_dir_base / "ur_stats.pkl", "rb") as f:
             ur_info = pickle.load(f)
 
+    # ── Resolve coordinate mode (CLI vs artifact) ──────────────────────────
+    # Determine CLI choice: None if not specified, True for --nd_inputs, False for --dim_inputs
+    cli_coord_choice = None
+    if args.nd_inputs:
+        cli_coord_choice = True
+    elif args.dim_inputs:
+        cli_coord_choice = False
+    
+    # Load artifact metadata and resolve
+    nd_inputs = load_artifact_coordinate_mode(artifact_dir, cli_coord_choice)
 
 
     # ── Ur statistics from training cases ─────────────────────────────────
@@ -814,11 +883,22 @@ def main(
               f"converged={diag['converged']}")
 
         # save envelope for the two-sided figure
-        np.savez(PROJECT_ROOT / "results" / f"attractor_Ur{Ur}_seed{ad_seed}.npz",
-                 t=result["time"], h=h, cl=result["CL"], D=D, Ur=float(Ur),
-                 ad_seed=ad_seed, ad_final=diag["ad_final"],
-                 env_t=diag["env_t"], env_ad=diag["env_ad"],
-                 cfd_target_AD=cfd_target_AD)
+        np.savez(
+            PROJECT_ROOT / "results" / f"attractor_Ur{Ur}_seed{ad_seed}.npz",
+            t=result["time"],
+            h=h,
+            h_dot=result["velocity"],
+            h_ddot=result["acceleration"],
+            cl=result["CL"],
+            cl_det=result.get("CL_det"),
+            D=D,
+            Ur=float(Ur),
+            ad_seed=ad_seed,
+            ad_final=diag["ad_final"],
+            env_t=diag["env_t"],
+            env_ad=diag["env_ad"],
+            cfd_target_AD=cfd_target_AD,
+        )
         return
 
     # Guards 
@@ -1122,8 +1202,14 @@ if __name__ == "__main__":
                          "Default 2000 = existing sweep; vary for noise floor.")
     parser.add_argument("--cfd_scale", type=float, default=1.0,
                     help="Scale factor for physical CFD kinematics at handoff")
-    parser.add_argument("--nd_inputs", action="store_true",
+    
+    # Coordinate mode: mutually exclusive
+    coord_group = parser.add_mutually_exclusive_group()
+    coord_group.add_argument("--nd_inputs", action="store_true",
                     help="Use non-dimensional physical inputs [h/D, hdot/U, hddot/(U^2/D)]")
+    coord_group.add_argument("--dim_inputs", action="store_true",
+                    help="Use dimensional (physical) inputs [h, hdot, hddot]; overrides artifact mode")
+    
     parser.add_argument("--residual_npz", default=None,
                     help="npz with cl_true, cl_tf (the TF-residual you measured)")
     parser.add_argument("--noise_mode", default="none",

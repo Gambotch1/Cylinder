@@ -1,0 +1,164 @@
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+Calibration receipt: 1.26525046483 90.0400009155 790.040000916 0.346148855247 0.331578476858 0.419529821971 3.85576858149 220.919266499 2.04140089875
+============================================================
+Gate:                    4
+Stage:                   phase
+Arm:                     nd_nocontext
+Array index:             11
+Requested ratio:         1.25 × CFD
+Handoff offset:          2462 steps
+Phase label:             quarter_2
+Measured phase:          220.919266499 degrees
+Unscaled local A/D:      0.346148855247
+Unscaled window RMS A/D: 0.331578476858
+Applied cfd_scale:       1.26525046483
+Scaled window RMS A/D:   0.419529821971
+Initial max |z|:         2.04140089875
+Handoff time:            90.0400009155 s
+Absolute total time:     790.040000916 s
+Free-run duration:       700.0 s
+Noise-seed filename tag: 4211
+Git commit:              8f2239ed5e0e6a2c097ce31b67aef1a130896cbb
+Dirty file count:        162
+============================================================
+Using device: cuda
+[coord] Using coordinate mode from artifact (run_config.json (coordinate_mode=nondimensional)): nondimensional
+Loaded scalers and UR stats: use_ur_context=Falsemean=6.5000, std=2.5909
+y_scaler: mean=0.000299  scale=0.269071
+[cylinder1000] Ur=5.5  U=0.4400 m/s  fn=0.2  D(Ur,rel,h/D)=0.4  B(force)=0.4
+  m=2.513274e-01  c=4.421583e-03  k=3.968803e-01  rho=1.0  t_release=72.7273s
+
+Loading CFD trajectory at Ur=5.5 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+  CFD trajectory has 139901 steps
+  Warm-start window: CFD steps 17908]  (post-release)
+  Handoff at t=90.0400s   (5.00s after release)
+  Initial state at handoff: h=-0.114746  h_dot=-0.179995  h_ddot=0.208150
+  Warm-start raw stats (scaled by 1.26525046483):
+    disp range: [-0.42340, 0.43290]
+    vel  range: [-0.53631, 0.52835]
+    acc  range: [-0.64930, 0.64746]
+Model loaded: input_size=3  hidden_size=64
+Model/input check: input_size=3, history_shape=(1000, 3)
+
+TF-vs-coupled diagnostic over full post-release record: 121992 steps (610.0s)
+[info] --make_tf_residual not set; skipping TF diagnostic (diag plot and residual generation)
+[info] --run_replay_diag not set; skipping Newmark replay diagnostic
+
+Running coupled inference for 790.040000916s (140000 steps)...
+140000 steps) ...
+[closure] CFD RMS A/D=0.2484  a_ref(peak)=0.1405 m
+WARNING OOD step=42640: max|z|=6.00, h=5.0765e-01, v=6.1391e-02, a=-8.2686e-01, CL=-2.0704e-01
+WARNING OOD step=42641: max|z|=6.00, h=5.0794e-01, v=5.7246e-02, a=-8.3091e-01, CL=-2.0698e-01
+WARNING OOD step=42642: max|z|=6.01, h=5.0822e-01, v=5.3094e-02, a=-8.3010e-01, CL=-2.0691e-01
+WARNING OOD step=42643: max|z|=6.01, h=5.0847e-01, v=4.8949e-02, a=-8.2767e-01, CL=-2.0684e-01
+WARNING OOD step=42644: max|z|=6.01, h=5.0871e-01, v=4.4797e-02, a=-8.3335e-01, CL=-2.0677e-01
+WARNING OOD step=42645: max|z|=6.02, h=5.0892e-01, v=4.0652e-02, a=-8.2443e-01, CL=-2.0667e-01
+WARNING OOD step=42646: max|z|=6.02, h=5.0911e-01, v=3.6524e-02, a=-8.2705e-01, CL=-2.0662e-01
+WARNING OOD step=42647: max|z|=6.02, h=5.0929e-01, v=3.2403e-02, a=-8.2118e-01, CL=-2.0655e-01
+WARNING OOD step=42648: max|z|=6.02, h=5.0944e-01, v=2.8274e-02, a=-8.3029e-01, CL=-2.0651e-01
+WARNING OOD step=42649: max|z|=6.02, h=5.0957e-01, v=2.4130e-02, a=-8.2748e-01, CL=-2.0642e-01
+Saved coupled trajectory -> /scratch/jote9827/Github/Cylinder/results/coupled_cylinder1000_Ur5.5_generalization_Ur5.5_holdout_nd_nocontext_forc-v1_additive_noise-none_nd_scale1.26525_s1_seed4211_handoff_2462_muNone.npz
+
+Saved coupled VIV plot to /scratch/jote9827/Github/Cylinder/results/coupled_viv_Ur5.5_generalization_Ur5.5_holdout_nd_nocontext_forc-v1_additive_noise-none_nd_scale1.26525_s1_seed4211_handoff_2462_muNone.png
+
+Steady-state A/D = 2.5682
+Displacement range: -1.0270 to 1.0275 m
+CL range: -0.2212 to 0.3333
+Gate-4 NPZ receipt:  results/gate4_phase_Ur5.5_nd_nocontext_r1p2500_off2462.npz
+Gate-4 JSON receipt: results/gate4_phase_Ur5.5_nd_nocontext_r1p2500_off2462.json
+Gate-4 plot receipt: results/gate4_phase_Ur5.5_nd_nocontext_r1p2500_off2462.png
+
+Gate-4 run complete:
+  results/gate4_phase_Ur5.5_nd_nocontext_r1p2500_off2462.npz
+  results/gate4_phase_Ur5.5_nd_nocontext_r1p2500_off2462.json
+
+------------------------------------------------------------
+Sender: LSF System <schwan@makalu93>
+Subject: Job 1594275[11]: <gate4_phase[1-12]> in cluster <wuerfel> Done
+
+Job <gate4_phase[1-12]> was submitted from host <makalu56> by user <jote9827> in cluster <wuerfel> at Mon Jul 13 21:41:03 2026
+Job was executed on host(s) <makalu93>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Mon Jul 13 22:26:18 2026
+</home/jote9827> was used as the home directory.
+</scratch/jote9827/Github/Cylinder> was used as the working directory.
+Started at Mon Jul 13 22:26:18 2026
+Terminated at Mon Jul 13 22:30:47 2026
+Results reported at Mon Jul 13 22:30:47 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J "gate4_ur5p5"
+#BSUB -q BatchGPU
+#BSUB -gpu "num=1:mode=shared"
+#BSUB -R "rusage[mem=24000]"
+#BSUB -W 3:00
+#BSUB -o logs/gate4_%J_%I.log
+
+set -euo pipefail
+shopt -s nullglob
+
+cd /scratch/jote9827/Github/Cylinder
+source .venv/bin/activate
+
+mkdir -p logs results
+
+export VIV_NUM_WORKERS=0
+export OMP_NUM_THREADS=4
+
+STAGE="${STAGE:-coarse}"
+JOB_INDEX="${LSB_JOBINDEX:-1}"
+
+UR=5.5
+CFD_AD=0.350372
+CFD_F=0.216406
+DT=0.005
+D=0.4
+FN=0.2
+SEQ_LEN=1000
+FREE_RUN=700.0
+
+MODEL_SUBDIR="generalization_Ur5.5_holdout_nd_nocontext"
+CHECKPOINT="gru_best.pt"
+
+GIT_COMMIT="$(git rev-parse HEAD)"
+GIT_DIRTY_COUNT="$(git status --porcelain | wc -l | tr -d ' ')"
+
+ratio_tag () {
+    python - "$1" <<'PY'
+import sys
+print(f"{float(sys.argv[1]):.4f}".replace(".", "p"))
+PY
+}
+
+annotate_normal_run () {
+    local src_npz="$1"
+    local dst_npz="$2"
+    local dst_json="$3"
+
+    export G4_SRC_NPZ="$src_npz"
+
+(... more ...)
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   262.28 sec.
+    Max Memory :                                 837.36 MB
+    Average Memory :                             683.13 MB
+    Total Requested Memory :                     24000.00 MB
+    Delta Memory :                               23162.64 MB
+    Max Swap :                                   -
+    Max Processes :                              5
+    Max Threads :                                15
+    Run time :                                   267 sec.
+    Turnaround time :                            2984 sec.
+
+The output (if any) is above this job summary.
+

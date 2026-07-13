@@ -1,0 +1,45 @@
+Using device: cuda
+[coord] Using coordinate mode from artifact (run_config.json (coordinate_mode=nondimensional)): nondimensional
+Loaded scalers and UR stats: use_ur_context=Falsemean=6.5000, std=2.5909
+y_scaler: mean=0.000299  scale=0.269071
+[cylinder1000] Ur=5.5  U=0.4400 m/s  fn=0.2  D(Ur,rel,h/D)=0.4  B(force)=0.4
+  m=2.513274e-01  c=4.421583e-03  k=3.968803e-01  rho=1.0  t_release=72.7273s
+
+Loading CFD trajectory at Ur=5.5 for warm-start...
+Computing velocity and acceleration...
+[compute_kinematics] m=2.513274e-01  c=4.421583e-03  k=3.968803e-01
+  CFD trajectory has 139901 steps
+  Warm-start window: CFD steps 18139]  (post-release)
+  Handoff at t=91.1950s   (5.00s after release)
+  Initial state at handoff: h=-0.133561  h_dot=0.154144  h_ddot=0.246063
+  Warm-start raw stats (scaled by 1.26495475224):
+    disp range: [-0.43893, 0.43280]
+    vel  range: [-0.53618, 0.52823]
+    acc  range: [-0.64915, 0.66729]
+Model loaded: input_size=3  hidden_size=64
+Model/input check: input_size=3, history_shape=(1000, 3)
+
+TF-vs-coupled diagnostic over full post-release record: 121761 steps (608.8s)
+[info] --make_tf_residual not set; skipping TF diagnostic (diag plot and residual generation)
+[info] --run_replay_diag not set; skipping Newmark replay diagnostic
+
+Running coupled inference for 791.194999695s (140000 steps)...
+140000 steps) ...
+[closure] CFD RMS A/D=0.2482  a_ref(peak)=0.1404 m
+WARNING OOD step=45705: max|z|=6.00, h=-5.0650e-01, v=-1.3414e-01, a=8.1355e-01, CL=1.3586e-01
+WARNING OOD step=45706: max|z|=6.01, h=-5.0716e-01, v=-1.3007e-01, a=8.1562e-01, CL=1.3676e-01
+WARNING OOD step=45707: max|z|=6.02, h=-5.0780e-01, v=-1.2597e-01, a=8.2632e-01, CL=1.3769e-01
+WARNING OOD step=45708: max|z|=6.03, h=-5.0842e-01, v=-1.2185e-01, a=8.2192e-01, CL=1.3860e-01
+WARNING OOD step=45709: max|z|=6.03, h=-5.0902e-01, v=-1.1774e-01, a=8.2002e-01, CL=1.3942e-01
+WARNING OOD step=45710: max|z|=6.04, h=-5.0960e-01, v=-1.1362e-01, a=8.2822e-01, CL=1.4027e-01
+WARNING OOD step=45711: max|z|=6.05, h=-5.1016e-01, v=-1.0949e-01, a=8.2325e-01, CL=1.4110e-01
+WARNING OOD step=45712: max|z|=6.05, h=-5.1070e-01, v=-1.0537e-01, a=8.2499e-01, CL=1.4190e-01
+WARNING OOD step=45713: max|z|=6.06, h=-5.1121e-01, v=-1.0124e-01, a=8.2649e-01, CL=1.4270e-01
+WARNING OOD step=45714: max|z|=6.07, h=-5.1171e-01, v=-9.7098e-02, a=8.3129e-01, CL=1.4351e-01
+Saved coupled trajectory -> /scratch/jote9827/Github/Cylinder/results/coupled_cylinder1000_Ur5.5_generalization_Ur5.5_holdout_nd_nocontext_forc-v1_additive_noise-none_nd_scale1.26495_s1_seed4212_handoff_2693_muNone.npz
+
+Saved coupled VIV plot to /scratch/jote9827/Github/Cylinder/results/coupled_viv_Ur5.5_generalization_Ur5.5_holdout_nd_nocontext_forc-v1_additive_noise-none_nd_scale1.26495_s1_seed4212_handoff_2693_muNone.png
+
+Steady-state A/D = 2.5683
+Displacement range: -1.0267 to 1.0279 m
+CL range: -0.2212 to 0.3333

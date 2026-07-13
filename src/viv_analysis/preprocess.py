@@ -102,12 +102,15 @@ def extract_case_name(filepath: str | Path) -> str:
 
 
 def _resolve_data_dirs(dataset: str) -> tuple[Path, Path, Path]:
+    """Resolve data directories. Raise ValueError for unknown datasets."""
     ds = dataset.strip().lower()
     if ds == "bridge":
         return BRIDGE_DISP_DIR, BRIDGE_CM_DIR, BRIDGE_CL_DIR
     if ds in {"cylinder1000", "cylinder_re_1000", "re1000", "cylinder-re-1000"}:
         return CYLINDER_RE1000_DISP_DIR, CYLINDER_RE1000_CD_DIR, CYLINDER_RE1000_CL_DIR
-    return CYLINDER_DISP_DIR, CYLINDER_CD_DIR, CYLINDER_CL_DIR
+    if ds == "cylinder":
+        return CYLINDER_DISP_DIR, CYLINDER_CD_DIR, CYLINDER_CL_DIR
+    raise ValueError(f"Unknown dataset: '{ds}'. Must be one of: cylinder, cylinder1000, bridge.")
 
 
 def _normalize_bridge_cases_to_ur(df: pd.DataFrame, fn_hz: float, d_ref: float) -> pd.DataFrame:

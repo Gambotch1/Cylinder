@@ -34,6 +34,27 @@ run_coupled_viv with e_forcing=None). numpy + scipy.
 
 import numpy as np
 
+# a_ref is the PEAK amplitude convention (sqrt(2)*RMS of the steady tail),
+# never RMS itself -- see measure_cfd_amplitude. Shared by coupled_inference.py
+# and analyze_bridge_cfd_campaign.py so the receipt/CSV metadata can't drift
+# from the value actually used in the VdP closure.
+#
+# The definition has NOT changed; only the label was clarified so it reads
+# as "RMS-equivalent peak" rather than an ambiguous "peak/RMS" pairing.
+A_REF_CONVENTION = "rms_equivalent_peak_sqrt2_std_tail"
+# Older receipts (written before this rename) used this string for the exact
+# same quantity -- kept so any code reading back a saved receipt can resolve
+# both spellings to the current canonical name.
+A_REF_CONVENTION_LEGACY_ALIASES = {"peak_sqrt2_rms_tail"}
+
+
+def normalize_a_ref_convention(value: str) -> str:
+    """Map a legacy a_ref_convention string (from an older receipt) to the
+    current canonical name. Unknown/current values pass through unchanged."""
+    if value in A_REF_CONVENTION_LEGACY_ALIASES:
+        return A_REF_CONVENTION
+    return value
+
 
 def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float) -> np.ndarray:
     """Twin of coupled_inference.to_model_coords; kept local to avoid a circular import."""
@@ -183,20 +204,45 @@ def analyze_run(h, D, dt, fn, ad_cfd_ref, f_cfd_ref=None,
         "env_ad": env,
     }
 
+def find_contiguous_segments(mask: np.ndarray) -> list[tuple[int, int]]:
+    """Contiguous True-run (start_idx, end_idx) pairs in a boolean mask,
+    end_idx exclusive. Used to audit whether a growth-rate mask is one
+    connected interval or several disconnected ones (see measure_growth_rate
+    and contiguous_first_growth_fit)."""
+    idx = np.flatnonzero(mask)
+    if len(idx) == 0:
+        return []
+    breaks = np.where(np.diff(idx) > 1)[0]
+    starts = np.concatenate(([0], breaks + 1))
+    ends = np.concatenate((breaks, [len(idx) - 1]))
+    return [(int(idx[s]), int(idx[e]) + 1) for s, e in zip(starts, ends)]
+
+
 def measure_growth_rate(h, dt, fn, D, floor_frac=0.05, hi_frac=0.45):
     """
     Fits an exponential growth rate (lambda) to the initial transient of the CFD limit cycle.
     Uses a log-linear regression on the amplitude envelope.
+
+    PRODUCTION ESTIMATOR -- lam/r2/n/t0/t1 selection logic is unchanged.
+    The mask is NOT required to be contiguous: every envelope sample in
+    (floor_frac*max_env, hi_frac*max_env) is fit in one global regression,
+    which can span several disconnected segments if the envelope re-enters
+    the band after an early excursion. mask/tc/env/b are additionally
+    returned (audit-only) so callers can inspect that without duplicating
+    this masking logic -- see analyze_bridge_cfd_campaign.py's
+    growth_mask_n_segments/_largest_segment_cycles/_time_span columns and
+    contiguous_first_growth_fit (a diagnostic-only alternative estimator).
     """
     # amplitude_envelope is already defined earlier in your self_excitation.py
     tc, env = amplitude_envelope(h, D, dt, fn)
-    max_env = np.max(env)
-    
+    max_env = np.max(env) if len(env) else 0.0
+
     # Isolate the clean exponential growth region (escaping the noise floor, before saturation bends)
     mask = (env > floor_frac * max_env) & (env < hi_frac * max_env)
-    
+
     if not np.any(mask):
-        return dict(lam=0.0, r2=0.0, n=0, t0=0, t1=0)
+        return dict(lam=0.0, r2=0.0, n=0, t0=0.0, t1=0.0, b=0.0,
+                     mask=mask, tc=tc, env=env, max_env=float(max_env))
 
     t_fit = tc[mask]
     y_fit = np.log(env[mask])
@@ -211,7 +257,82 @@ def measure_growth_rate(h, dt, fn, D, floor_frac=0.05, hi_frac=0.45):
     ss_tot = np.sum((y_fit - np.mean(y_fit))**2)
     r2 = 1.0 - (ss_res / (ss_tot + 1e-30))
 
-    return dict(lam=float(lam), r2=float(r2), n=len(t_fit), t0=float(t_fit[0]), t1=float(t_fit[-1]))
+    return dict(lam=float(lam), r2=float(r2), n=len(t_fit), t0=float(t_fit[0]), t1=float(t_fit[-1]),
+                 b=float(b), mask=mask, tc=tc, env=env, max_env=float(max_env))
+
+
+def contiguous_first_growth_fit(h, dt, fn, D, floor_frac=0.05, hi_frac=0.45,
+                                  min_cycles=5.0, r2_min=0.80, decay_run_len=3):
+    """
+    DIAGNOSTIC-ONLY alternative to measure_growth_rate.
+
+    measure_growth_rate fits every sample across the whole floor_frac..hi_frac
+    band in one global regression, which the Phase-A audit found is often
+    SEVERAL disconnected segments (see growth_mask_n_segments) rather than one
+    clean growth interval -- e.g. small post-saturation fluctuations can
+    re-enter the band well after the real transient ended, dragging r2 down
+    and contaminating lam with unrelated samples.
+
+    This instead: (1) takes only the FIRST contiguous run of the same mask,
+    (2) stops that run early if `decay_run_len` consecutive non-increasing
+    envelope points appear inside it (a sustained decay/saturation onset),
+    then (3) fits log-linear regression on that sub-interval only, and
+    (4) applies the SAME minimum-cycle / R2 checks as the production
+    eligibility screen (min_cycles, r2_min -- pass the same threshold values
+    used elsewhere; this function does not define its own).
+
+    Same masking band as measure_growth_rate (do not silently redefine the
+    lock-in band). NOT called by measure_mu_from_cfd or coupled_inference.py
+    -- reporting only, per project instruction. Never used to auto-select a
+    "better" fit; both legacy and alternative metrics are recorded side by
+    side for human review.
+    """
+    tc, env = amplitude_envelope(h, D, dt, fn)
+    max_env = np.max(env) if len(env) else 0.0
+    mask = (env > floor_frac * max_env) & (env < hi_frac * max_env)
+    segments = find_contiguous_segments(mask)
+
+    if not segments:
+        return dict(lam=0.0, r2=0.0, n=0, t0=0.0, t1=0.0, b=0.0, valid=False,
+                     n_segments_considered=0, stopped_reason="no_mask_samples",
+                     mask=mask, tc=tc, env=env)
+
+    s, e = segments[0]
+    seg_env = env[s:e]
+    stop_len = len(seg_env)
+    if decay_run_len > 0 and len(seg_env) > decay_run_len:
+        non_increasing = np.diff(seg_env) <= 0.0
+        run = 0
+        for i, ni in enumerate(non_increasing):
+            run = run + 1 if ni else 0
+            if run >= decay_run_len:
+                stop_len = i - decay_run_len + 2  # index just before the sustained decay began
+                break
+    e_eff = s + max(int(stop_len), 1)
+
+    t_fit = tc[s:e_eff]
+    y_fit = np.log(env[s:e_eff])
+    if len(t_fit) < 2:
+        return dict(lam=0.0, r2=0.0, n=len(t_fit),
+                     t0=float(t_fit[0]) if len(t_fit) else 0.0,
+                     t1=float(t_fit[-1]) if len(t_fit) else 0.0,
+                     b=0.0, valid=False, n_segments_considered=len(segments),
+                     stopped_reason="segment_too_short", mask=mask, tc=tc, env=env)
+
+    A = np.vstack([t_fit, np.ones(len(t_fit))]).T
+    lam, b = np.linalg.lstsq(A, y_fit, rcond=None)[0]
+    y_pred = lam * t_fit + b
+    ss_res = np.sum((y_fit - y_pred) ** 2)
+    ss_tot = np.sum((y_fit - np.mean(y_fit)) ** 2)
+    r2 = 1.0 - (ss_res / (ss_tot + 1e-30))
+
+    cycles = (t_fit[-1] - t_fit[0]) * fn
+    valid = bool(lam > 0 and cycles >= min_cycles and r2 >= r2_min)
+
+    return dict(lam=float(lam), r2=float(r2), n=len(t_fit), t0=float(t_fit[0]), t1=float(t_fit[-1]),
+                 b=float(b), valid=valid, n_segments_considered=len(segments),
+                 stopped_reason=("ok" if valid else "below_thresholds"),
+                 mask=mask, tc=tc, env=env)
 
 def measure_cfd_amplitude(case_df, handoff_idx, D):
     """Saturated CFD amplitude. Returns BOTH conventions - do not confuse them.

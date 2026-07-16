@@ -1,5 +1,7 @@
 import argparse
+import hashlib
 import json
+import subprocess
 from math import gamma
 from pathlib import Path
 from typing import Optional
@@ -13,7 +15,10 @@ import matplotlib.pyplot as plt
 
 from viv_analysis.preprocess import compute_kinematics, merge_dataframes, downsample
 from viv_analysis.utils import PROJECT_ROOT, format_ur_label
-from viv_analysis.self_excitation import build_seed_history, analyze_run, measure_cfd_amplitude, measure_mu_from_cfd
+from viv_analysis.self_excitation import (
+    build_seed_history, analyze_run, measure_cfd_amplitude, measure_mu_from_cfd,
+    A_REF_CONVENTION,
+)
 from viv_analysis.config import config
 
 
@@ -25,6 +30,113 @@ def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float) -> np.
     if D <= 0 or U <= 0:
         raise ValueError(f"to_model_coords requires D>0, U>0 (got D={D}, U={U})")
     return kin / np.array([D, U, U * U / D], dtype=np.float32)
+
+
+def positive_finite_float(value: str) -> float:
+    """argparse `type=` validator: strictly positive, finite float.
+
+    Used by --a_ref_m so a bad value (0, negative, inf, nan, non-numeric)
+    fails fast with a clear message instead of silently corrupting the
+    v3_coherent closure (a_ref<=0 divides-by-zero inside run_coupled_viv).
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"expected a float, got {value!r}")
+    if not np.isfinite(v):
+        raise argparse.ArgumentTypeError(f"expected a finite value, got {v}")
+    if v <= 0:
+        raise argparse.ArgumentTypeError(f"expected a positive value, got {v}")
+    return v
+
+
+def finite_admissible_mu(value: str) -> float:
+    """argparse `type=` validator for --mu: finite, non-negative float.
+
+    mu is the v3_coherent NEGATIVE-DAMPING STRENGTH (see run_coupled_viv's
+    VdP-like closure term). By that term's own sign convention, mu<0 would
+    flip it into a stabilizing (positive-damping) term instead -- not what
+    "negative-damping strength" means here, so it's rejected as physically
+    inadmissible rather than silently accepted. mu=0 is valid (the v2/v3
+    closure term vanishes, reducing to the bare GRU lift).
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"expected a float, got {value!r}")
+    if not np.isfinite(v):
+        raise argparse.ArgumentTypeError(f"expected a finite value, got {v}")
+    if v < 0:
+        raise argparse.ArgumentTypeError(
+            f"expected a non-negative value (mu is a negative-damping STRENGTH; "
+            f"a negative mu would flip the v3_coherent closure into a "
+            f"stabilizing term, which is not physically admissible here), got {v}"
+        )
+    return v
+
+
+def get_git_dirty_and_patch_hash(cwd: Optional[Path] = None) -> tuple[bool, str]:
+    """Best-effort worktree cleanliness check for receipt provenance.
+
+    Returns (git_dirty, worktree_patch_hash). git_dirty is True if `git
+    status --porcelain` reports ANY change (tracked or untracked).
+    worktree_patch_hash is the sha256 of `git diff HEAD --binary` (tracked
+    changes only -- untracked files are reflected in git_dirty but not
+    hashed here, since a diff can't represent a file git doesn't know about
+    yet). On any git failure, fails safe: (True, "").
+    """
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=cwd or PROJECT_ROOT,
+            capture_output=True, text=True, timeout=15, check=True,
+        ).stdout
+        dirty = len(status.strip()) > 0
+        diff = subprocess.run(
+            ["git", "diff", "HEAD", "--binary"], cwd=cwd or PROJECT_ROOT,
+            capture_output=True, timeout=15, check=True,
+        ).stdout
+        patch_hash = hashlib.sha256(diff).hexdigest() if diff else ""
+        return dirty, patch_hash
+    except Exception:
+        return True, ""
+
+
+def resolve_a_ref(amp: dict, a_ref_m: Optional[float]) -> tuple[float, str]:
+    """Resolve a_ref for the v2/v3 closure.
+
+    CLI override (--a_ref_m) wins verbatim and is never replaced by the
+    target-case measurement; omitted -> preserves the pre-existing measured
+    behavior exactly. `amp` is the dict returned by measure_cfd_amplitude.
+    """
+    if a_ref_m is not None:
+        return float(a_ref_m), "cli_override"
+    return float(amp["a_ref_peak"]), "measured_from_target_cfd"
+
+
+def resolve_mu_source(mu: Optional[float], forcing_mode: str) -> str:
+    """Label where mu_used came from, without altering mu's numeric value.
+
+    mu is only measured from CFD growth for forcing_mode=v3_coherent when
+    --mu is omitted; for other modes it's unused (defaults to 0.0 downstream).
+    """
+    if mu is not None:
+        return "cli_override"
+    if forcing_mode == "v3_coherent":
+        return "measured_from_target_cfd"
+    return "not_applicable"
+
+
+def get_git_commit(cwd: Optional[Path] = None) -> Optional[str]:
+    """Best-effort current commit hash for receipt provenance; None if unavailable."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd or PROJECT_ROOT,
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        return out.stdout.strip()
+    except Exception:
+        return None
 
 
 def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None) -> bool:
@@ -664,6 +776,7 @@ def main(
     cfd_target_AD: float = 0.23,
     forcing_mode: str = "v1_additive",
     mu: Optional[float] = None,
+    a_ref_m: Optional[float] = None,
     make_tf_residual: bool = False,
     run_replay_diag: bool = False,
     ):
@@ -1065,11 +1178,23 @@ def main(
     # derive the negative-damping mu from the CFD growth transient for v3_coherent.
     qD = 0.5 * rho * U**2 * B
     amp = measure_cfd_amplitude(case_df, handoff_idx, D)
-    a_ref = amp["a_ref_peak"]                       # PEAK physical amplitude
-    print(f"[closure] CFD RMS A/D={amp['rms_AD']:.4f}  a_ref(peak)={a_ref:.4f} m")
+    a_ref, a_ref_source = resolve_a_ref(amp, a_ref_m)
+    if a_ref_source == "cli_override":
+        print(f"[closure] a_ref OVERRIDDEN via --a_ref_m = {a_ref:.4f} m "
+              f"(measured target-CFD peak a_ref would have been {amp['a_ref_peak']:.4f} m)")
+    print(f"[closure] CFD RMS A/D={amp['rms_AD']:.4f}  a_ref={a_ref:.4f} m  source={a_ref_source}")
 
     mu_used = mu
+    mu_source = resolve_mu_source(mu, forcing_mode)
     if forcing_mode == "v3_coherent" and mu is None:
+        if a_ref_source == "cli_override":
+            print(f"[closure] [WARNING] a_ref is CLI-overridden ({a_ref:.4f} m) but mu is "
+                  f"still being MEASURED from the target CFD growth transient, which uses "
+                  f"THIS a_ref internally to scale beta_true -> mu. Mixing an externally "
+                  f"supplied amplitude scale with an independently-measured growth rate "
+                  f"means mu_used will not match what would be measured under the target "
+                  f"case's own a_ref. If you intend a fully self-consistent override, also "
+                  f"pass --mu explicitly.")
         mm = measure_mu_from_cfd(case_df, t_release, m, c, D, dt, fn, a_ref, qD)
         mu_used = mm["mu"]
         print(f"[closure] measured growth lambda={mm['lam']:.4f}/s (R2={mm['r2']:.3f}, "
@@ -1125,14 +1250,75 @@ def main(
     _nd_tag = "_nd" if nd_inputs else ""
     _noise_scale_tag = f"s{noise_scale:.6g}"
     _cfd_scale_tag = f"_scale{cfd_scale:g}"
-    _exp_tag = f"{_sub}_forc-{forcing_mode}_noise-{noise_mode}{_gru_tag}{_nd_tag}{_cfd_scale_tag}_{_noise_scale_tag}_seed{noise_seed}_handoff_{handoff_offset_steps}"
+    # Only appears when --a_ref_m is supplied, so omitted-case filenames are
+    # byte-identical to pre-override behavior (backward compatibility).
+    _aref_tag = f"_arefm{a_ref_m:.4g}" if a_ref_m is not None else ""
+    _exp_tag = f"{_sub}_forc-{forcing_mode}{_aref_tag}_noise-{noise_mode}{_gru_tag}{_nd_tag}{_cfd_scale_tag}_{_noise_scale_tag}_seed{noise_seed}_handoff_{handoff_offset_steps}"
+
+    a_ref_over_D = float(a_ref) / float(D)
+    a_ref_convention = A_REF_CONVENTION
+    coordinate_mode = "nondimensional" if nd_inputs else "dimensional"
+    git_commit = get_git_commit()
+    git_dirty, worktree_patch_hash = get_git_dirty_and_patch_hash()
+    if git_dirty:
+        print(f"[provenance] [WARNING] worktree is DIRTY (uncommitted changes present). "
+              f"For reproducible experiments, commit before running coupled inference. "
+              f"worktree_patch_hash={worktree_patch_hash[:12] if worktree_patch_hash else 'n/a'}")
+
+    # target_a_ref_diagnostic_* is ALWAYS the value measured from the target
+    # CFD case's own steady tail, regardless of a_ref_source -- kept purely
+    # for comparison against a_ref_used_m when overridden. It is never the
+    # value fed into run_coupled_viv (that's a_ref_used_m); the literal
+    # target_a_ref_diagnostic_used=False marker exists so a downstream reader
+    # can't mistake this diagnostic field for the operative one.
+    target_a_ref_diagnostic_m = float(amp["a_ref_peak"])
+
     npz_out = PROJECT_ROOT / "results" / f"coupled_{cfd_dataset}_Ur{Ur}_{_exp_tag}_mu{mu_used}.npz"
     np.savez(npz_out, t=t, h=h, cl=CL, h_cfd=h_cfd_tail, D=D, Ur=float(Ur),
              model_subdir=_sub, forcing_mode=forcing_mode, noise_mode=noise_mode,
              gru_off=bool(gru_off), noise_scale=float(noise_scale), noise_seed=int(noise_seed),
              cl_det=result.get("CL_det"), cl_vdp=result.get("CL_vdp"), e=result.get("e_forcing"),
-             h_dot=result["velocity"], h_ddot=result["acceleration"])
+             h_dot=result["velocity"], h_ddot=result["acceleration"],
+             a_ref_used_m=float(a_ref), a_ref_over_D=a_ref_over_D, a_ref_convention=a_ref_convention,
+             a_ref_used_source=a_ref_source,
+             target_a_ref_diagnostic_m=target_a_ref_diagnostic_m,
+             target_a_ref_diagnostic_used=False,
+             mu_value=float(mu_used or 0.0), mu_source=mu_source,
+             coordinate_mode=coordinate_mode, checkpoint=checkpoint,
+             handoff_offset=int(handoff_offset_steps), git_commit=git_commit or "unknown",
+             git_dirty=bool(git_dirty), worktree_patch_hash=worktree_patch_hash or "")
     print(f"Saved coupled trajectory -> {npz_out}")
+
+    # ── JSON receipt (human-readable mirror of the NPZ metadata) ───────────
+    receipt = {
+        "cfd_dataset": cfd_dataset,
+        "Ur": float(Ur),
+        "D": float(D),
+        "forcing_mode": forcing_mode,
+        "noise_mode": noise_mode,
+        "a_ref_used_m": float(a_ref),
+        "a_ref_over_D": a_ref_over_D,
+        "a_ref_convention": a_ref_convention,
+        "a_ref_used_source": a_ref_source,
+        "target_a_ref_diagnostic_m": target_a_ref_diagnostic_m,
+        "target_a_ref_diagnostic_used": False,
+        "mu_value": float(mu_used or 0.0),
+        "mu_source": mu_source,
+        "coordinate_mode": coordinate_mode,
+        "model_subdir": _sub,
+        "checkpoint": checkpoint,
+        "handoff_offset": int(handoff_offset_steps),
+        "handoff_time_s": float(t_handoff),
+        "total_time_s": float(total_time),
+        "git_commit": git_commit or "unknown",
+        "git_dirty": bool(git_dirty),
+        "worktree_patch_hash": worktree_patch_hash or "",
+        "npz_path": str(npz_out),
+    }
+    receipt_out = npz_out.with_suffix(".receipt.json")
+    with open(receipt_out, "w") as f:
+        json.dump(receipt, f, indent=2)
+    print(f"Saved receipt -> {receipt_out}")
 
     # ── Plot: GRU result alongside CFD ground truth for comparison ────────
     CFD_t = case_df["time"].values
@@ -1224,8 +1410,18 @@ if __name__ == "__main__":
                     help="The expected true limit-cycle A/D for convergence checking")
     parser.add_argument("--forcing_mode", default="v1_additive",
                     choices=["v1_additive", "v2_multiplicative", "v3_coherent"])
-    parser.add_argument("--mu", type=float, default=None,
-                    help="v3 negative-damping strength. If omitted, MEASURED from CFD growth.")
+    parser.add_argument("--mu", type=finite_admissible_mu, default=None,
+                    help="v3 negative-damping strength. Must be finite and non-negative "
+                         "(negative mu would flip the closure into a stabilizing term, "
+                         "which is not physically admissible). If omitted, MEASURED "
+                         "from CFD growth.")
+    parser.add_argument("--a_ref_m", type=positive_finite_float, default=None,
+                    help="Explicit amplitude reference for the v3_coherent (and v2_multiplicative) "
+                         "closure, in METRES. Must be finite and positive. If omitted (default), "
+                         "a_ref is measured internally from the target CFD case's steady-state tail "
+                         "(peak amplitude = sqrt(2)*RMS displacement) -- current behavior is unchanged. "
+                         "When supplied, this value is used verbatim and is NOT replaced by the "
+                         "target-case measurement.")
     parser.add_argument("--make_tf_residual", action="store_true",
                     help="Regenerate TF residual and diagnostic plot. Run once per Ur. Required for new Ur with --noise_mode surrogate.")
     parser.add_argument("--run_replay_diag", action="store_true",
@@ -1250,6 +1446,7 @@ if __name__ == "__main__":
         cfd_target_AD=args.cfd_target_AD,
         forcing_mode=args.forcing_mode,
         mu=args.mu,
+        a_ref_m=args.a_ref_m,
         make_tf_residual=args.make_tf_residual,
         run_replay_diag=args.run_replay_diag,
     )

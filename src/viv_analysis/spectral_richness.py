@@ -27,16 +27,22 @@ def richness(cl, dt, fn, fmax=None):
     nper = min(len(cl)//8, 1<<14)
     f, P = welch(cl, fs=fs, nperseg=max(nper,256), detrend="constant")
     band = f <= fmax; f, P = f[band], P[band]
+    df = float(f[1] - f[0])
     m = (f>0.05*fn) & (f<3.0*fn)
     f_dom = float(f[m][np.argmax(P[m])]) if m.any() else float("nan")
     # fundamental band = +-15% around f_dom
     fb = (f>0.85*f_dom) & (f<1.15*f_dom)
     tot = np.trapezoid(P, f)+1e-30
-    oob = 1.0 - np.trapezoid(P[fb], f[fb])/tot
+    oob = 1.0 - float(np.sum(P[fb])*df)/tot
     Pp = np.clip(P, 1e-30, None)
     flat = float(np.exp(np.mean(np.log(Pp)))/ (np.mean(Pp)+1e-30))
     def band_energy(fc):
-        b=(f>0.9*fc)&(f<1.1*fc); return float(np.trapezoid(P[b], f[b])) if b.any() else 0.0
+        # Riemann sum, not trapezoid: a narrow +-10% band can contain a
+        # single Welch bin on a long signal (fine df), where trapz over one
+        # point is 0 by definition -- that zero then lands in a denominator
+        # (e1 below) and blows h2/h3 up by ~1e25x. sum*df stays well-defined
+        # for a single bin and matches trapz closely when there are many.
+        b=(f>0.9*fc)&(f<1.1*fc); return float(np.sum(P[b])*df) if b.any() else 0.0
     e1=band_energy(f_dom)+1e-30
     return dict(f=f, P=P, f_dom=f_dom, flatness=flat, oob_frac=float(oob),
                 h2=band_energy(2*f_dom)/e1, h3=band_energy(3*f_dom)/e1)

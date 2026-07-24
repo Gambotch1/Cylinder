@@ -27,10 +27,17 @@
 #       --model_subdir gru_rollout_cylinder_re_1000 \
 #       --cfd_dataset cylinder_re_1000 --total_time 500
 #
+#   python -m viv_analysis.diagnose_off_manifold \
+#       --Ur 6.528 --handoff_offset 2000 \
+#       --checkpoint gru_best.pt \
+#       --model_subdir gru_bridge_nd_ctx \
+#       --cfd_dataset bridge --nd_inputs --total_time 500
+#
 # Run it on a COLLAPSE case (offset 2000) and a SAWTOOTH case (offset 1500/2500)
 # and compare the two distance traces — that contrast is the Day-1 result.
 
 import argparse
+import json
 import pickle
 
 import numpy as np
@@ -44,7 +51,7 @@ from viv_analysis.config import config
 from viv_analysis.preprocess import merge_dataframes, compute_kinematics
 from viv_analysis.train_gru import split_cases
 from viv_analysis.models.gru import VIV_GRU
-from viv_analysis.coupled_inference import Newmark_beta, warmup_history
+from viv_analysis.coupled_inference import Newmark_beta, warmup_history, to_model_coords
 from viv_analysis.utils import PROJECT_ROOT, format_ur_label, parse_ur_label
 
 CLOUD_CAP = 200_000     # subsample training cloud for KD-tree speed
@@ -53,22 +60,44 @@ CLOUD_CAP = 200_000     # subsample training cloud for KD-tree speed
 # warnings on every other checkpoint (e.g. the noise-trained model).
 
 
-def structural_params():
-    D, fn, rho, M_star, zeta = 0.4, 0.2, 1.0, 2.0, 0.007
-    m = M_star * rho * (np.pi * D ** 2 / 4.0)
-    omega_n = 2.0 * np.pi * fn
-    k = m * omega_n ** 2
-    c = 2.0 * m * omega_n * zeta
-    return dict(D=D, fn=fn, rho=rho, m=m, c=c, k=k)
+def resolve_physical_params(cfd_dataset: str) -> dict:
+    """Physical/structural parameters — mirrors coupled_inference.main()
+    exactly (coupled_inference.py:1002-1031) so this diagnostic reproduces the
+    same force law and Newmark integration as production, for cylinder1000
+    AND bridge."""
+    ds = cfd_dataset.strip().lower()
+    if ds == "bridge":
+        from viv_analysis.config import bridge_structural_params
+        bsp = bridge_structural_params()
+        m, c, k = bsp["m"], bsp["c"], bsp["k"]
+        rho = config["bridge_rho"]
+        fn = config["bridge_fn_hz"]
+        D = config["bridge_D_ref"]
+        B = config["bridge_B_ref"]
+        t_star_release = config["bridge_t_star_release"]
+        dt = None   # resolved from the CFD trajectory's own timestep
+    else:
+        rho = 1.0
+        D = config["cylinder1000_D_ref"]
+        B = D
+        fn = 0.2
+        M_star, zeta = 2.0, 0.007
+        m = M_star * rho * (np.pi * D ** 2 / 4.0)
+        k = m * (2 * np.pi * fn) ** 2
+        c = 2.0 * m * (2 * np.pi * fn) * zeta
+        t_star_release = 80.0
+        dt = 0.005
+    return dict(ds=ds, rho=rho, fn=fn, D=D, B=B, m=m, c=c, k=k,
+                t_star_release=t_star_release, dt=dt)
 
 
-def load_model(artifact_dir, baseline_dir, checkpoint, device):
+def load_model(artifact_dir, baseline_dir, checkpoint, device, hidden_size, num_layers, dropout):
     ck = torch.load(artifact_dir / checkpoint, map_location=device)
     state = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
     model = VIV_GRU(input_size=4,
-                    hidden_size=config["hidden_size"],
-                    num_layers=config["num_layers"],
-                    dropout=config["dropout"]).to(device)
+                    hidden_size=hidden_size,
+                    num_layers=num_layers,
+                    dropout=dropout).to(device)
     model.load_state_dict(state)
     model.eval()
     return model
@@ -88,9 +117,42 @@ def load_artifacts(artifact_dir, baseline_dir):
     return x_scaler, y_scaler, ur_stats
 
 
-def build_training_cloud(raw_df, train_cases, release_time, x_scaler):
-    """Scaled (disp,vel,acc) points the GRU was trained on: post-release, train cases."""
+def load_gru_config(artifact_dir, baseline_dir):
+    """Read hidden_size/num_layers/dropout/seq_len/use_ur_context from the
+    saved run's metrics_gru.json, falling back to project-wide config
+    defaults. Mirrors coupled_inference.main() (coupled_inference.py:1038-1047)
+    — required for bridge, whose seq_len (2500) differs from cylinder's (1000)."""
+    hidden_size = config["hidden_size"]
+    num_layers = config["num_layers"]
+    dropout = config["dropout"]
+    seq_len = 1000
+    use_ur_context = True
+    metrics_path = artifact_dir / "metrics_gru.json"
+    if not metrics_path.exists():
+        metrics_path = baseline_dir / "metrics_gru.json"
+    if metrics_path.exists():
+        with open(metrics_path, "r") as f:
+            saved_metrics = json.load(f)
+        gru_cfg = saved_metrics.get("gru_config", saved_metrics)
+        hidden_size = gru_cfg.get("hidden_size", hidden_size)
+        num_layers = gru_cfg.get("num_layers", num_layers)
+        dropout = gru_cfg.get("dropout", dropout)
+        seq_len = gru_cfg.get("seq_len", seq_len)
+        use_ur_context = bool(saved_metrics.get("use_ur_context", use_ur_context))
+    return hidden_size, num_layers, dropout, seq_len, use_ur_context
+
+
+def build_training_cloud(raw_df, train_cases, release_time, x_scaler, nd_inputs, D, fn):
+    """Scaled (disp,vel,acc) points the GRU was trained on: post-release, train
+    cases, converted to model coordinates exactly like training. Each case is
+    nondimensionalized by its OWN U_case = Ur_case*fn*D (train_gru.
+    apply_nd_transform, train_gru.py:131-147) — NOT the single U of the
+    inference case being diagnosed; cases span many Ur, so a shared U would
+    silently mis-scale every case but the one under test. Also returns the
+    physical training-amplitude envelope (max|disp|/D) so the divergence
+    threshold isn't a cylinder-specific magic number on other datasets."""
     pts = []
+    max_abs_disp = 0.0
     for case in sorted(train_cases):
         cdf = raw_df[raw_df["case"] == case].sort_values(["time", "step"])
         if cdf.empty:
@@ -99,16 +161,21 @@ def build_training_cloud(raw_df, train_cases, release_time, x_scaler):
         rel_idx = int(np.searchsorted(times, float(release_time[case])))
         phys = cdf[["disp", "vel", "acc"]].to_numpy(dtype=np.float32)[rel_idx:]
         if len(phys):
-            pts.append(x_scaler.transform(phys).astype(np.float32))
+            max_abs_disp = max(max_abs_disp, float(np.abs(phys[:, 0]).max()))
+            U_case = parse_ur_label(str(case)) * fn * D
+            model_coords = to_model_coords(phys, nd_inputs, D, U_case)
+            pts.append(x_scaler.transform(model_coords).astype(np.float32))
     cloud = np.vstack(pts)
     if len(cloud) > CLOUD_CAP:
         rng = np.random.default_rng(0)
         cloud = cloud[rng.choice(len(cloud), CLOUD_CAP, replace=False)]
-    return cloud
+    envelope = max_abs_disp / D
+    return cloud, envelope
 
 
 def run_coupled_with_logging(model, init_history, init_state, U, sp,
                              x_scaler, y_scaler, n_steps, dt, device,
+                             nd_inputs, D, B,
                              window_conv="current"):
     """
     Re-runs the coupled loop, logging the scaled state each step.
@@ -121,6 +188,12 @@ def run_coupled_with_logging(model, init_history, init_state, U, sp,
     On a collapsed solution both agree; on a sustained limit cycle they differ by a
     half-step phase, which shifts A/D. Distance and h are logged for the pushed state
     (what the model actually conditions on — matches production's OOD basis).
+
+    Force law and coordinate conversion mirror run_coupled_viv exactly:
+    F = 0.5*rho*U^2*B*cl (coupled_inference.py:851, uses the force-reference
+    span B, not D — they coincide for cylinder1000 but not for bridge), and
+    kinematics are divided by [D, U, U^2/D] before scaling when nd_inputs
+    (coupled_inference.py:868).
     """
     xm = torch.tensor(x_scaler.mean_,  dtype=torch.float32, device=device)
     xs = torch.tensor(x_scaler.scale_, dtype=torch.float32, device=device)
@@ -141,14 +214,24 @@ def run_coupled_with_logging(model, init_history, init_state, U, sp,
         for i in range(n_steps):
             pred, _ = model(window)
             cl_phys = pred.squeeze() * y_scale + y_mean
-            F = 0.5 * sp["rho"] * U ** 2 * sp["D"] * cl_phys
+            F = 0.5 * sp["rho"] * U ** 2 * B * cl_phys
             # current (pre-Newmark) state, scaled — this is what production pushes
-            cur = ((h - xm[0]) / xs[0], (hd - xm[1]) / xs[1], (hdd - xm[2]) / xs[2])
+            if nd_inputs:
+                cur = ((h / D - xm[0]) / xs[0],
+                       (hd / U - xm[1]) / xs[1],
+                       (hdd / (U * U / D) - xm[2]) / xs[2])
+            else:
+                cur = ((h - xm[0]) / xs[0], (hd - xm[1]) / xs[1], (hdd - xm[2]) / xs[2])
             h_cur = float(h)
 
             h, hd, hdd = Newmark_beta(F, h, hd, hdd, dt,
                                       sp["m"], sp["c"], sp["k"])
-            nxt = ((h - xm[0]) / xs[0], (hd - xm[1]) / xs[1], (hdd - xm[2]) / xs[2])
+            if nd_inputs:
+                nxt = ((h / D - xm[0]) / xs[0],
+                       (hd / U - xm[1]) / xs[1],
+                       (hdd / (U * U / D) - xm[2]) / xs[2])
+            else:
+                nxt = ((h - xm[0]) / xs[0], (hd - xm[1]) / xs[1], (hdd - xm[2]) / xs[2])
 
             push = cur if window_conv == "current" else nxt
             states_scaled[i] = tuple(float(v) for v in push)
@@ -170,6 +253,10 @@ def main():
     ap.add_argument("--checkpoint", type=str, default="gru_rollout_k10.pt")
     ap.add_argument("--model_subdir", type=str, default="gru_rollout_cylinder_re_1000")
     ap.add_argument("--cfd_dataset", type=str, default="cylinder_re_1000")
+    ap.add_argument("--nd_inputs", action="store_true",
+                    help="Model was trained on nondimensional [h/D, hdot/U, hddot*D/U^2] "
+                         "inputs; must match how the checkpoint in --model_subdir was trained "
+                         "(e.g. gru_bridge_nd_ctx).")
     ap.add_argument("--window_conv", choices=["current", "next"], default="current",
                     help="Window-feed convention; 'current' matches production run_coupled_viv.")
     ap.add_argument("--noise_std", type=float, default=0.0,
@@ -183,32 +270,45 @@ def main():
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dt = 0.005
-    sp = structural_params()
-    seq_len = 1000
+    sp = resolve_physical_params(args.cfd_dataset)
 
     artifact_dir = PROJECT_ROOT / "results" / args.model_subdir
     baseline_dir = PROJECT_ROOT / "results" / f"gru_{args.cfd_dataset}"
 
     x_scaler, y_scaler, ur_stats = load_artifacts(artifact_dir, baseline_dir)
     ur_mean, ur_std = ur_stats["mean"], ur_stats["std"]
-    model = load_model(artifact_dir, baseline_dir, args.checkpoint, device)
+    hidden_size, num_layers, dropout, seq_len, use_ur_context = load_gru_config(
+        artifact_dir, baseline_dir)
+    model = load_model(artifact_dir, baseline_dir, args.checkpoint, device,
+                        hidden_size, num_layers, dropout)
     print(f"ur_stats mean={ur_mean:.4f} std={ur_std:.4f}  "
-          f"y_scaler mean={float(y_scaler.mean_[0]):.6f} scale={float(y_scaler.scale_[0]):.6f}")
+          f"y_scaler mean={float(y_scaler.mean_[0]):.6f} scale={float(y_scaler.scale_[0]):.6f}  "
+          f"seq_len={seq_len} nd_inputs={args.nd_inputs} use_ur_context={use_ur_context}")
 
     # ── CFD data + kinematics ──────────────────────────────────────────────
-    raw_df = merge_dataframes(dataset=args.cfd_dataset)
-    struct = {"m": sp["m"], "c": sp["c"], "k": sp["k"],
-              "cylinder_mass": sp["m"], "c_struct": sp["c"], "k_struct": sp["k"]}
-    raw_df = compute_kinematics(raw_df, dataset=args.cfd_dataset, structural_params=struct)
+    if sp["ds"] == "bridge":
+        from viv_analysis.preprocess import load_bridge_df_cached
+        from viv_analysis.config import bridge_structural_params
+        raw_df = load_bridge_df_cached(
+            fn_hz=sp["fn"], d_ref=sp["D"],
+            bridge_structural_params=bridge_structural_params(),
+        )
+    else:
+        raw_df = merge_dataframes(dataset=args.cfd_dataset)
+        struct = {"m": sp["m"], "c": sp["c"], "k": sp["k"],
+                  "cylinder_mass": sp["m"], "c_struct": sp["c"], "k_struct": sp["k"]}
+        raw_df = compute_kinematics(raw_df, dataset=args.cfd_dataset, structural_params=struct)
 
     all_cases = sorted(str(c) for c in raw_df["case"].drop_duplicates())
-    cfg = dict(config); cfg["cylinder1000_t_release"] = config["cylinder1000_t_release"]
+    cfg = dict(config)
     train_cases, _, _, release_time = split_cases(all_cases, args.cfd_dataset, cfg)
+
+    U = args.Ur * sp["fn"] * sp["D"]
 
     # ── training manifold cloud + calibrated threshold ─────────────────────
     print("Building training manifold cloud...")
-    cloud = build_training_cloud(raw_df, train_cases, release_time, x_scaler)
+    cloud, cfd_envelope = build_training_cloud(
+        raw_df, train_cases, release_time, x_scaler, args.nd_inputs, sp["D"], sp["fn"])
     nn = NearestNeighbors(n_neighbors=2, algorithm="kd_tree").fit(cloud)
     rng = np.random.default_rng(1)
     samp = cloud[rng.choice(len(cloud), min(20000, len(cloud)), replace=False)]
@@ -234,21 +334,28 @@ def main():
     case_df = raw_df[raw_df["case"] == format_ur_label(args.Ur)].copy()
     if case_df.empty:
         raise SystemExit(f"No CFD case for Ur={args.Ur}")
-    t_release = 400.0 / args.Ur
+
+    dt = sp["dt"]
+    if dt is None:
+        tt = np.sort(np.unique(case_df["time"].to_numpy(dtype=np.float64)))
+        dt = float(np.median(np.diff(tt)))
+        print(f"  [{sp['ds']}] Newmark dt = {dt:.6f}s  ({(1 / sp['fn']) / dt:.0f} steps/cycle)")
+
+    t_release = sp["t_star_release"] * sp["D"] / U
     init_history, init_state, t_handoff, handoff_idx = warmup_history(
         cfd_case_df=case_df, release_t=t_release, seq_len=seq_len,
         input_cols=["disp", "vel", "acc"], x_scaler=x_scaler,
-        use_ur_context=True, ur_value=args.Ur, ur_stats=(ur_mean, ur_std),
+        nd_inputs=args.nd_inputs, D=sp["D"], U=U,
+        use_ur_context=use_ur_context, ur_value=args.Ur, ur_stats=(ur_mean, ur_std),
         handoff_offset_steps=args.handoff_offset,
     )
-    U = args.Ur * sp["fn"] * sp["D"]
     n_steps = int((args.total_time - t_handoff) / dt)
     print(f"Ur={args.Ur}  U={U:.4f}  handoff t={t_handoff:.2f}s  n_steps={n_steps}")
 
     # ── run + log ──────────────────────────────────────────────────────────
     states, h_phys, cl_phys = run_coupled_with_logging(
         model, init_history, init_state, U, sp, x_scaler, y_scaler, n_steps, dt, device,
-        window_conv=args.window_conv)
+        nd_inputs=args.nd_inputs, D=sp["D"], B=sp["B"], window_conv=args.window_conv)
     print(f"window_conv = {args.window_conv}")
     t = t_handoff + dt * np.arange(n_steps)
 
@@ -275,8 +382,10 @@ def main():
     off = nn_dist > thr99
     frac_off = off.mean()
     t_cross = t[np.argmax(off)] if off.any() else None
-    # amplitude divergence: |h/D| exceeds 1.5x the CFD training envelope (~0.26)
-    div = np.abs(h_phys / sp["D"]) > 0.40
+    # amplitude divergence: |h/D| exceeds 1.5x the CFD training envelope, computed
+    # from this dataset's own training cases (not a cylinder-specific constant).
+    div_threshold = 1.5 * cfd_envelope
+    div = np.abs(h_phys / sp["D"]) > div_threshold
     t_div = t[np.argmax(div)] if div.any() else None
     print(f"\nCoupled NN-dist: median={np.median(nn_dist):.3f}  p90={np.percentile(nn_dist, 90):.3f}  "
           f"max={nn_dist.max():.3f}   (in-manifold p99={thr99:.3f})")
@@ -284,7 +393,7 @@ def main():
     if t_cross is not None:
         print(f"First off-manifold crossing: t={t_cross:.1f}s")
     if t_div is not None:
-        print(f"First amplitude divergence (|h/D|>0.40): t={t_div:.1f}s")
+        print(f"First amplitude divergence (|h/D|>{div_threshold:.3f}): t={t_div:.1f}s")
     if t_cross is not None and t_div is not None:
         rel = ("PRECEDES" if t_cross < t_div - 1 else
                "COINCIDES with" if abs(t_cross - t_div) <= 1 else "FOLLOWS")
@@ -297,8 +406,8 @@ def main():
     # ── plot ───────────────────────────────────────────────────────────────
     fig, ax = plt.subplots(3, 1, figsize=(12, 9), sharex=True, constrained_layout=True)
     ax[0].plot(t, h_phys / sp["D"], lw=0.7, color="tab:blue")
-    ax[0].axhline(0.26, color="grey", ls=":", lw=1, label="CFD envelope ~0.26")
-    ax[0].axhline(-0.26, color="grey", ls=":", lw=1)
+    ax[0].axhline(cfd_envelope, color="grey", ls=":", lw=1, label=f"CFD envelope ~{cfd_envelope:.3f}")
+    ax[0].axhline(-cfd_envelope, color="grey", ls=":", lw=1)
     ax[0].set_ylabel("h/D (coupled)"); ax[0].legend(loc="upper right"); ax[0].grid(alpha=0.3)
     ax[0].set_title(f"Off-manifold diagnostic — Ur={args.Ur}, offset={args.handoff_offset}, A/D={ad:.4f}")
 

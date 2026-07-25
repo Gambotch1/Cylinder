@@ -28,7 +28,7 @@ case "$LSB_JOBINDEX" in
     ;;
 esac
 
-SUBDIR="generalization_Ur5.5_holdout_${TAG}"
+SUBDIR="gru_cylinder_${TAG}_noise0.05"
 
 echo "============================================================"
 echo "Gate:        1 — trained Ur regression"

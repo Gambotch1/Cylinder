@@ -18,3 +18,6 @@ env/
 # Build / run outputs
 *.out
 *.png
+*.log
+*.egg-info
+*.log

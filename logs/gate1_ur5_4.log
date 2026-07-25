@@ -1,13 +1,14 @@
 ============================================================
 Gate:        1 — trained Ur regression
 Arm:         nd_context
-Artifact:    results/generalization_Ur5.5_holdout_nd_context
+Artifact:    results/gru_cylinder_nd_context_noise0.05
 Ur:          5.0
 Handoff:     2000 steps
 Forcing:     deterministic GRU only
 ============================================================
 Using device: cuda
 [coord] Using coordinate mode from artifact (run_config.json (coordinate_mode=nondimensional)): nondimensional
+[dataset] Verified: requested 'cylinder1000' matches artifact's recorded 'cylinder1000' (run_config.json)
 Loaded scalers and UR stats: use_ur_context=Truemean=6.5000, std=2.5909
 y_scaler: mean=0.000299  scale=0.269071
 [cylinder1000] Ur=5.0  U=0.4000 m/s  fn=0.2  D(Ur,rel,h/D)=0.4  B(force)=0.4
@@ -33,26 +34,28 @@ TF-vs-coupled diagnostic over full post-release record: 121000 steps (605.0s)
 
 Running coupled inference for 700.0s (121000 steps)...
 121000 steps) ...
-[closure] CFD RMS A/D=0.2940  a_ref(peak)=0.1663 m
-Saved coupled trajectory -> /scratch/jote9827/Github/Cylinder/results/coupled_cylinder1000_Ur5.0_generalization_Ur5.5_holdout_nd_context_forc-v1_additive_noise-none_nd_scale1_s1_seed0_handoff_2000_muNone.npz
+[closure] CFD RMS A/D=0.2940  a_ref=0.1663 m  source=measured_from_target_cfd
+[provenance] [WARNING] worktree is DIRTY (uncommitted changes present). For reproducible experiments, commit before running coupled inference. worktree_patch_hash=af53ae26d376
+Saved coupled trajectory -> /scratch/jote9827/Github/Cylinder/results/coupled_cylinder1000_Ur5.0_gru_cylinder_nd_context_noise0.05_forc-v1_additive_noise-none_nd_scale1_s1_seed0_handoff_2000_muNone.npz
+Saved receipt -> /scratch/jote9827/Github/Cylinder/results/coupled_cylinder1000_Ur5.0_gru_cylinder_nd_context_noise0.05_forc-v1_additive_noise-none_nd_scale1_s1_seed0_handoff_2000_muNone.receipt.json
 
-Saved coupled VIV plot to /scratch/jote9827/Github/Cylinder/results/coupled_viv_Ur5.0_generalization_Ur5.5_holdout_nd_context_forc-v1_additive_noise-none_nd_scale1_s1_seed0_handoff_2000_muNone.png
+Saved coupled VIV plot to /scratch/jote9827/Github/Cylinder/results/coupled_viv_Ur5.0_gru_cylinder_nd_context_noise0.05_forc-v1_additive_noise-none_nd_scale1_s1_seed0_handoff_2000_muNone.png
 
 Steady-state A/D = 0.4157
-Displacement range: -0.1676 to 0.1651 m
+Displacement range: -0.1675 to 0.1651 m
 CL range: -0.2164 to 0.2307
 
 ------------------------------------------------------------
-Sender: LSF System <schwan@makalu94>
-Subject: Job 1587746[4]: <gate1_ur5[1-4]> in cluster <wuerfel> Done
+Sender: LSF System <schwan@makalu93>
+Subject: Job 1627294[4]: <gate1_ur5[1-4]> in cluster <wuerfel> Done
 
-Job <gate1_ur5[1-4]> was submitted from host <makalu56> by user <jote9827> in cluster <wuerfel> at Sat Jul 11 12:36:01 2026
-Job was executed on host(s) <makalu94>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Sat Jul 11 12:36:21 2026
+Job <gate1_ur5[1-4]> was submitted from host <makalu50> by user <jote9827> in cluster <wuerfel> at Mon Jul 20 15:12:14 2026
+Job was executed on host(s) <makalu93>, in queue <BatchGPU>, as user <jote9827> in cluster <wuerfel> at Mon Jul 20 15:12:34 2026
 </home/jote9827> was used as the home directory.
 </scratch/jote9827/Github/Cylinder> was used as the working directory.
-Started at Sat Jul 11 12:36:21 2026
-Terminated at Sat Jul 11 12:40:09 2026
-Results reported at Sat Jul 11 12:40:09 2026
+Started at Mon Jul 20 15:12:34 2026
+Terminated at Mon Jul 20 15:16:04 2026
+Results reported at Mon Jul 20 15:16:04 2026
 
 Your job looked like:
 
@@ -88,7 +91,7 @@ case "$LSB_JOBINDEX" in
     ;;
 esac
 
-SUBDIR="generalization_Ur5.5_holdout_${TAG}"
+SUBDIR="gru_cylinder_${TAG}_noise0.05"
 
 echo "============================================================"
 echo "Gate:        1 — trained Ur regression"
@@ -116,16 +119,16 @@ Successfully completed.
 
 Resource usage summary:
 
-    CPU time :                                   209.01 sec.
-    Max Memory :                                 786.89 MB
-    Average Memory :                             699.15 MB
+    CPU time :                                   203.12 sec.
+    Max Memory :                                 784.21 MB
+    Average Memory :                             698.02 MB
     Total Requested Memory :                     24000.00 MB
-    Delta Memory :                               23213.11 MB
+    Delta Memory :                               23215.79 MB
     Max Swap :                                   -
     Max Processes :                              4
     Max Threads :                                14
-    Run time :                                   228 sec.
-    Turnaround time :                            248 sec.
+    Run time :                                   210 sec.
+    Turnaround time :                            230 sec.
 
 The output (if any) is above this job summary.
 

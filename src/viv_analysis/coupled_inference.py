@@ -6,12 +6,14 @@ from math import gamma
 from pathlib import Path
 from typing import Optional
 
+import matplotlib
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 import torch
 from viv_analysis.models.gru import VIV_GRU
 import pickle
 import matplotlib.pyplot as plt
+matplotlib.use("Agg")
 
 from viv_analysis.preprocess import compute_kinematics, merge_dataframes, downsample
 from viv_analysis.utils import PROJECT_ROOT, format_ur_label
@@ -20,6 +22,23 @@ from viv_analysis.self_excitation import (
     A_REF_CONVENTION,
 )
 from viv_analysis.config import config
+
+
+# ── Thesis figure style ─────────────────────────────────────────────
+plt.rcParams.update({
+    "font.family": "serif",
+    "font.serif": ["STIXGeneral"],       # ships with matplotlib; Times look-alike
+    "mathtext.fontset": "stix",
+    "font.size": 10.5,                   # figure printed at 1:1 → match document
+    "axes.labelsize": 10.5,
+    "legend.fontsize": 9,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "axes.grid": True,
+    "grid.alpha": 0.3,
+    "grid.linestyle": ":",
+})
+
 
 
 def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float) -> np.ndarray:
@@ -139,63 +158,199 @@ def get_git_commit(cwd: Optional[Path] = None) -> Optional[str]:
         return None
 
 
+LEGACY_COORD_SOURCE = "legacy assumption: dimensional"
+
+
 def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None) -> bool:
     """
     Load artifact coordinate mode metadata and resolve against CLI.
-    
+
+    A MISSING nd_inputs key (run_config.json absent/unreadable/lacking the
+    key, and likewise for ur_stats.pkl) is distinct from an explicitly
+    recorded False: only an actually-present key counts as "recorded". A
+    missing key falls through to the next source, and ultimately to the
+    legacy-dimensional default -- WITHOUT claiming that default was
+    recorded by the artifact (metadata_source is reported as
+    LEGACY_COORD_SOURCE, never "ur_stats.pkl"/"run_config.json", when
+    nothing was actually recorded).
+
     Returns the resolved nd_inputs boolean.
-    Raises ValueError if CLI and artifact disagree.
+    Raises ValueError if:
+      - CLI and an EXPLICITLY recorded artifact mode disagree, or
+      - --nd_inputs is requested against a legacy artifact with NO recorded
+        coordinate mode at all (the legacy-dimensional default cannot be
+        trusted to match a nondimensional request, so this refuses rather
+        than silently accepting the mismatch).
     """
     artifact_nd_inputs = None
     metadata_source = None
-    
+
     # Try run_config.json first
     run_config_path = artifact_dir / "run_config.json"
     if run_config_path.exists():
         try:
             with open(run_config_path, "r") as f:
                 run_config = json.load(f)
-            artifact_nd_inputs = bool(run_config.get("nd_inputs", False))
-            metadata_source = f"run_config.json (coordinate_mode={run_config.get('coordinate_mode', '?')})"
+            recorded = run_config.get("nd_inputs", None)
+            if recorded is not None:
+                artifact_nd_inputs = bool(recorded)
+                metadata_source = f"run_config.json (coordinate_mode={run_config.get('coordinate_mode', '?')})"
         except Exception as e:
             print(f"[warn] Could not read run_config.json: {e}")
-    
-    # Fall back to ur_stats.pkl
+
+    # Fall back to ur_stats.pkl -- only if run_config.json didn't yield an
+    # explicitly recorded value (missing file, unreadable, or lacking the key).
     if artifact_nd_inputs is None:
         ur_stats_path = artifact_dir / "ur_stats.pkl"
         if ur_stats_path.exists():
             try:
                 with open(ur_stats_path, "rb") as f:
                     ur_stats_dict = pickle.load(f)
-                artifact_nd_inputs = bool(ur_stats_dict.get("nd_inputs", False))
-                metadata_source = "ur_stats.pkl"
+                recorded = ur_stats_dict.get("nd_inputs", None)
+                if recorded is not None:
+                    artifact_nd_inputs = bool(recorded)
+                    metadata_source = "ur_stats.pkl"
             except Exception as e:
                 print(f"[warn] Could not read ur_stats.pkl: {e}")
-    
-    # Resolve CLI vs artifact
-    if cli_nd_inputs is None:
-        # CLI not specified; use artifact if available
-        if artifact_nd_inputs is not None:
-            print(f"[coord] Using coordinate mode from artifact ({metadata_source}): "
-                  f"{'nondimensional' if artifact_nd_inputs else 'dimensional'}")
-            return artifact_nd_inputs
-        else:
-            # Legacy: no metadata; default to dimensional
-            print(f"[warn] [coord] No artifact metadata found; "
-                  f"assuming legacy dimensional mode. (No run_config.json or nd_inputs in ur_stats.pkl)")
-            return False
-    else:
-        # CLI specified
-        if artifact_nd_inputs is not None and cli_nd_inputs != artifact_nd_inputs:
+
+    if artifact_nd_inputs is None:
+        # Coordinate mode was never recorded by this artifact at all --
+        # neither file exists/is readable, or neither has an nd_inputs key.
+        metadata_source = LEGACY_COORD_SOURCE
+        print(f"[warn] [coord] No recorded coordinate mode in {artifact_dir} "
+              f"(no run_config.json, and ur_stats.pkl has no nd_inputs key). "
+              f"Assuming dimensional mode for backward compatibility "
+              f"({metadata_source}); this is an ASSUMPTION, not a recorded fact.")
+        if cli_nd_inputs:
             raise ValueError(
-                f"Coordinate mode mismatch: CLI specifies "
-                f"{'--nd_inputs' if cli_nd_inputs else '--dim_inputs'} "
-                f"but artifact was trained in "
-                f"{'nondimensional' if artifact_nd_inputs else 'dimensional'} mode "
-                f"({metadata_source}). "
-                f"This would silently corrupt inference. Use matching coordinate mode."
+                f"--nd_inputs was requested but {artifact_dir} has no recorded "
+                f"coordinate mode (no run_config.json, and ur_stats.pkl has no "
+                f"nd_inputs key). This artifact predates coordinate-mode "
+                f"tracking, so its true training coordinate space is unknown; "
+                f"refusing to silently assume nondimensional. Retrain with "
+                f"recorded metadata (or add a run_config.json with "
+                f"nd_inputs=true) before using --nd_inputs on this artifact."
             )
-        return cli_nd_inputs
+        return False
+
+    # Coordinate mode WAS explicitly recorded by the artifact.
+    if cli_nd_inputs is None:
+        print(f"[coord] Using coordinate mode from artifact ({metadata_source}): "
+              f"{'nondimensional' if artifact_nd_inputs else 'dimensional'}")
+        return artifact_nd_inputs
+
+    if cli_nd_inputs != artifact_nd_inputs:
+        raise ValueError(
+            f"Coordinate mode mismatch: CLI specifies "
+            f"{'--nd_inputs' if cli_nd_inputs else '--dim_inputs'} "
+            f"but artifact was trained in "
+            f"{'nondimensional' if artifact_nd_inputs else 'dimensional'} mode "
+            f"({metadata_source}). "
+            f"This would silently corrupt inference. Use matching coordinate mode."
+        )
+    return cli_nd_inputs
+
+
+# Cylinder1000 spellings used elsewhere in this codebase (train_gru.py's own
+# dataset dispatch, preprocess._resolve_data_dirs, prepare_gru_config). Kept
+# as a local copy rather than importing train_gru.py's CYLINDER1000_ND_ALIASES
+# -- train_gru.py already imports Newmark_beta from this module, so the
+# reverse import would be circular.
+CYLINDER1000_DATASET_ALIASES = frozenset({
+    "cylinder1000", "cylinder_re_1000", "re1000", "cylinder-re-1000",
+    "re1000_disp", "re1000_vel", "re1000_acc",
+})
+
+
+def normalize_cfd_dataset(dataset: str) -> str:
+    """Canonicalize a dataset name/alias for compatibility comparisons.
+
+    Maps every known cylinder1000 spelling to "cylinder1000", "bridge" to
+    itself, and the Re=200 "cylinder" dataset to itself (distinct from
+    cylinder1000, and unsupported for the nondimensional bridge study).
+    Unknown strings pass through lowercased/stripped -- comparing an unknown
+    string against a canonical one simply won't match, which is the correct
+    "different dataset" outcome rather than a crash.
+    """
+    ds = dataset.strip().lower()
+    if ds == "bridge":
+        return "bridge"
+    if ds in CYLINDER1000_DATASET_ALIASES:
+        return "cylinder1000"
+    if ds == "cylinder":
+        return "cylinder"
+    return ds
+
+
+def check_artifact_dataset_compatibility(artifact_dir: Path, requested_cfd_dataset: str) -> None:
+    """
+    Cross-check the model artifact's own recorded training dataset against
+    the CFD dataset requested for this inference run (which drives the
+    physical constants D/fn/B/m/c/k -- see main()). Without this check,
+    nothing prevents e.g. requesting cylinder1000 constants against a
+    bridge-trained checkpoint.
+
+    Recorded dataset is read from run_config.json["cfd_dataset"] (preferred)
+    or ur_stats.pkl["cfd_dataset"] (fallback). Dataset identity is NEVER
+    inferred from the artifact directory name -- only from these two
+    explicit metadata fields.
+
+    Raises ValueError on a confirmed mismatch. A legacy artifact recording
+    no dataset at all is allowed through with a warning (compatibility
+    could not be verified), matching the coordinate-mode fallback's
+    backward-compatible behavior.
+    """
+    recorded_dataset = None
+    metadata_source = None
+
+    run_config_path = artifact_dir / "run_config.json"
+    if run_config_path.exists():
+        try:
+            with open(run_config_path, "r") as f:
+                run_config = json.load(f)
+            recorded = run_config.get("cfd_dataset", None)
+            if recorded:
+                recorded_dataset = recorded
+                metadata_source = "run_config.json"
+        except Exception as e:
+            print(f"[warn] Could not read run_config.json for dataset check: {e}")
+
+    if recorded_dataset is None:
+        ur_stats_path = artifact_dir / "ur_stats.pkl"
+        if ur_stats_path.exists():
+            try:
+                with open(ur_stats_path, "rb") as f:
+                    ur_stats_dict = pickle.load(f)
+                recorded = ur_stats_dict.get("cfd_dataset", None)
+                if recorded:
+                    recorded_dataset = recorded
+                    metadata_source = "ur_stats.pkl"
+            except Exception as e:
+                print(f"[warn] Could not read ur_stats.pkl for dataset check: {e}")
+
+    if recorded_dataset is None:
+        print(f"[warn] [dataset] {artifact_dir} has no recorded cfd_dataset "
+              f"(no run_config.json, and ur_stats.pkl has no cfd_dataset key); "
+              f"dataset compatibility could not be verified. Proceeding with "
+              f"requested dataset '{requested_cfd_dataset}' unchecked.")
+        return
+
+    recorded_canonical = normalize_cfd_dataset(recorded_dataset)
+    requested_canonical = normalize_cfd_dataset(requested_cfd_dataset)
+
+    if recorded_canonical != requested_canonical:
+        raise ValueError(
+            f"Dataset mismatch: requested CFD dataset does not match the "
+            f"artifact's recorded training dataset. "
+            f"requested CFD dataset: '{requested_cfd_dataset}' (canonical: '{requested_canonical}'). "
+            f"recorded artifact dataset: '{recorded_dataset}' (canonical: '{recorded_canonical}', from {metadata_source}). "
+            f"artifact directory: {artifact_dir}. "
+            f"Using the wrong dataset's physical constants (D/fn/B/m/c/k) "
+            f"would silently corrupt inference."
+        )
+
+    print(f"[dataset] Verified: requested '{requested_cfd_dataset}' matches "
+          f"artifact's recorded '{recorded_dataset}' ({metadata_source})")
 
 
 def Newmark_beta( F, h, h_dot, h_ddot, dt, m, c, k, beta=0.25, gamma=0.5):
@@ -779,12 +934,24 @@ def main(
     a_ref_m: Optional[float] = None,
     make_tf_residual: bool = False,
     run_replay_diag: bool = False,
+    output_dir: Optional[str] = None,
     ):
 
-    
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
+    # Where this run's own outputs (npz/png/receipt) get written. Absolute
+    # paths are used verbatim; relative ones are resolved under results/.
+    # Distinct from artifact_dir below, which is always under results/ and
+    # is where the (already-trained) model checkpoint is READ from.
+    if output_dir is None:
+        results_out_dir = PROJECT_ROOT / "results"
+    elif Path(output_dir).is_absolute():
+        results_out_dir = Path(output_dir)
+    else:
+        results_out_dir = PROJECT_ROOT / "results" / output_dir
+    results_out_dir.mkdir(parents=True, exist_ok=True)
 
     if model_subdir is not None:
         artifact_dir = PROJECT_ROOT / "results" / model_subdir
@@ -815,6 +982,10 @@ def main(
     
     # Load artifact metadata and resolve
     nd_inputs = load_artifact_coordinate_mode(artifact_dir, cli_coord_choice)
+
+    # ── Verify the artifact was trained on the dataset we're about to use
+    # for physical constants (D/fn/B/m/c/k) and CFD warm-start data ────────
+    check_artifact_dataset_compatibility(artifact_dir, cfd_dataset)
 
 
     # ── Ur statistics from training cases ─────────────────────────────────
@@ -997,7 +1168,7 @@ def main(
 
         # save envelope for the two-sided figure
         np.savez(
-            PROJECT_ROOT / "results" / f"attractor_Ur{Ur}_seed{ad_seed}.npz",
+            results_out_dir / f"attractor_Ur{Ur}_seed{ad_seed}.npz",
             t=result["time"],
             h=h,
             h_dot=result["velocity"],
@@ -1061,10 +1232,10 @@ def main(
             device=device,
             nd_inputs=nd_inputs,
             n_steps=n_steps_tf,
-            tf_batch_size=1024,
+            tf_batch_size=256,
         )
 
-        tf_residual_path = PROJECT_ROOT / "results" / f"tf_residual_Ur{Ur}_off{handoff_offset_steps}.npz"
+        tf_residual_path = results_out_dir / f"tf_residual_Ur{Ur}_off{handoff_offset_steps}.npz"
         np.savez(
             tf_residual_path,
             cl_true=diag["cfd_cl"],
@@ -1091,7 +1262,7 @@ def main(
         axes[1].legend()
         axes[1].grid(True, alpha=0.3)
 
-        diag_png = PROJECT_ROOT / "results" / f"diagnostic_tf_vs_coupled_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
+        diag_png = results_out_dir / f"diagnostic_tf_vs_coupled_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
         fig.savefig(diag_png, dpi=150)
         plt.close(fig)
         print(f"Saved diagnostic plot to {diag_png}_{checkpoint}")
@@ -1143,7 +1314,7 @@ def main(
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-        replay_png = PROJECT_ROOT / "results" / f"diagnostic_newmark_replay_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
+        replay_png = results_out_dir / f"diagnostic_newmark_replay_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
         fig.savefig(replay_png, dpi=150)
         plt.close(fig)
 
@@ -1273,7 +1444,7 @@ def main(
     # can't mistake this diagnostic field for the operative one.
     target_a_ref_diagnostic_m = float(amp["a_ref_peak"])
 
-    npz_out = PROJECT_ROOT / "results" / f"coupled_{cfd_dataset}_Ur{Ur}_{_exp_tag}_mu{mu_used}.npz"
+    npz_out = results_out_dir / f"coupled_{cfd_dataset}_Ur{Ur}_{_exp_tag}_mu{mu_used}.npz"
     np.savez(npz_out, t=t, h=h, cl=CL, h_cfd=h_cfd_tail, D=D, Ur=float(Ur),
              model_subdir=_sub, forcing_mode=forcing_mode, noise_mode=noise_mode,
              gru_off=bool(gru_off), noise_scale=float(noise_scale), noise_seed=int(noise_seed),
@@ -1326,39 +1497,38 @@ def main(
     CFD_cl = case_df["cl"].values
 
 
-    fig, axes = plt.subplots(4, 1, figsize=(13, 12), constrained_layout=True)
+    fig, axes = plt.subplots(2, 1, figsize=(13, 6), constrained_layout=True)
 
     axes[0].plot(CFD_t, CFD_h / D, lw=0.8, color="black", alpha=0.7, label="CFD")
     axes[0].plot(t, h / D, lw=1, color="tab:blue", alpha=0.9, label="GRU coupled")
     axes[0].axvline(t_handoff, color="green", ls="--", lw=1, alpha=0.7,
                     label=f"handoff t={t_handoff:.1f}s")
-    axes[0].axhline(0, color="gray", lw=0.5, ls=":")
+    axes[0].axhline(0, color="0.8", lw=1, ls=":")
     axes[0].set_ylabel(r"$h/D$")
-    axes[0].set_title(f"Coupled GRU-Structural VIV  —  Ur={Ur} — {forcing_mode}, {noise_mode}, mu={mu_used} (post-release warm-start)")
+    # axes[0].set_title(f"Coupled GRU-Structural VIV  —  Ur={Ur} — {} (post-release warm-start)")
     axes[0].legend(loc="upper right")
     axes[0].grid(True, alpha=0.3)
  
     axes[1].plot(CFD_t, CFD_cl, lw=0.8, color="black", alpha=0.7, label="CFD")
     axes[1].plot(t, CL, lw=1, color="tab:orange", alpha=0.9, label="GRU coupled")
     axes[1].axvline(t_handoff, color="green", ls="--", lw=1, alpha=0.7)
-    axes[1].axhline(0, color="gray", lw=0.5, ls=":")
+    axes[1].axhline(0, color="0.8", lw=1, ls=":")
     axes[1].set_ylabel("$C_L$")
     axes[1].legend(loc="upper right")
     axes[1].grid(True, alpha=0.3)
  
-    axes[2].plot(t, FL, lw=1, color="tab:red")
-    axes[2].axhline(0, color="gray", lw=0.5, ls=":")
-    axes[2].set_ylabel("Lift force [N/m]")
-    axes[2].grid(True, alpha=0.3)
+    # axes[2].plot(t, FL, lw=1, color="tab:red")
+    # axes[2].axhline(0, color="gray", lw=0.5, ls=":")
+    # axes[2].set_ylabel("Lift force [N/m]")
+    # axes[2].grid(True, alpha=0.3)
  
-    axes[3].plot(t, result["acceleration"], lw=1, color="tab:green")
-    axes[3].set_ylabel("Acc [m/s²]")
-    axes[3].set_xlabel("Time [s]")
-    axes[3].grid(True, alpha=0.3)
+    # axes[3].plot(t, result["acceleration"], lw=1, color="tab:green")
+    # axes[3].set_ylabel("Acc [m/s²]")
+    # axes[3].set_xlabel("Time [s]")
+    # axes[3].grid(True, alpha=0.3)
 
 
-    out_png = PROJECT_ROOT / "results" / f"coupled_viv_Ur{Ur}_{_exp_tag}_mu{mu_used}.png"
-    out_png.parent.mkdir(parents=True, exist_ok=True)
+    out_png = results_out_dir / f"coupled_viv_Ur{Ur}_{_exp_tag}_mu{mu_used}.png"
     plt.savefig(out_png, dpi=150)
     plt.close(fig)
     print(f"\nSaved coupled VIV plot to {out_png}")
@@ -1426,6 +1596,12 @@ if __name__ == "__main__":
                     help="Regenerate TF residual and diagnostic plot. Run once per Ur. Required for new Ur with --noise_mode surrogate.")
     parser.add_argument("--run_replay_diag", action="store_true",
                     help="Run Newmark replay diagnostic (oracle for force/timing validation). Safe to run on demand.")
+    parser.add_argument("--output_dir", type=str, default=None,
+                    help="Where to write this run's own outputs (npz/png/receipt). "
+                         "Relative paths are resolved under results/; absolute paths "
+                         "are used verbatim. Default: results/ (unchanged behavior). "
+                         "Does NOT affect where model artifacts are read from "
+                         "(--model_subdir / --model_dataset, always under results/).")
     args = parser.parse_args()
     main(
         Ur=args.Ur,
@@ -1449,5 +1625,6 @@ if __name__ == "__main__":
         a_ref_m=args.a_ref_m,
         make_tf_residual=args.make_tf_residual,
         run_replay_diag=args.run_replay_diag,
+        output_dir=args.output_dir,
     )
     

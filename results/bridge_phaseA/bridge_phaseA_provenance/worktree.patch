@@ -1,0 +1,130 @@
+diff --git a/src/VIV_ML.egg-info/SOURCES.txt b/src/VIV_ML.egg-info/SOURCES.txt
+index 23e5fdc..7fed6e1 100644
+--- a/src/VIV_ML.egg-info/SOURCES.txt
++++ b/src/VIV_ML.egg-info/SOURCES.txt
+@@ -8,15 +8,13 @@ src/VIV_ML.egg-info/requires.txt
+ src/VIV_ML.egg-info/top_level.txt
+ src/viv_analysis/__init__.py
+ src/viv_analysis/config.py
+-src/viv_analysis/correct.py
+ src/viv_analysis/coupled_inference.py
+-src/viv_analysis/debug_pipeline.py
+-src/viv_analysis/displacement_plot.py
+ src/viv_analysis/evaluate.py
+-src/viv_analysis/inspect_data.py
+-src/viv_analysis/plot.py
++src/viv_analysis/evaluate_all.py
+ src/viv_analysis/plot_lockin_amplitude_response.py
+ src/viv_analysis/preprocess.py
++src/viv_analysis/run_curriculum.py
++src/viv_analysis/run_direct_k10_control.py
+ src/viv_analysis/run_lockin_sweep.py
+ src/viv_analysis/train_ELM.py
+ src/viv_analysis/train_gru.py
+@@ -24,4 +22,11 @@ src/viv_analysis/utils.py
+ src/viv_analysis/models/__init__.py
+ src/viv_analysis/models/elm.py
+ src/viv_analysis/models/gru.py
+-src/viv_analysis/models/nn.py
+\ No newline at end of file
++src/viv_analysis/models/nn.py
++src/viv_analysis/plotting/__init__.py
++src/viv_analysis/plotting/displacement_plot.py
++src/viv_analysis/plotting/inspect_data.py
++src/viv_analysis/plotting/plot.py
++tests/test_Newmark_beta.py
++tests/test_curriculum_rollout.py
++tests/test_train_rollout_epoch.py
+\ No newline at end of file
+diff --git a/submit.sh b/submit.sh
+index c27c9e8..e8cb66e 100644
+--- a/submit.sh
++++ b/submit.sh
+@@ -1,23 +1,70 @@
+ #!/bin/bash
+-#BSUB -J direct_k10                # Job name
+-#BSUB -q BatchGPU                  # Target the massive GPU queue you found!
+-#BSUB -gpu "num=1:mode=exclusive_process"
+-#BSUB -R "rusage[mem=32000]"       # Request 32GB of RAM
+-#BSUB -W 12:00                     # Max run time (12 hours)
+-#BSUB -o k10_train_%J.log          # Output log file (%J is the LSF Job ID)
++#BSUB -J "bridge_hybrid[1-27]%4"
++#BSUB -q BatchGPU
++#BSUB -gpu "num=1:mode=shared"
++#BSUB -R "rusage[mem=24000]"
++#BSUB -W 2:00
++#BSUB -o logs/bridge_hybrid_%J_%I.log
+ 
++set -euo pipefail
+ 
+-echo "Starting LSF Control Job on node: $HOSTNAME"
+-
+-# 1. Activate your Conda environment
+-
+-# 2. Navigate to your project folder
+ cd /scratch/jote9827/Github/Cylinder
+ source .venv/bin/activate
+ 
+ export VIV_NUM_WORKERS=0
++export OMP_NUM_THREADS=4
++export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
++
++MODEL_SUBDIR="gru_bridge_noise0.05"
++MANIFEST="results/bridge_deterministic_manifest.tsv"
++
++JOB_INDEX="${LSB_JOBINDEX:-0}"
++
++if ! [[ "$JOB_INDEX" =~ ^[1-9][0-9]*$ ]]; then
++    echo "ERROR: This script must be submitted as an LSF array job." >&2
++    echo "LSB_JOBINDEX=${LSB_JOBINDEX:-unset}" >&2
++    exit 2
++fi
++
++line="$(sed -n "${JOB_INDEX}p" "$MANIFEST")"
++
++if [[ -z "$line" ]]; then
++    echo "No manifest entry for array index ${JOB_INDEX}" >&2
++    exit 2
++fi
++
++read -r INDEX U UR CASE N_SAMPLES <<< "$line"
++
++if [[ "$INDEX" != "$JOB_INDEX" ]]; then
++    echo "Manifest/index mismatch: INDEX=$INDEX, JOB_INDEX=$JOB_INDEX" >&2
++    exit 3
++fi
++
++echo "============================================================"
++echo "CFD-informed hybrid reconstruction across velocity"
++echo "Array index:    $INDEX"
++echo "Wind velocity:  $U m/s"
++echo "Reduced vel.:   $UR"
++echo "CFD case:       $CASE"
++echo "Samples:        $N_SAMPLES"
++echo "Checkpoint:     $MODEL_SUBDIR/gru_best.pt"
++echo "Training noise: sigma=0.05"
++echo "Inference noise: none"
++echo "Closure:         v3_coherent"
++echo "Closure mu:      0.65"
++echo "Amplitude ref.:  extracted from same CFD case"
++echo "============================================================"
+ 
+-# 3. Run the Python script 
+-python -u -m src.viv_analysis.coupled_inference --Ur 6.7385\
+-    --cfd_dataset bridge --model_subdir gru_bridge_noise0.05 \
+-    --total_time 200 --handoff_offset 2000
+\ No newline at end of file
++python -u -m src.viv_analysis.coupled_inference \
++  --Ur "$UR" \
++  --cfd_dataset bridge \
++  --model_dataset bridge \
++  --model_subdir "$MODEL_SUBDIR" \
++  --checkpoint gru_best.pt \
++  --total_time 120 \
++  --handoff_offset 2000 \
++  --cfd_scale 1.0 \
++  --forcing_mode v3_coherent \
++  --noise_mode none \
++  --mu 0.65 \
++  --noise_seed "$JOB_INDEX"
+\ No newline at end of file

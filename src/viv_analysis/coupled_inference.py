@@ -1552,7 +1552,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, default="gru_best.pt",
                     help="Checkpoint filename within model artifact_dir")
     parser.add_argument("--model_subdir", type=str, default=None,
-                    help="Override: full subdir name like 'gru_rollout_cylinder_re_1000'")
+                    help="Override: full subdir name like 'gru_cylinder_re_1000'")
     parser.add_argument("--handoff_offset", type=int, default=2000,
                     help="CFD steps past (release+seq_len) for handoff. "
                          "Default 2000 = existing sweep; vary for noise floor.")

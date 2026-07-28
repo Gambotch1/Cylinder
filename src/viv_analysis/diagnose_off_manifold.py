@@ -3,9 +3,10 @@
 # DAY-1 DIAGNOSTIC — is the coupled divergence an off-manifold (extrapolation)
 # failure, or in-distribution error compounding?
 #
-# It re-runs the coupled GRU->Newmark loop standalone (mirroring _rollout_loss_k:
-# full-window re-forward, "current" force timing), and at every step measures how
-# far the current dynamical state sits from the states the GRU was trained on.
+# It re-runs the coupled GRU->Newmark loop standalone (full-window re-forward,
+# "current" force timing, matching production coupled_inference), and at every
+# step measures how far the current dynamical state sits from the states the
+# GRU was trained on.
 #
 # Distance metric: nearest-neighbour distance to the TRAINING STATE CLOUD in
 # scaled (disp, vel, acc) space. NOT Mahalanobis, NOT marginal z-scores — the
@@ -23,8 +24,8 @@
 # Usage (matches coupled_inference args):
 #   python -m viv_analysis.diagnose_off_manifold \
 #       --Ur 6.0 --handoff_offset 2000 \
-#       --checkpoint gru_rollout_k10.pt \
-#       --model_subdir gru_rollout_cylinder_re_1000 \
+#       --checkpoint gru_best.pt \
+#       --model_subdir gru_cylinder_re_1000 \
 #       --cfd_dataset cylinder_re_1000 --total_time 500
 #
 #   python -m viv_analysis.diagnose_off_manifold \
@@ -250,8 +251,8 @@ def main():
     ap.add_argument("--Ur", type=float, default=6.0)
     ap.add_argument("--handoff_offset", type=int, default=2000)
     ap.add_argument("--total_time", type=float, default=500.0)
-    ap.add_argument("--checkpoint", type=str, default="gru_rollout_k10.pt")
-    ap.add_argument("--model_subdir", type=str, default="gru_rollout_cylinder_re_1000")
+    ap.add_argument("--checkpoint", type=str, default="gru_best.pt")
+    ap.add_argument("--model_subdir", type=str, default="gru_cylinder_re_1000")
     ap.add_argument("--cfd_dataset", type=str, default="cylinder_re_1000")
     ap.add_argument("--nd_inputs", action="store_true",
                     help="Model was trained on nondimensional [h/D, hdot/U, hddot*D/U^2] "

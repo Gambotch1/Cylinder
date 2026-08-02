@@ -1,0 +1,73 @@
+{
+  "cfd_dataset": "cylinder1000",
+  "coordinate_mode": "dimensional",
+  "nd_inputs": false,
+  "transform_formula": "identity (physical units)",
+  "D": null,
+  "fn": null,
+  "use_ur_context": true,
+  "holdout_ur": 5.5,
+  "holdout_label": "Ur5.5",
+  "input_cols": [
+    "disp",
+    "vel",
+    "acc"
+  ],
+  "target_col": "cl",
+  "epochs": 100,
+  "batch_size": 512,
+  "seq_len": 1000,
+  "noise_std": 0.05,
+  "noise_coordinate_space": "standardized model inputs",
+  "seed": 123,
+  "num_workers": 0,
+  "output_directory": "/scratch/jote9827/Github/Cylinder/results/generalization_Ur5.5_holdout_dim_context",
+  "train_cases": [
+    "Ur10",
+    "Ur12",
+    "Ur3.5",
+    "Ur4",
+    "Ur4.5",
+    "Ur5",
+    "Ur5.75",
+    "Ur6",
+    "Ur6.25",
+    "Ur8"
+  ],
+  "val_cases": [
+    "Ur4.25",
+    "Ur5.25",
+    "Ur6.5",
+    "Ur9"
+  ],
+  "test_cases": [
+    "Ur11",
+    "Ur4.75",
+    "Ur5.5",
+    "Ur7"
+  ],
+  "scaler_fit_cases": [
+    "Ur10",
+    "Ur12",
+    "Ur3.5",
+    "Ur4",
+    "Ur4.5",
+    "Ur5",
+    "Ur5.75",
+    "Ur6",
+    "Ur6.25",
+    "Ur8"
+  ],
+  "ur_stats_fit_cases": [
+    "Ur10",
+    "Ur12",
+    "Ur3.5",
+    "Ur4",
+    "Ur4.5",
+    "Ur5",
+    "Ur5.75",
+    "Ur6",
+    "Ur6.25",
+    "Ur8"
+  ]
+}

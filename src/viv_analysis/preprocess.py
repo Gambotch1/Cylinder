@@ -7,7 +7,7 @@ import os
 import re
 from scipy.signal import savgol_filter
 from viv_analysis.utils import PROJECT_ROOT, format_ur_label, parse_ur_label
-from viv_analysis.config import config
+from viv_analysis.config import config, CYLINDER200_ALIASES
 
 
 DIR = PROJECT_ROOT
@@ -18,13 +18,22 @@ CYLINDER_DISP_DIR = DIR / "data" / "disp"
 CYLINDER_CD_DIR   = DIR / "data" / "cd"
 CYLINDER_CL_DIR   = DIR / "data" / "cl"
 
-# Re=1000 cylinder
-CYLINDER_RE1000_ROOT     = DIR / "data" / "cylinder_Re_1000"
-CYLINDER_RE1000_DISP_DIR = CYLINDER_RE1000_ROOT / "disp"
-CYLINDER_RE1000_CD_DIR   = CYLINDER_RE1000_ROOT / "cd"
-CYLINDER_RE1000_CL_DIR   = CYLINDER_RE1000_ROOT / "cl"
-CYLINDER_RE1000_VEL_DIR  = CYLINDER_RE1000_ROOT / "vel"
-CYLINDER_RE1000_FY_DIR   = CYLINDER_RE1000_ROOT / "force"
+# Re=200 cylinder (completed dataset) -- 21 Ur cases, matching
+# cl_Ur_X.XX.out / disp_Ur_X.XX.out (+ cd/force/vel) at the top level of
+# each folder. *_old/ and raw/ subfolders are deliberately NOT globbed here.
+CYLINDER200_ROOT     = DIR / "data" / "cylinder_Re_200"
+CYLINDER200_DISP_DIR = CYLINDER200_ROOT / "disp"
+CYLINDER200_CD_DIR   = CYLINDER200_ROOT / "cd"
+CYLINDER200_CL_DIR   = CYLINDER200_ROOT / "cl"
+CYLINDER200_VEL_DIR  = CYLINDER200_ROOT / "vel"
+CYLINDER200_FY_DIR   = CYLINDER200_ROOT / "force"
+
+CYLINDER200_EXPECTED_UR = [
+    2.00, 2.50, 3.00, 3.50, 4.00,
+    4.25, 4.50, 4.75, 5.00, 5.25, 5.50,
+    5.75, 6.00, 6.25, 6.50,
+    7.00, 8.00, 9.00, 10.00, 11.00, 12.00,
+]
 
 
 # Bridge
@@ -33,6 +42,26 @@ BRIDGE_CM_DIR   = DIR / "data" / "Bridge" / "cm"
 BRIDGE_CL_DIR   = DIR / "data" / "Bridge" / "cl"
 BRIDGE_VEL_DIR  = DIR / "data" / "Bridge" / "vel"
 BRIDGE_FY_DIR   = DIR / "data" / "Bridge" / "force"
+
+# Raw wind-speed labels (matching the *-<speed>.out filename stem, e.g.
+# "19.5" for disp-19.5.out) to drop entirely from the bridge dataset.
+# 19.5 m/s (Ur=8.2126) is excluded: applying classify_stability to its own
+# raw CFD displacement gives fractional_envelope_change=13.16 (1316% growth
+# in the back half of the 300s window) -- by far the most non-converged
+# case in the dataset (next worst is Ur6.528 at 3.44) and still visibly
+# growing, not leveling off, at the end of the recording. Its own CFD
+# "steady-state" is not actually steady, which made it an unreliable
+# comparison target for every downstream evaluation.
+#
+# This is the ONLY exclusion applied at the data-loading level. Per
+# supervisor guidance, the FINAL bridge closed-loop evaluation (not the
+# architecture/history-length sensitivity study, which retains all 27
+# cases) additionally restricts its own Ur sweep to cases below 19.5 m/s
+# (22 cases) -- that restriction is applied at the evaluation-sweep level
+# (e.g. evaluate_all.py's --ur_list), not here, so it does not change what
+# merge_dataframes/the cache return, and does not affect the sensitivity
+# study or any other existing caller.
+BRIDGE_EXCLUDED_RAW_SPEEDS = {"19.5"}
 
 BASE_DTYPES  = {"step": "int32", "time": "float32"}
 VALUE_DTYPE  = "float32"
@@ -106,11 +135,13 @@ def _resolve_data_dirs(dataset: str) -> tuple[Path, Path, Path]:
     ds = dataset.strip().lower()
     if ds == "bridge":
         return BRIDGE_DISP_DIR, BRIDGE_CM_DIR, BRIDGE_CL_DIR
-    if ds in {"cylinder1000", "cylinder_re_1000", "re1000", "cylinder-re-1000"}:
-        return CYLINDER_RE1000_DISP_DIR, CYLINDER_RE1000_CD_DIR, CYLINDER_RE1000_CL_DIR
+    if ds in CYLINDER200_ALIASES:
+        return CYLINDER200_DISP_DIR, CYLINDER200_CD_DIR, CYLINDER200_CL_DIR
     if ds == "cylinder":
         return CYLINDER_DISP_DIR, CYLINDER_CD_DIR, CYLINDER_CL_DIR
-    raise ValueError(f"Unknown dataset: '{ds}'. Must be one of: cylinder, cylinder1000, bridge.")
+    raise ValueError(
+        f"Unknown dataset: '{ds}'. Must be one of: cylinder, cylinder200, bridge."
+    )
 
 
 def _normalize_bridge_cases_to_ur(df: pd.DataFrame, fn_hz: float, d_ref: float) -> pd.DataFrame:
@@ -188,7 +219,7 @@ def merge_dataframes(
 
     Parameters
     ----------
-    dataset : "cylinder" (default), "cylinder1000", or "bridge"
+    dataset : "cylinder" (default), "cylinder200", or "bridge"
     fn_hz   : bridge natural frequency [Hz]  — required for bridge
     d_ref   : bridge reference depth [m]     — required for bridge
     convert_bridge_to_ur : if True, convert m/s case labels to Ur labels
@@ -199,6 +230,21 @@ def merge_dataframes(
     disp_df = read_out_directory(disp_dir, "disp")
     cd_df   = read_out_directory(cd_dir,   "cd")
     cl_df   = read_out_directory(cl_dir,   "cl")
+
+    # Non-breaking case-set check: the inner joins below silently drop any
+    # case present in one signal but not another. Warn so a missing pairing
+    # (e.g. a disp file with no matching cl file) is visible rather than
+    # quietly shrinking the case list.
+    case_sets = {name: set(d["case"].unique()) for name, d in
+                 (("disp", disp_df), ("cd", cd_df), ("cl", cl_df)) if not d.empty}
+    if len(case_sets) > 1:
+        all_cases = set.union(*case_sets.values())
+        for name, cases in case_sets.items():
+            missing = all_cases - cases
+            if missing:
+                print(f"WARNING: dataset='{ds}' signal='{name}' is missing "
+                      f"case(s) {sorted(missing)} present in other signals "
+                      f"-- those cases will be dropped by the inner join below.")
 
     empty = pd.DataFrame(
         columns=["case", "step", "time", "disp", "cd", "cl"]
@@ -214,6 +260,13 @@ def merge_dataframes(
           .merge(cl_df,  on=["case", "step", "time"], how="inner", validate="one_to_one")
           .sort_values(["case", "time", "step"])
           .reset_index(drop=True))
+
+    if ds == "bridge" and BRIDGE_EXCLUDED_RAW_SPEEDS:
+        excluded_mask = df["case"].astype(str).isin(BRIDGE_EXCLUDED_RAW_SPEEDS)
+        if excluded_mask.any():
+            print(f"Excluding bridge case(s) {sorted(df.loc[excluded_mask, 'case'].unique())} "
+                  f"m/s per BRIDGE_EXCLUDED_RAW_SPEEDS ({excluded_mask.sum()} rows dropped).")
+            df = df[~excluded_mask].reset_index(drop=True)
 
     if ds == "bridge" and convert_bridge_to_ur:
         if fn_hz is None:
@@ -232,56 +285,159 @@ def merge_dataframes(
     return df
 
 
+# ── Re=200 cylinder: case pairing, integrity validation, loader ────────────
+
+def discover_cylinder200_cases() -> dict[str, dict[str, Path]]:
+    """
+    Pair cl_Ur_X.XX.out <-> disp_Ur_X.XX.out by reduced velocity and
+    validate that every expected case has both files. Raises ValueError on
+    any unpaired or missing case rather than silently proceeding with a
+    partial set.
+    """
+    cl_files   = {extract_case_name(f): f
+                  for f in sorted(CYLINDER200_CL_DIR.glob("cl_Ur_*.out"))}
+    disp_files = {extract_case_name(f): f
+                  for f in sorted(CYLINDER200_DISP_DIR.glob("disp_Ur_*.out"))}
+
+    cl_only   = set(cl_files) - set(disp_files)
+    disp_only = set(disp_files) - set(cl_files)
+    if cl_only or disp_only:
+        raise ValueError(
+            f"Unpaired cylinder200 case file(s): "
+            f"cl-without-disp={sorted(cl_only)}, disp-without-cl={sorted(disp_only)}"
+        )
+
+    expected = {format_ur_label(u) for u in CYLINDER200_EXPECTED_UR}
+    found    = set(cl_files)
+    missing  = expected - found
+    extra    = found - expected
+    if missing:
+        raise ValueError(f"Missing expected cylinder200 case(s): {sorted(missing)}")
+    if extra:
+        print(f"WARNING: unexpected extra cylinder200 case(s) found "
+              f"(not in the documented 21-case list): {sorted(extra)}")
+
+    return {
+        case: {"cl": cl_files[case], "disp": disp_files[case]}
+        for case in sorted(found, key=parse_ur_label)
+    }
+
+
+def validate_case_integrity(df: pd.DataFrame, value_col: str) -> dict[str, dict]:
+    """
+    Per-case data-quality report: monotonic time, finite values, sample
+    spacing. Purely diagnostic -- never modifies df or interpolates
+    anything; callers decide what to do with the report.
+    """
+    report = {}
+    for case, g in df.groupby("case", sort=True):
+        t = g["time"].to_numpy(dtype="float64")
+        v = g[value_col].to_numpy(dtype="float64")
+        dt = np.diff(t)
+        report[str(case)] = {
+            "n_rows":      int(len(g)),
+            "monotonic":   bool(np.all(dt > 0)) if len(dt) else True,
+            "n_nonfinite": int((~np.isfinite(v)).sum() + (~np.isfinite(t)).sum()),
+            "dt_min":      float(dt.min())    if len(dt) else None,
+            "dt_max":      float(dt.max())    if len(dt) else None,
+            "dt_median":   float(np.median(dt)) if len(dt) else None,
+        }
+    return report
+
+
+def load_cylinder200_df() -> pd.DataFrame:
+    """
+    Discover + validate-pair the 21-case Re=200 dataset, merge disp/cd/cl,
+    and print a per-case integrity report (monotonic time, finite values,
+    dt regularity) without silently interpolating or dropping anything.
+    """
+    pairs = discover_cylinder200_cases()
+    print(f"[cylinder200] {len(pairs)} matched cl/disp case pairs found "
+          f"(expected {len(CYLINDER200_EXPECTED_UR)}).")
+
+    df = merge_dataframes(dataset="cylinder200")
+    if df.empty:
+        raise RuntimeError("merge_dataframes(dataset='cylinder200') returned empty.")
+
+    for value_col in ("disp", "cl"):
+        report = validate_case_integrity(df, value_col)
+        for case, r in report.items():
+            if not r["monotonic"] or r["n_nonfinite"] > 0:
+                print(f"  [cylinder200][WARNING] case={case} value={value_col} "
+                      f"monotonic={r['monotonic']} n_nonfinite={r['n_nonfinite']} "
+                      f"dt=[{r['dt_min']},{r['dt_max']}] median={r['dt_median']}")
+
+    return df
+
+
 def _load_force(dataset: str) -> dict[str, pd.DataFrame]:
     ds = dataset.strip().lower()
-    if ds not in {"cylinder1000", "cylinder_re_1000", "re1000", "cylinder-re-1000", "bridge"}:
+    known = {"bridge"} | CYLINDER200_ALIASES
+    if ds not in known:
         return {}
 
     out = {}
-    if ds == "bridge":
-        # Bridge vel-/force- files are labelled by RAW SPEED ('force-16.out' -> '16').
-        # merge_dataframes converted disp/cd/cl to Ur labels, so convert these the SAME
-        # way or the merge in compute_kinematics matches nothing and silently Savgols.
-        fn_hz = float(config["bridge_fn_hz"]); d_ref = float(config["bridge_D_ref"])
-        if BRIDGE_VEL_DIR.exists():
-            v = read_out_directory(BRIDGE_VEL_DIR, "vel")
-            if not v.empty:
-                out["vel"] = _normalize_bridge_cases_to_ur(v, fn_hz=fn_hz, d_ref=d_ref)
-        if BRIDGE_FY_DIR.exists():
-            fdf = read_out_directory(BRIDGE_FY_DIR, "force")
-            if not fdf.empty:
-                out["force"] = _normalize_bridge_cases_to_ur(fdf, fn_hz=fn_hz, d_ref=d_ref)
+    if ds in CYLINDER200_ALIASES:
+        if CYLINDER200_VEL_DIR.exists():
+            v = read_out_directory(CYLINDER200_VEL_DIR, "vel")
+            if not v.empty: out["vel"] = v
+        if CYLINDER200_FY_DIR.exists():
+            fdf = read_out_directory(CYLINDER200_FY_DIR, "force")
+            if not fdf.empty: out["force"] = fdf
         return out
 
-    if CYLINDER_RE1000_VEL_DIR.exists():
-        v = read_out_directory(CYLINDER_RE1000_VEL_DIR, "vel")
-        if not v.empty: out["vel"] = v
-    if CYLINDER_RE1000_FY_DIR.exists():
-        fdf = read_out_directory(CYLINDER_RE1000_FY_DIR, "force")
-        if not fdf.empty: out["force"] = fdf
+    # Bridge vel-/force- files are labelled by RAW SPEED ('force-16.out' -> '16').
+    # merge_dataframes converted disp/cd/cl to Ur labels, so convert these the SAME
+    # way or the merge in compute_kinematics matches nothing and silently Savgols.
+    fn_hz = float(config["bridge_fn_hz"]); d_ref = float(config["bridge_D_ref"])
+    if BRIDGE_VEL_DIR.exists():
+        v = read_out_directory(BRIDGE_VEL_DIR, "vel")
+        if not v.empty:
+            out["vel"] = _normalize_bridge_cases_to_ur(v, fn_hz=fn_hz, d_ref=d_ref)
+    if BRIDGE_FY_DIR.exists():
+        fdf = read_out_directory(BRIDGE_FY_DIR, "force")
+        if not fdf.empty:
+            out["force"] = _normalize_bridge_cases_to_ur(fdf, fn_hz=fn_hz, d_ref=d_ref)
     return out
 
 
-def compute_kinematics(df: pd.DataFrame, dataset: str | None = None, 
+def compute_kinematics(df: pd.DataFrame, dataset: str | None = None,
                        structural_params: dict | None = None,
-                       bridge_structural_params: dict | None = None) -> pd.DataFrame:
+                       bridge_structural_params: dict | None = None,
+                       acc_source: str = "force_residual") -> pd.DataFrame:
     """
     Append 'vel' and 'acc' columns computed per case via numerical
     differentiation of the smoothed displacement signal.
+
+    acc_source:
+      "force_residual" (default) -- acc = (F_fluid - c*v - k*y)/m, using the
+      SAME m,c,k as the closed-loop Newmark integrator. This makes C_L an
+      exact linear function of [disp,vel,acc] within a single Ur case (see
+      the acc-as-GRU-input leakage finding) -- a real risk if acc is fed as
+      a model input when the target is C_L.
+      "savgol_vel" -- acc = d/dt(Savgol-smoothed recorded vel), i.e. genuine
+      numerical differentiation of the velocity-monitor signal, with no
+      dependence on m, c, k, or C_L. Breaks that exact tie. Falls back to
+      the disp-based Savgol path (like force_residual does) wherever vel
+      itself is unavailable.
     """
-    print("Computing velocity and acceleration...")
+    if acc_source not in ("force_residual", "savgol_vel"):
+        raise ValueError(
+            f"acc_source must be 'force_residual' or 'savgol_vel', got {acc_source!r}")
+
+    print(f"Computing velocity and acceleration... (acc_source={acc_source})")
     df = df.sort_values(["case", "time", "step"]).reset_index(drop=True)
 
     force_signal = _load_force(dataset) if dataset else {}
     ds = (dataset or "").strip().lower()
-    
+
     # pick the structural params for the force-residual path
     sp = None
     if ds == "bridge":
         sp = bridge_structural_params if bridge_structural_params is not None else None
     elif structural_params is not None:
         sp = structural_params
-    
+
     if force_signal and sp is not None:
 
         m = sp['m']
@@ -294,24 +450,44 @@ def compute_kinematics(df: pd.DataFrame, dataset: str | None = None,
             df = df.merge(force_signal["vel"], on=["case", "step", "time"], how="left", validate="one_to_one")
         if "force" in force_signal:
             df = df.merge(force_signal["force"], on=["case", "step", "time"], how="left", validate="one_to_one")
-            F_fluid = df["force"].astype("float32")
-            y       = df["disp"].astype("float32")
-            v       = df["vel"].astype("float32")  # from velocity monitor
-            df["acc"] = (F_fluid - c * v - k * y) / float(m)
+            if acc_source == "force_residual":
+                F_fluid = df["force"].astype("float32")
+                y       = df["disp"].astype("float32")
+                v       = df["vel"].astype("float32")  # from velocity monitor
+                df["acc"] = (F_fluid - c * v - k * y) / float(m)
             df = df.drop(columns=["force"])
+
+        if acc_source == "savgol_vel" and "vel" in df.columns and not df["vel"].isna().all():
+            df["acc"] = _savgol_derivative_per_case(df, "vel")
 
         needs_fill = (
             "vel" not in df.columns or df["vel"].isna().any() or
             "acc" not in df.columns or df["acc"].isna().any()
         )
-            
+
         if needs_fill:
-            print("  WARNING: some cases missing force data, using Savgol fallback.")
+            print("  WARNING: some cases missing force/vel data, using Savgol fallback.")
             df = _fill_missing_kinematics_with_savgol(df)
 
         return df
 
     return _fill_missing_kinematics_with_savgol(df)
+
+
+def _savgol_derivative_per_case(df: pd.DataFrame, col: str) -> pd.Series:
+    """Savgol-smooth `col` per case, then differentiate w.r.t. time."""
+    out = pd.Series(index=df.index, dtype="float64")
+    for _, case_df in df.groupby("case", sort=False):
+        t = case_df["time"].to_numpy()
+        x = case_df[col].to_numpy(dtype="float64")
+        if len(x) < 11:
+            d = np.gradient(x, t)
+        else:
+            x_smooth = savgol_filter(x, window_length=11, polyorder=3)
+            d = np.gradient(x_smooth, t)
+        out.loc[case_df.index] = d
+    return out
+
 
 def _fill_missing_kinematics_with_savgol(df: pd.DataFrame) -> pd.DataFrame:
     """Compute vel/acc by Savgol-smoothing disp, then numerical differentiation."""
@@ -328,7 +504,7 @@ def _fill_missing_kinematics_with_savgol(df: pd.DataFrame) -> pd.DataFrame:
             a = np.gradient(v, t)
         velocities.extend(v)
         accelerations.extend(a)
- 
+
     if "vel" in df.columns:
         df["vel"] = df["vel"].fillna(pd.Series(velocities, index=df.index))
     else:
@@ -348,7 +524,9 @@ def print_summary(df: pd.DataFrame) -> None:
 # ── Cached bridge loading ──────────────────────────────────────────────────
 # Bump this whenever compute_kinematics, read_out_files, merge logic, or the
 # raw .out files change. Stale caches are the silent-bug risk here.
-BRIDGE_CACHE_VERSION = 1
+# v2: BRIDGE_EXCLUDED_RAW_SPEEDS added (drops 19.5 m/s / Ur=8.2126) --
+# merge_dataframes' output changed, so the v1 cache must not be reused.
+BRIDGE_CACHE_VERSION = 2
 
 
 def bridge_cache_path() -> Path:

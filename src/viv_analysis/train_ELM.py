@@ -22,13 +22,13 @@ from viv_analysis.models.elm import (
     compute_lookback,
 )
 from viv_analysis.plotting.plot import plot_one_case
-from viv_analysis.config import config, structural_params
+from viv_analysis.config import config, cylinder200_structural_params, cylinder200_release_time
 from viv_analysis.preprocess import merge_dataframes, compute_kinematics
 from viv_analysis.evaluate import evaluate, Teacher_Forcing_rollout
 from viv_analysis.utils import PROJECT_ROOT, parse_ur_label
 
 ROOT_DIR   = PROJECT_ROOT
-OUTPUT_DIR = ROOT_DIR / "results" / "elm_model"
+OUTPUT_DIR = ROOT_DIR / "results" / "elm_model_cylinder200"
 
 # -------------------------------
 
@@ -63,7 +63,7 @@ def split_cases(cases: list[str]) -> tuple[set[str], set[str], set[str], dict[st
     test_cases = pick_cases(cases, [4.5, 5.25, 7.0])
 
     release_time = {
-        c: 400.0 / parse_ur_label(c)
+        c: cylinder200_release_time(parse_ur_label(c))
         for c in cases
     }
 
@@ -159,21 +159,21 @@ def plot_rollout_case(times, cl_true, cl_pred, case_name: str, output_dir: Path)
     plt.close(fig)
 
 def prepare_data_bundle() -> dict:
-    raw_df = merge_dataframes(dataset="cylinder1000")
+    raw_df = merge_dataframes(dataset="cylinder200")
     if raw_df.empty:
         raise ValueError("Merged dataframe is empty.")
 
-    fn = config["cylinder1000_fn"]
-    d_ref = config["cylinder1000_D_ref"]
+    fn = config["cylinder200_fn"]
+    d_ref = config["cylinder200_D_ref"]
 
     raw_df["ur"] = raw_df["case"].apply(parse_ur_label).astype("float32")
 
-    cylinder1000_params = structural_params()
+    cylinder200_params = cylinder200_structural_params()
 
     raw_df = compute_kinematics(
         raw_df,
-        dataset="cylinder1000",
-        structural_params=cylinder1000_params,
+        dataset="cylinder200",
+        structural_params=cylinder200_params,
     )
 
     # keep ur after merges/fallbacks

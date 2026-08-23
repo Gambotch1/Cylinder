@@ -14,6 +14,9 @@ from viv_analysis.utils import parse_ur_label
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from viv_analysis.plot_style import apply_thesis_style
+apply_thesis_style()
+
 import numpy as np
 import pandas as pd
 import torch
@@ -22,11 +25,14 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score
 from torch.utils.data import DataLoader
 
-from viv_analysis.config import bridge_structural_params, config, prepare_gru_config, structural_params
+from viv_analysis.config import (
+    bridge_structural_params, config, prepare_gru_config,
+    CYLINDER200_ALIASES, cylinder200_release_time, cylinder200_structural_params,
+)
 from viv_analysis.preprocess import merge_dataframes, compute_kinematics, downsample
 from viv_analysis.models.gru import VIV_GRU, VIVSequenceDataset, apply_scalers_to_df, fit_scalers
 from viv_analysis.evaluate import evaluate
-from viv_analysis.utils import PROJECT_ROOT
+from viv_analysis.utils import PROJECT_ROOT, present_model_label
 
 ROOT_DIR = PROJECT_ROOT
 
@@ -52,45 +58,91 @@ def worker_init_fn(worker_id: int) -> None:
     random.seed(seed + worker_id)
     np.random.seed(seed + worker_id)
 
+def resolve_nd_reference_scales(dataset: str, cfg: dict) -> tuple[float, float]:
+    ds = dataset.strip().lower()
+
+    if ds == "bridge":
+        D = float(cfg["bridge_D_ref"])
+        fn = float(cfg["bridge_fn_hz"])
+    elif ds in CYLINDER200_ALIASES:
+        D = float(cfg["cylinder200_D_ref"])
+        fn = float(cfg["cylinder200_fn"])
+    elif ds == "cylinder":
+        raise ValueError(
+            "Nondimensional inputs are not supported for the old Re=200 "
+            "'cylinder' dataset in this project -- only cylinder200 "
+            "(and its aliases) and bridge are. "
+            "Use --dim_inputs / omit --nd_inputs for 'cylinder'."
+        )
+    else:
+        raise ValueError(
+            f"resolve_nd_reference_scales: unsupported dataset '{dataset}'. "
+            f"Supported: 'bridge', cylinder200 (aliases: "
+            f"{sorted(CYLINDER200_ALIASES)})."
+        )
+
+    if not (np.isfinite(D) and D > 0):
+        raise ValueError(f"resolve_nd_reference_scales: D must be finite and positive, got {D}")
+    if not (np.isfinite(fn) and fn > 0):
+        raise ValueError(f"resolve_nd_reference_scales: fn must be finite and positive, got {fn}")
+
+    return D, fn
+
+
+_ND_TRANSFORM_COLUMNS = ("disp", "vel", "acc")
+
 
 def apply_nd_transform(df: pd.DataFrame, nd_inputs: bool, D: float, fn: float,
                        input_cols: list[str]) -> pd.DataFrame:
     """
     Apply nondimensional transform to physical kinematics.
-    
+
     For each case, compute case-dependent U and apply:
         disp_model = disp / D
         vel_model = vel / U
         acc_model = acc / (U^2 / D)
-    
+
+    Column-NAME based (not positional): divisors are looked up by column
+    name, so input_cols may be any supported subset in any order --
+    ["disp","vel","acc"], ["disp"], ["vel"], ["acc"], or a reordered subset
+    like ["acc","disp"] -- and each column always gets the divisor that
+    matches its own name, never the divisor for its position in the list.
+
     Returns a transformed copy; physical (h, h_dot, h_ddot) and metadata remain.
     """
     if not nd_inputs:
         return df.copy()
-    
+
+    unsupported = [c for c in input_cols if c not in _ND_TRANSFORM_COLUMNS]
+    if unsupported:
+        raise ValueError(
+            f"apply_nd_transform: unsupported input column(s) {unsupported}; "
+            f"supported columns are {list(_ND_TRANSFORM_COLUMNS)}"
+        )
+
     if D <= 0 or fn <= 0:
         raise ValueError(f"apply_nd_transform requires D>0, fn>0 (got D={D}, fn={fn})")
-    
+
     df_out = df.copy()
-    
+
     for case_name, case_df_idx in df_out.groupby("case", sort=False).groups.items():
         ur = parse_ur_label(str(case_name))
         U_case = float(ur * fn * D)
-        
+
         if not (U_case > 0 and np.isfinite(U_case)):
             raise ValueError(
                 f"apply_nd_transform: invalid U_case={U_case} for case={case_name}, "
                 f"Ur={ur}, fn={fn}, D={D}")
-        
-        # Divisors for each input column
-        divisors = np.array([D, U_case, U_case**2 / D], dtype=np.float32)
-        
-        for col_idx, col_name in enumerate(input_cols):
-            if col_name in ["disp", "vel", "acc"]:
-                df_out.loc[case_df_idx, col_name] = (
-                    df_out.loc[case_df_idx, col_name].astype(np.float32) / divisors[col_idx]
-                )
-    
+
+        # Name -> divisor, so a reordered/partial input_cols still gets the
+        # correct formula per column regardless of its position in the list.
+        divisor = {"disp": D, "vel": U_case, "acc": (U_case ** 2) / D}
+
+        for col_name in input_cols:
+            df_out.loc[case_df_idx, col_name] = (
+                df_out.loc[case_df_idx, col_name].astype(np.float32) / divisor[col_name]
+            )
+
     return df_out
 
 
@@ -194,19 +246,21 @@ def _cylinder_split(cases: list[str], release_t: float) -> tuple:
     return train, val, test, rt
 
 
-def _cylinder1000_split(cases: list[str], release_t: float) -> tuple:
-    test  = { "Ur11", "Ur4.75", "Ur5.5",  "Ur7"}
-    val   = { "Ur4.25", "Ur5.25", "Ur6.5",  "Ur9"}
-    eliminate = { "Ur2", "Ur2.5","Ur3"}
-    train = set(cases) - test - val  - eliminate
-    print("train (computed):", sorted(set(cases) - test - val - eliminate))
+def _cylinder200_split(cases: list[str]) -> tuple:
+    """
+    Split the 21-case Re=200 dataset (~62/19/19 train/val/test), spread
+    across the Ur range. Per-case release_time = 200/Ur (T_star_release/fn
+    per Ur), NOT a single dataset-wide constant -- see cylinder200_release_time.
+    """
+    test  = {"Ur3.5", "Ur5.5", "Ur7", "Ur11"}
+    val   = {"Ur4.25", "Ur6.25", "Ur9", "Ur10"}
+    train = set(cases) - test - val
 
     missing = (test | val) - set(cases)
     if missing:
         print(f"WARNING: split references cases not in data: {missing}")
 
-    rt = { c: 400.0 / parse_ur_label(c) for c in cases }
-
+    rt = {c: cylinder200_release_time(parse_ur_label(c)) for c in cases}
     return train, val, test, rt
 
 
@@ -266,8 +320,8 @@ def split_cases(cases: list[str], dataset: str,
     ds = dataset.strip().lower()
     if ds == "cylinder":
         return _cylinder_split(cases, release_t=cfg["cylinder_t_release"])
-    if ds in {"cylinder1000", "cylinder_re_1000", "re1000", "re1000_disp","re1000_vel","re1000_acc", "re1000_"}:
-        return _cylinder1000_split(cases, release_t=cfg["cylinder1000_t_release"])
+    if ds in CYLINDER200_ALIASES:
+        return _cylinder200_split(cases)
     if ds == "bridge":
         return _bridge_split(
             cases,
@@ -280,17 +334,40 @@ def split_cases(cases: list[str], dataset: str,
 
 # ── Training utilities ─────────────────────────────────────────────────────────
 
-def train_one_epoch(model, loader, optimizer, criterion, device, input_noise_std=0.0):
+def train_one_epoch(model, loader, optimizer, criterion, device, input_noise_std=0.0,
+                    n_kinematic_cols=3, case_weights=None):
+    """
+    n_kinematic_cols: number of leading feature columns that are actual
+    kinematics (len(input_cols)) -- NOT a fixed 3. Noise must never reach
+    the trailing Ur-context column (if present): [..., :3] used to assume
+    exactly 3 kinematic columns always preceded it, which silently noised
+    the context feature too whenever input_size was smaller (e.g. a
+    single-input-column model with use_ur_context, input_size=2).
+
+    case_weights: optional {case_name: weight} from compute_case_loss_weights.
+    When given, replaces `criterion` with a per-sample-weighted MSE (looked
+    up per sample from the batch's case names) so training isn't dominated
+    by whichever case has the largest absolute target scale. When None,
+    behavior is unchanged (plain `criterion`).
+    """
     model.train()
     total = 0.0
-    for x_b, y_b, _ in loader:
+    for x_b, y_b, case_b in loader:
         x_b, y_b = x_b.to(device), y_b.to(device)
         if input_noise_std > 0.0:
             x_b = x_b.clone()
-            x_b[..., :3] = x_b[..., :3] + torch.randn_like(x_b[..., :3]) * input_noise_std
+            x_b[..., :n_kinematic_cols] = (
+                x_b[..., :n_kinematic_cols]
+                + torch.randn_like(x_b[..., :n_kinematic_cols]) * input_noise_std
+            )
         optimizer.zero_grad()
         pred, _ = model(x_b)
-        loss = criterion(pred, y_b)
+        if case_weights is not None:
+            w_b = torch.tensor([case_weights.get(str(c), 1.0) for c in case_b],
+                               dtype=torch.float32, device=device)
+            loss = (w_b * (pred - y_b) ** 2).mean()
+        else:
+            loss = criterion(pred, y_b)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -315,6 +392,43 @@ def run_validation(model, loader, criterion, device):
         np.concatenate(trues),
         np.array(cases, dtype=object),
     )
+
+
+def compute_case_loss_weights(
+    df_scaled: pd.DataFrame, target_col: str, cases: list[str],
+    min_var_frac_of_median: float = 0.01,
+) -> dict[str, float]:
+    """
+    Per-case training-loss weight, inverse-proportional to that case's own
+    target variance (in the SAME standardized space the model is trained
+    in). Without this, a single global y_scaler means a strong-response
+    case (e.g. a lock-in peak) dominates total MSE, and gradient descent
+    all but ignores weak-response cases -- their absolute squared error is
+    tiny even when their RELATIVE error is huge. Weighting by 1/var makes
+    each case's expected contribution to loss depend on relative (not
+    absolute) prediction error, so weak cases get a real training signal.
+
+    min_var_frac_of_median: each case's variance is floored at this
+    fraction of the median variance across cases before inverting, so a
+    near-flat/degenerate case can't blow up into an enormous weight that
+    destabilizes training.
+
+    Weights are normalized to average 1.0 across `cases`, so total loss
+    magnitude (and existing LR/schedule choices) stays comparable to the
+    unweighted case.
+    """
+    variances = {}
+    for case in cases:
+        vals = df_scaled.loc[df_scaled["case"] == case, target_col].to_numpy(dtype=np.float64)
+        variances[case] = float(np.var(vals)) if len(vals) > 0 else 0.0
+
+    median_var = float(np.median(list(variances.values()))) if variances else 0.0
+    floor = max(median_var * min_var_frac_of_median, 1e-12)
+
+    raw_weights = {c: 1.0 / max(v, floor) for c, v in variances.items()}
+    mean_w = float(np.mean(list(raw_weights.values()))) if raw_weights else 1.0
+    mean_w = mean_w if mean_w > 0 else 1.0
+    return {c: w / mean_w for c, w in raw_weights.items()}
 
 
 def per_case_normalize(
@@ -392,15 +506,15 @@ def teacher_forcing_rollout(
 
 # ── Plotting helpers ───────────────────────────────────────────────────────────
 
-def plot_tf_result(cl_pred, cl_true, times, case_name, output_dir):
+def plot_tf_result(cl_pred, cl_true, times, case_name, output_dir, dataset: str = ""):
     fig, axes = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
     ax = axes[0]
     ax.plot(times, cl_true, lw=0.8, color="black",    label="CFD (ground truth)")
-    ax.plot(times, cl_pred, lw=0.8, color="tab:blue",
-            alpha=0.85, label="GRU (teacher forcing)")
+    ax.plot(times, cl_pred, lw=0.8, color="tab:blue", alpha=0.85,
+            label=present_model_label(dataset, "GRU (teacher forcing)"))
     ax.set_ylabel("$C_L$", fontsize=13)
-    ax.set_title(f"{case_name} — Teacher Forcing Rollout  "
-                 f"$R^2={r2_score(cl_true, cl_pred):.4f}$")
+    # ax.set_title(f"{case_name} — Teacher Forcing Rollout  "
+    #              f"$R^2={r2_score(cl_true, cl_pred):.4f}$")
     ax.legend(); ax.grid(True, alpha=0.3)
 
     ax2 = axes[1]
@@ -410,7 +524,7 @@ def plot_tf_result(cl_pred, cl_true, times, case_name, output_dir):
     ax2.set_xlabel("Time [s]", fontsize=13)
     ax2.grid(True, alpha=0.3)
 
-    fig.savefig(output_dir / f"ar_{case_name}.png", dpi=200)
+    fig.savefig(output_dir / f"ar_{case_name}.png", dpi=600)
     plt.close(fig)
 
 
@@ -469,19 +583,19 @@ def amplitude_comparison(model, all_df_s, release_time,
 def setup_argparse() -> argparse.ArgumentParser:
     """Create argument parser for train_gru."""
     parser = argparse.ArgumentParser(
-        description="Train GRU model for VIV lift prediction (cylinder1000 and bridge)."
+        description="Train GRU model for VIV lift prediction (cylinder200 and bridge)."
     )
     
     # Legacy support: optional positional dataset argument
     parser.add_argument(
         "dataset_pos", nargs="?", default=None,
-        help="(Legacy) Dataset: cylinder, cylinder1000, or bridge"
+        help="(Legacy) Dataset: cylinder, cylinder200, or bridge"
     )
     
     # Primary options
     parser.add_argument(
         "--cfd_dataset", type=str, default=None,
-        help="Dataset: cylinder, cylinder1000, or bridge"
+        help="Dataset: cylinder, cylinder200, or bridge"
     )
     parser.add_argument(
         "--nd_inputs", action="store_true",
@@ -517,8 +631,32 @@ def setup_argparse() -> argparse.ArgumentParser:
         help="Sequence length (default: dataset config)"
     )
     parser.add_argument(
+        "--input_cols", type=str, nargs="+", default=None,
+        choices=["disp", "vel", "acc"],
+        help="Input kinematic columns, e.g. --input_cols disp for a "
+             "displacement-only ablation (default: dataset config, "
+             "normally all three: disp vel acc)"
+    )
+    parser.add_argument(
         "--noise_std", type=float, default=0.05,
         help="Input noise std after standardization (default: 0.05)"
+    )
+    parser.add_argument(
+        "--amplitude_aware_loss", action="store_true",
+        help="Weight the training loss per-case by 1/variance of that case's "
+             "own (scaled) target, so weak-amplitude cases aren't drowned out "
+             "by a strong-response case (e.g. a lock-in peak) under the "
+             "single global y_scaler. See compute_case_loss_weights."
+    )
+    parser.add_argument(
+        "--acc_source", type=str, default="force_residual",
+        choices=["force_residual", "savgol_vel"],
+        help="How 'acc' is derived in compute_kinematics. 'force_residual' "
+             "(default) = (F_fluid-c*v-k*y)/m, using the SAME m,c,k as the "
+             "closed-loop Newmark integrator -- makes C_L an exact linear "
+             "function of [disp,vel,acc] per Ur case. 'savgol_vel' = "
+             "genuine numerical differentiation of the recorded velocity "
+             "signal, with no algebraic tie to C_L."
     )
     parser.add_argument(
         "--seed", type=int, default=123,
@@ -542,7 +680,17 @@ def setup_argparse() -> argparse.ArgumentParser:
         "--overwrite", action="store_true",
         help="Allow overwriting existing artifacts"
     )
-    
+    parser.add_argument(
+        "--skip_test_eval", action="store_true",
+        help="Opt-in; default False (unchanged historical behavior). When set, "
+             "the test partition is never loaded into a dataframe/loader, never "
+             "run through the model, and no test metrics/plots/artifacts are "
+             "produced -- only the test case LABELS are retained (in "
+             "run_config.json's 'test_cases' list, for provenance). Intended "
+             "for architecture/hyperparameter selection studies that must not "
+             "touch the test partition before a final configuration is frozen."
+    )
+
     return parser
 
 
@@ -572,7 +720,12 @@ def main() -> None:
 
     cfg["use_ur_context"] = use_ur_context
     cfg["nd_inputs"] = nd_inputs
-    
+
+    # Resolve the nondimensional reference scales ONCE, fail fast on an
+    # unsupported dataset (e.g. Re=200 'cylinder') before any data loading,
+    # and reuse (D_nd, fn_nd) everywhere below instead of re-deriving them.
+    D_nd, fn_nd = resolve_nd_reference_scales(dataset, cfg) if nd_inputs else (None, None)
+
     # Override config with CLI if provided
     if args.epochs is not None:
         cfg["n_epochs"] = args.epochs
@@ -580,7 +733,9 @@ def main() -> None:
         cfg["batch_size"] = args.batch_size
     if args.seq_len is not None:
         cfg["seq_len"] = args.seq_len
-    
+    if args.input_cols is not None:
+        cfg["input_cols"] = args.input_cols
+
     # ── Seeding ────────────────────────────────────────────────────────────
     seed_everything(args.seed)
     
@@ -622,18 +777,19 @@ def main() -> None:
         raise RuntimeError("No data found. Check data directories.")
     
     # ── Compute kinematics in physical units ───────────────────────────────
-    params_Re1000 = None
+    params_Re200 = None
     params_bridge = None
-    
-    if dataset in {"cylinder1000", "cylinder_re_1000", "re1000",
-                   "re1000_disp", "re1000_vel", "re1000_acc"}:
-        params_Re1000 = structural_params()
+
+    if dataset.strip().lower() in CYLINDER200_ALIASES:
+        params_Re200 = cylinder200_structural_params()
         raw_df = compute_kinematics(raw_df, dataset=dataset,
-                                    structural_params=params_Re1000)
+                                    structural_params=params_Re200,
+                                    acc_source=args.acc_source)
     elif dataset == "bridge":
         params_bridge = bridge_structural_params()
         raw_df = compute_kinematics(raw_df, dataset=dataset,
-                                    bridge_structural_params=params_bridge)
+                                    bridge_structural_params=params_bridge,
+                                    acc_source=args.acc_source)
     else:
         raw_df = compute_kinematics(raw_df, dataset=dataset)
     
@@ -671,29 +827,38 @@ def main() -> None:
     if (train_cases & val_cases) or (train_cases & test_cases) or (val_cases & test_cases):
         raise ValueError("Split overlap detected after holdout enforcement.")
     
+    # input_cols resolved once here so the ND transform below and scaler
+    # fitting further down operate on the exact same column set.
+    input_cols = list(cfg.get("input_cols", ["disp", "vel", "acc"]))
+
     # ── Apply ND transform (if requested) and split ──────────────────────
     if nd_inputs:
-        D = config["cylinder1000_D_ref"]
-        fn = config["cylinder1000_fn"]
-        input_cols = ["disp", "vel", "acc"]
-        
-        print(f"\nApplying nondimensional transform (D={D}, fn={fn}):")
-        raw_df = apply_nd_transform(raw_df, nd_inputs=True, D=D, fn=fn,
+        print(f"\nApplying nondimensional transform "
+              f"(dataset={dataset}, D={D_nd}, fn={fn_nd}):")
+        raw_df = apply_nd_transform(raw_df, nd_inputs=True, D=D_nd, fn=fn_nd,
                                     input_cols=input_cols)
-        
-        # Print receipts for verification
-        for case_name in ["Ur5", "Ur7"]:
-            if case_name in raw_df["case"].values:
-                ur = parse_ur_label(case_name)
-                U_case = ur * fn * D
-                divisors = [D, U_case, U_case**2 / D]
-                divisors_str = "[" + ", ".join(f"{v:.3f}" for v in divisors) + "]"
-                print(f"  {case_name}: U={U_case:.3f}, divisors={divisors_str}")
-    
+
+        available_cases = sorted(
+            (str(c) for c in raw_df["case"].drop_duplicates()), key=parse_ur_label
+        )
+        if available_cases:
+            case_name = "Ur6.7385" if "Ur6.7385" in available_cases else available_cases[0]
+            ur = parse_ur_label(case_name)
+            U_case = ur * fn_nd * D_nd
+            divisor = {"disp": D_nd, "vel": U_case, "acc": (U_case ** 2) / D_nd}
+            print(f"  [ND preflight] dataset={dataset}  D={D_nd}  fn={fn_nd}")
+            print(f"  [ND preflight] representative case={case_name}  Ur={ur}  "
+                  f"recovered U=Ur*fn*D={U_case:.4f}")
+            print(f"  [ND preflight] divisors: disp={divisor['disp']:.6f}  "
+                  f"vel={divisor['vel']:.6f}  acc={divisor['acc']:.6f}")
+
     train_df = raw_df[raw_df["case"].isin(train_cases)].copy()
     val_df = raw_df[raw_df["case"].isin(val_cases)].copy()
-    test_df = raw_df[raw_df["case"].isin(test_cases)].copy()
-    
+    # --skip_test_eval: the test partition is never materialized into a
+    # dataframe at all -- only its case LABELS survive, via test_cases
+    # (already computed by split_cases()) into run_config.json below.
+    test_df = None if args.skip_test_eval else raw_df[raw_df["case"].isin(test_cases)].copy()
+
     # ── Verify holdout is absent from train/val ────────────────────────────
     if args.holdout_ur is not None:
         holdout_label = format_ur_label(args.holdout_ur)
@@ -701,11 +866,10 @@ def main() -> None:
             raise ValueError(f"Holdout {holdout_label} still in train_df!")
         if holdout_label in val_df["case"].values:
             raise ValueError(f"Holdout {holdout_label} still in val_df!")
-        if holdout_label not in test_df["case"].values:
+        if test_df is not None and holdout_label not in test_df["case"].values:
             raise ValueError(f"Holdout {holdout_label} not in test_df!")
-    
+
     # ── Fit scalers on training data only ──────────────────────────────────
-    input_cols = list(cfg.get("input_cols", ["disp", "vel", "acc"]))
     target_col = str(cfg.get("target_col", "cl"))
     seq_len = int(cfg["seq_len"])
     batch_size = int(cfg["batch_size"])
@@ -730,30 +894,31 @@ def main() -> None:
     coord_mode = "nondimensional" if nd_inputs else "dimensional"
     if nd_inputs:
         transform_formula = "disp/D,  vel/U,  acc*D/U²  (case-dependent U)"
-        D = config["cylinder1000_D_ref"]
-        fn = config["cylinder1000_fn"]
     else:
-        transform_formula = "identity (physical units)" 
-        D = None
-        fn = None
-    
+        transform_formula = "identity (physical units)"
+    # D_nd/fn_nd were resolved once above (None, None) when nd_inputs=False --
+    # reused here verbatim, never re-derived.
+
     run_config = {
         "cfd_dataset": dataset,
         "coordinate_mode": coord_mode,
         "nd_inputs": nd_inputs,
         "transform_formula": transform_formula,
-        "D": float(D) if D is not None else None,
-        "fn": float(fn) if fn is not None else None,
+        "D": float(D_nd) if D_nd is not None else None,
+        "fn": float(fn_nd) if fn_nd is not None else None,
         "use_ur_context": use_ur_context,
         "holdout_ur": args.holdout_ur,
         "holdout_label": holdout_label,
         "input_cols": input_cols,
+        "acc_source": args.acc_source,
+        "amplitude_aware_loss": args.amplitude_aware_loss,
         "target_col": target_col,
         "epochs": cfg["n_epochs"],
         "batch_size": batch_size,
         "seq_len": seq_len,
         "noise_std": float(args.noise_std),
         "noise_coordinate_space": "standardized model inputs",
+        "skip_test_eval": args.skip_test_eval,
         "seed": args.seed,
         "num_workers": args.num_workers,
         "output_directory": str(output_dir),
@@ -783,8 +948,9 @@ def main() -> None:
         print(f"Use Ur context: {use_ur_context}")
         print(f"Holdout: ur={args.holdout_ur}  label={holdout_label}")
         print(f"Output directory: {output_dir}")
+        test_rows_str = "SKIPPED (--skip_test_eval)" if test_df is None else f"{len(test_df)} test rows"
         print(f"Ready for training: {len(train_df)} train rows, "
-              f"{len(val_df)} val rows, {len(test_df)} test rows")
+              f"{len(val_df)} val rows, {test_rows_str}")
         return
     
     # ── Apply scalers ──────────────────────────────────────────────────────
@@ -792,9 +958,16 @@ def main() -> None:
                                       input_cols, target_col)
     val_df_s = apply_scalers_to_df(val_df, x_scaler, y_scaler,
                                     input_cols, target_col)
-    test_df_s = apply_scalers_to_df(test_df, x_scaler, y_scaler,
-                                     input_cols, target_col)
-    
+    test_df_s = None if test_df is None else apply_scalers_to_df(
+        test_df, x_scaler, y_scaler, input_cols, target_col)
+
+    case_weights = None
+    if args.amplitude_aware_loss:
+        case_weights = compute_case_loss_weights(train_df_s, target_col, sorted(train_cases))
+        print("\nAmplitude-aware loss weights (per training case, mean=1.0):")
+        for c, w in sorted(case_weights.items(), key=lambda kv: kv[1], reverse=True):
+            print(f"  {c:12s}  weight={w:.3f}")
+
     # ── Create datasets and loaders ────────────────────────────────────────
     stride_train = int(cfg["stride_train"])
     common_ds_args = dict(
@@ -805,9 +978,10 @@ def main() -> None:
     
     train_ds = VIVSequenceDataset(train_df_s, stride=stride_train, **common_ds_args)
     val_ds = VIVSequenceDataset(val_df_s, stride=1, **common_ds_args)
-    test_ds = VIVSequenceDataset(test_df_s, stride=1, **common_ds_args)
-    
-    print(f"\nDataset sizes — train: {len(train_ds)} val: {len(val_ds)} test: {len(test_ds)}")
+    test_ds = None if test_df_s is None else VIVSequenceDataset(test_df_s, stride=1, **common_ds_args)
+
+    test_ds_len_str = "SKIPPED (--skip_test_eval)" if test_ds is None else str(len(test_ds))
+    print(f"\nDataset sizes — train: {len(train_ds)} val: {len(val_ds)} test: {test_ds_len_str}")
     
     # Create generator for reproducible DataLoader shuffling
     generator = torch.Generator()
@@ -820,8 +994,9 @@ def main() -> None:
         generator=generator)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
                             num_workers=args.num_workers, pin_memory=True)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False,
-                             num_workers=args.num_workers, pin_memory=True)
+    test_loader = None if test_ds is None else DataLoader(
+        test_ds, batch_size=batch_size, shuffle=False,
+        num_workers=args.num_workers, pin_memory=True)
     
     # ── Build model ────────────────────────────────────────────────────────
     input_size = len(input_cols) + (1 if use_ur_context else 0)
@@ -854,7 +1029,9 @@ def main() -> None:
     
     for epoch in range(1, n_epochs + 1):
         tl = train_one_epoch(model, train_loader, optimizer, criterion, device,
-                             input_noise_std=args.noise_std)
+                             input_noise_std=args.noise_std,
+                             n_kinematic_cols=len(input_cols),
+                             case_weights=case_weights)
         vl, vp, vt, _ = run_validation(model, val_loader, criterion, device)
         scheduler.step(vl)
         train_losses.append(tl)
@@ -900,55 +1077,76 @@ def main() -> None:
         "coordinate_mode": coord_mode,
         "cfd_dataset": dataset,
         "holdout_ur": args.holdout_ur,
-        "exp_subdir": args.exp_subdir or f"gru_{dataset}",
+        # output_dir.name is the ACTUAL resolved directory name (includes
+        # _nd/_ctx/_noctx when --exp_subdir was omitted -- see "Determine
+        # artifact directory" above); args.exp_subdir alone was stale
+        # whenever it was None, since it dropped those suffixes.
+        "exp_subdir": output_dir.name,
     }
     with open(output_dir / "ur_stats.pkl", "wb") as f:
         pickle.dump(ur_stats_dict, f)
     
     # ── Final evaluation ───────────────────────────────────────────────────
-    _, tp, tt, tcases = run_validation(model, test_loader, criterion, device)
+    # --skip_test_eval: test_loader is None -- run_validation, y_scaler
+    # inverse-transform, and evaluate() are simply never called on any test
+    # row. test_metrics stays None (never computed), not just unreported.
+    if test_loader is not None:
+        _, tp, tt, tcases = run_validation(model, test_loader, criterion, device)
+        test_pred = y_scaler.inverse_transform(tp.reshape(-1, 1)).ravel()
+        test_true = y_scaler.inverse_transform(tt.reshape(-1, 1)).ravel()
+        test_metrics = evaluate(test_true, test_pred)
+    else:
+        test_metrics = None
+        print("\nTest:       SKIPPED (--skip_test_eval) -- no test inference performed")
+
     _, vp, vt, vcases = run_validation(model, val_loader, criterion, device)
-    
-    test_pred = y_scaler.inverse_transform(tp.reshape(-1, 1)).ravel()
-    test_true = y_scaler.inverse_transform(tt.reshape(-1, 1)).ravel()
     val_pred = y_scaler.inverse_transform(vp.reshape(-1, 1)).ravel()
     val_true = y_scaler.inverse_transform(vt.reshape(-1, 1)).ravel()
-    
     val_metrics = evaluate(val_true, val_pred)
-    test_metrics = evaluate(test_true, test_pred)
-    
+
     print(f"\nValidation: {json.dumps(val_metrics, indent=2)}")
-    print(f"Test:       {json.dumps(test_metrics, indent=2)}")
-    
-    # ── Teacher forcing rollout ────────────────────────────────────────────
-    print("\nTeacher forcing rollout on test cases:")
+    if test_metrics is not None:
+        print(f"Test:       {json.dumps(test_metrics, indent=2)}")
+
+    # ── Teacher forcing rollout on test cases ───────────────────────────────
+    # --skip_test_eval: this entire block (rollout inference, R2/RMSE, and
+    # plot_tf_result's PNG output) never executes -- tf_results stays {}.
     tf_results = {}
-    for case_name in sorted(test_cases):
-        case_df_s = test_df_s[test_df_s["case"] == case_name].copy()
-        if case_df_s.empty:
-            continue
-        
-        cl_pred, cl_true, times_ar = teacher_forcing_rollout(
-            model, case_df_s, input_cols, seq_len,
-            release_time[case_name], y_scaler, case_name, device,
-            use_ur_context=use_ur_context,
-            ur_stats=(ur_mean, ur_std),
-        )
-        
-        if len(cl_true) < 20:
-            print(f"  {case_name}: too short, skipping")
-            continue
-        
-        tf_m = evaluate(cl_true, cl_pred)
-        tf_results[case_name] = tf_m
-        print(f"  {case_name}: R²={tf_m['r2']:.4f}  RMSE={tf_m['rmse']:.4f}")
-        plot_tf_result(cl_pred, cl_true, times_ar, case_name, output_dir)
-    
+    if test_df_s is not None:
+        print("\nTeacher forcing rollout on test cases:")
+        for case_name in sorted(test_cases):
+            case_df_s = test_df_s[test_df_s["case"] == case_name].copy()
+            if case_df_s.empty:
+                continue
+
+            cl_pred, cl_true, times_ar = teacher_forcing_rollout(
+                model, case_df_s, input_cols, seq_len,
+                release_time[case_name], y_scaler, case_name, device,
+                use_ur_context=use_ur_context,
+                ur_stats=(ur_mean, ur_std),
+            )
+
+            if len(cl_true) < 20:
+                print(f"  {case_name}: too short, skipping")
+                continue
+
+            tf_m = evaluate(cl_true, cl_pred)
+            tf_results[case_name] = tf_m
+            print(f"  {case_name}: R²={tf_m['r2']:.4f}  RMSE={tf_m['rmse']:.4f}")
+            plot_tf_result(cl_pred, cl_true, times_ar, case_name, output_dir, dataset=dataset)
+    else:
+        print("\nTeacher forcing rollout on test cases: SKIPPED (--skip_test_eval)")
+
     # ── Amplitude response curve ───────────────────────────────────────────
-    all_df_s = pd.concat([train_df_s, val_df_s, test_df_s], ignore_index=True)
+    # --skip_test_eval: test_df_s is None, so no test case ever reaches
+    # amplitude_comparison -- its own per-case rollout/plot loop (which
+    # would otherwise touch test cases too) only ever sees train+val cases.
+    amplitude_dfs = [train_df_s, val_df_s] + ([test_df_s] if test_df_s is not None else [])
+    all_df_s = pd.concat(amplitude_dfs, ignore_index=True)
     amplitude_comparison(
         model, all_df_s, release_time, input_cols, seq_len, y_scaler,
-        device, output_dir, train_cases, val_cases, test_cases,
+        device, output_dir, train_cases, val_cases,
+        (test_cases if test_df_s is not None else set()),
         use_ur_context=use_ur_context, ur_stats=(ur_mean, ur_std),
     )
     
@@ -958,7 +1156,7 @@ def main() -> None:
     ax.plot(val_losses, color="tab:blue", label="val")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("MSE loss (scaled)")
-    ax.set_title(f"GRU learning curve — {dataset} ({coord_mode})")
+    # ax.set_title(f"GRU learning curve — {dataset} ({coord_mode})")
     ax.legend()
     fig.savefig(output_dir / "learning_curve.png", dpi=150)
     plt.close(fig)
@@ -979,7 +1177,11 @@ def main() -> None:
         },
         "scaler_fit_cases": sorted(train_cases),
         "ur_stats_fit_cases": sorted(train_cases),
+        "skip_test_eval": args.skip_test_eval,
         "val_metrics": val_metrics,
+        # test_metrics is None (not merely omitted/redacted) whenever
+        # --skip_test_eval was passed -- there is nothing to redact because
+        # evaluate() was never called on test data above.
         "test_metrics": test_metrics,
         "tf_results": tf_results,
     }

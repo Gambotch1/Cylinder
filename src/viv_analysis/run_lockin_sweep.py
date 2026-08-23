@@ -17,7 +17,7 @@ Also runs two diagnostic checks specific to the Ur=5.5 failure:
        different attractor basin shape than CFD).
 
 Usage:
-    python src/run_lockin_sweep.py [--dataset Cylinder1000]
+    python src/run_lockin_sweep.py [--dataset cylinder200]
                                    [--total_time 700]
                                    [--no_diagnostics]
 """
@@ -48,34 +48,32 @@ from viv_analysis.preprocess import (
     merge_dataframes,
 )
 from viv_analysis.utils import format_ur_label
+from viv_analysis.config import config, cylinder200_structural_params, cylinder200_U
 
 ROOT_DIR = _SRC.parent
 
 UR_SWEEP = [5.0, 5.25, 5.5, 5.75, 6.0, 6.25, 6.5, 7.0]
 
-# ── Physical constants (must match UDF / coupled_inference.py exactly) ─────────
-RHO   = 1.0
-D     = 0.2
-FN    = 0.2
-M_STAR = 2.0
-ZETA   = 0.007
+# ── Physical constants (must match UDF / coupled_inference.py exactly) --
+# derived once from the centralized cylinder200 config, never duplicated.
+RHO   = config["cylinder200_rho"]
+D     = config["cylinder200_D_ref"]
+FN    = config["cylinder200_fn"]
 SEQ_LEN = 2000
-DT      = 0.005
-T_STAR_RELEASE = 80.0
+DT      = config["cylinder200_dt"]
+T_STAR_RELEASE = config["cylinder200_t_star_release"]
 INPUT_COLS = ["disp", "vel", "acc"]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _structural_params(Ur: float) -> dict:
-    U = Ur * FN * D
-    m = M_STAR * RHO * (np.pi * D ** 2 / 4.0)
-    omega_n = 2.0 * np.pi * FN
+    sp = cylinder200_structural_params()
     return {
-        "U": U,
-        "m": m,
-        "k": m * omega_n ** 2,
-        "c": 2.0 * m * omega_n * ZETA,
+        "U": cylinder200_U(Ur),
+        "m": sp["m"],
+        "k": sp["k"],
+        "c": sp["c"],
     }
 
 
@@ -406,7 +404,7 @@ def plot_sweep(df: pd.DataFrame, dataset: str, out_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset",      default="Cylinder1000")
+    parser.add_argument("--dataset",      default="cylinder200")
     parser.add_argument("--total_time",   type=float, default=700.0)
     parser.add_argument("--no_diagnostics", action="store_true",
                         help="Skip Ur=5.5 diagnostics")

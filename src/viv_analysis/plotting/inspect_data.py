@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 import matplotlib
@@ -6,6 +7,7 @@ import numpy as np
 
 from viv_analysis.utils import PROJECT_ROOT
 from viv_analysis.preprocess import merge_dataframes, compute_kinematics
+from viv_analysis.config import config, CYLINDER200_ALIASES
 
 
 matplotlib.use("Agg")
@@ -97,23 +99,27 @@ def plot_case(case_df: pd.DataFrame, output_dir: Path) -> Path:
     return output_path
 
 
-def main() -> None:
-    METRICS_DIR.mkdir(parents=True, exist_ok=True)
-    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+def main(dataset: str = "Cylinder1000") -> None:
+    # New re200 outputs go to dataset-suffixed dirs so the legacy
+    # cylinder1000 plots_validation/metrics artifacts are never overwritten.
+    is_re200 = dataset.strip().lower() in CYLINDER200_ALIASES
+    metrics_dir = (RESULTS_DIR / "metrics_cylinder200") if is_re200 else METRICS_DIR
+    plots_dir   = (RESULTS_DIR / "plots_validation_cylinder200") if is_re200 else PLOTS_DIR
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir.mkdir(parents=True, exist_ok=True)
 
-    df = compute_kinematics(merge_dataframes(dataset="Cylinder1000"), dataset="Cylinder1000")
+    df = compute_kinematics(merge_dataframes(dataset=dataset), dataset=dataset)
     if df.empty:
         print("Merged dataframe is empty. Nothing to inspect.")
         return
 
-    
-    fn_hz = 0.2
+    fn_hz = config["cylinder200_fn"] if is_re200 else 0.2
     ur_values = []
     freq_ratios = []
     summaries: list[dict[str, object]] = []
     for case_label, case_df in df.groupby("case", sort=True):
         summaries.append(summarize_case(case_df))
-        plot_path = plot_case(case_df, PLOTS_DIR)
+        plot_path = plot_case(case_df, plots_dir)
         print(f"Saved plot: {plot_path}")
 
         ordered = case_df.sort_values(by=["time", "step"]).reset_index(drop=True)
@@ -143,11 +149,11 @@ def main() -> None:
     ax.set_xlabel(r"Reduced velocity $U_r$")
     ax.set_ylabel(r"$f_{\mathrm{osc}} / f_n$")
     ax.grid(True, linestyle="--", alpha=0.4)
-    fig.savefig(PLOTS_DIR / "frequency_response.png", dpi=180)
+    fig.savefig(plots_dir / "frequency_response.png", dpi=180)
     plt.close(fig)
 
     summary_df = pd.DataFrame(summaries).sort_values(by="case").reset_index(drop=True)
-    summary_path = METRICS_DIR / "data_validation_summary.csv"
+    summary_path = metrics_dir / "data_validation_summary.csv"
     summary_df.to_csv(summary_path, index=False)
 
     pd.set_option("display.max_columns", None)
@@ -156,4 +162,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__ or "")
+    parser.add_argument("--dataset", default="Cylinder1000",
+                    help="Dataset to inspect, e.g. Cylinder1000 (default, legacy) "
+                         "or cylinder200 (completed Re=200 dataset).")
+    args = parser.parse_args()
+    main(dataset=args.dataset)

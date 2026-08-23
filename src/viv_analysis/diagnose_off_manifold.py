@@ -25,8 +25,8 @@
 #   python -m viv_analysis.diagnose_off_manifold \
 #       --Ur 6.0 --handoff_offset 2000 \
 #       --checkpoint gru_best.pt \
-#       --model_subdir gru_cylinder_re_1000 \
-#       --cfd_dataset cylinder_re_1000 --total_time 500
+#       --model_subdir gru_cylinder200 \
+#       --cfd_dataset cylinder200 --total_time 500
 #
 #   python -m viv_analysis.diagnose_off_manifold \
 #       --Ur 6.528 --handoff_offset 2000 \
@@ -48,7 +48,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.neighbors import NearestNeighbors
 
-from viv_analysis.config import config
+from viv_analysis.config import config, CYLINDER200_ALIASES, cylinder200_structural_params
 from viv_analysis.preprocess import merge_dataframes, compute_kinematics
 from viv_analysis.train_gru import split_cases
 from viv_analysis.models.gru import VIV_GRU
@@ -64,7 +64,7 @@ CLOUD_CAP = 200_000     # subsample training cloud for KD-tree speed
 def resolve_physical_params(cfd_dataset: str) -> dict:
     """Physical/structural parameters — mirrors coupled_inference.main()
     exactly (coupled_inference.py:1002-1031) so this diagnostic reproduces the
-    same force law and Newmark integration as production, for cylinder1000
+    same force law and Newmark integration as production, for cylinder200
     AND bridge."""
     ds = cfd_dataset.strip().lower()
     if ds == "bridge":
@@ -77,17 +77,21 @@ def resolve_physical_params(cfd_dataset: str) -> dict:
         B = config["bridge_B_ref"]
         t_star_release = config["bridge_t_star_release"]
         dt = None   # resolved from the CFD trajectory's own timestep
-    else:
-        rho = 1.0
-        D = config["cylinder1000_D_ref"]
+    elif ds in CYLINDER200_ALIASES:
+        rho = config["cylinder200_rho"]
+        D = config["cylinder200_D_ref"]
         B = D
-        fn = 0.2
-        M_star, zeta = 2.0, 0.007
-        m = M_star * rho * (np.pi * D ** 2 / 4.0)
-        k = m * (2 * np.pi * fn) ** 2
-        c = 2.0 * m * (2 * np.pi * fn) * zeta
-        t_star_release = 80.0
-        dt = 0.005
+        fn = config["cylinder200_fn"]
+        sp = cylinder200_structural_params()
+        m, c, k = sp["m"], sp["c"], sp["k"]
+        t_star_release = config["cylinder200_t_star_release"]
+        dt = config["cylinder200_dt"]
+    else:
+        raise ValueError(
+            f"resolve_physical_params: unsupported cfd_dataset '{cfd_dataset}'. "
+            f"Supported: 'bridge', cylinder200 (aliases: {sorted(CYLINDER200_ALIASES)}). "
+            f"The Re=1000 cylinder pipeline has been removed."
+        )
     return dict(ds=ds, rho=rho, fn=fn, D=D, B=B, m=m, c=c, k=k,
                 t_star_release=t_star_release, dt=dt)
 
@@ -192,7 +196,7 @@ def run_coupled_with_logging(model, init_history, init_state, U, sp,
 
     Force law and coordinate conversion mirror run_coupled_viv exactly:
     F = 0.5*rho*U^2*B*cl (coupled_inference.py:851, uses the force-reference
-    span B, not D — they coincide for cylinder1000 but not for bridge), and
+    span B, not D — they coincide for cylinder200 but not for bridge), and
     kinematics are divided by [D, U, U^2/D] before scaling when nd_inputs
     (coupled_inference.py:868).
     """
@@ -252,8 +256,8 @@ def main():
     ap.add_argument("--handoff_offset", type=int, default=2000)
     ap.add_argument("--total_time", type=float, default=500.0)
     ap.add_argument("--checkpoint", type=str, default="gru_best.pt")
-    ap.add_argument("--model_subdir", type=str, default="gru_cylinder_re_1000")
-    ap.add_argument("--cfd_dataset", type=str, default="cylinder_re_1000")
+    ap.add_argument("--model_subdir", type=str, default="gru_cylinder200")
+    ap.add_argument("--cfd_dataset", type=str, default="cylinder200")
     ap.add_argument("--nd_inputs", action="store_true",
                     help="Model was trained on nondimensional [h/D, hdot/U, hddot*D/U^2] "
                          "inputs; must match how the checkpoint in --model_subdir was trained "

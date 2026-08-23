@@ -16,12 +16,12 @@ import matplotlib.pyplot as plt
 matplotlib.use("Agg")
 
 from viv_analysis.preprocess import compute_kinematics, merge_dataframes, downsample
-from viv_analysis.utils import PROJECT_ROOT, format_ur_label
+from viv_analysis.utils import PROJECT_ROOT, format_ur_label, present_model_label
 from viv_analysis.self_excitation import (
     build_seed_history, analyze_run, measure_cfd_amplitude, measure_mu_from_cfd,
     A_REF_CONVENTION,
 )
-from viv_analysis.config import config
+from viv_analysis.config import config, CYLINDER200_ALIASES, cylinder200_structural_params
 
 
 # ── Thesis figure style ─────────────────────────────────────────────
@@ -41,14 +41,24 @@ plt.rcParams.update({
 
 
 
-def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float) -> np.ndarray:
-    """Physical [h, hdot, hddot] (last axis) -> model input coords.
-    Identity unless nd_inputs; else divide by [D, U, U^2/D]."""
+def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float,
+                    input_cols: tuple[str, ...] = ("disp", "vel", "acc")) -> np.ndarray:
+    """Physical kinematics (last axis, columns named by input_cols) -> model
+    input coords. Identity unless nd_inputs; else each column is divided by
+    ITS OWN NAME's divisor (disp->D, vel->U, acc->U^2/D) -- not by position
+    -- so a restricted/reordered input_cols (e.g. ["vel"] for a
+    velocity-only model) still gets the correct divisor per column instead
+    of silently broadcasting the wrong one."""
     if not nd_inputs:
         return kin
     if D <= 0 or U <= 0:
         raise ValueError(f"to_model_coords requires D>0, U>0 (got D={D}, U={U})")
-    return kin / np.array([D, U, U * U / D], dtype=np.float32)
+    divisor_by_name = {"disp": D, "vel": U, "acc": (U * U) / D}
+    unsupported = [c for c in input_cols if c not in divisor_by_name]
+    if unsupported:
+        raise ValueError(f"to_model_coords: unsupported input_cols {unsupported}")
+    divisors = np.array([divisor_by_name[c] for c in input_cols], dtype=np.float32)
+    return kin / divisors
 
 
 def positive_finite_float(value: str) -> float:
@@ -251,32 +261,20 @@ def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None
     return cli_nd_inputs
 
 
-# Cylinder1000 spellings used elsewhere in this codebase (train_gru.py's own
-# dataset dispatch, preprocess._resolve_data_dirs, prepare_gru_config). Kept
-# as a local copy rather than importing train_gru.py's CYLINDER1000_ND_ALIASES
-# -- train_gru.py already imports Newmark_beta from this module, so the
-# reverse import would be circular.
-CYLINDER1000_DATASET_ALIASES = frozenset({
-    "cylinder1000", "cylinder_re_1000", "re1000", "cylinder-re-1000",
-    "re1000_disp", "re1000_vel", "re1000_acc",
-})
-
-
 def normalize_cfd_dataset(dataset: str) -> str:
     """Canonicalize a dataset name/alias for compatibility comparisons.
 
-    Maps every known cylinder1000 spelling to "cylinder1000", "bridge" to
-    itself, and the Re=200 "cylinder" dataset to itself (distinct from
-    cylinder1000, and unsupported for the nondimensional bridge study).
-    Unknown strings pass through lowercased/stripped -- comparing an unknown
-    string against a canonical one simply won't match, which is the correct
-    "different dataset" outcome rather than a crash.
+    Maps every known cylinder200 spelling to "cylinder200", "bridge" to
+    itself, and the old Re=200 "cylinder" dataset to itself (distinct from
+    cylinder200). Unknown strings pass through lowercased/stripped --
+    comparing an unknown string against a canonical one simply won't match,
+    which is the correct "different dataset" outcome rather than a crash.
     """
     ds = dataset.strip().lower()
     if ds == "bridge":
         return "bridge"
-    if ds in CYLINDER1000_DATASET_ALIASES:
-        return "cylinder1000"
+    if ds in CYLINDER200_ALIASES:
+        return "cylinder200"
     if ds == "cylinder":
         return "cylinder"
     return ds
@@ -287,7 +285,7 @@ def check_artifact_dataset_compatibility(artifact_dir: Path, requested_cfd_datas
     Cross-check the model artifact's own recorded training dataset against
     the CFD dataset requested for this inference run (which drives the
     physical constants D/fn/B/m/c/k -- see main()). Without this check,
-    nothing prevents e.g. requesting cylinder1000 constants against a
+    nothing prevents e.g. requesting cylinder200 constants against a
     bridge-trained checkpoint.
 
     Recorded dataset is read from run_config.json["cfd_dataset"] (preferred)
@@ -420,7 +418,7 @@ def warmup_history(
 
     kinematics = win[input_cols].to_numpy(dtype=np.float32)
     kinematics = kinematics * float(cfd_scale)
-    kinematics = to_model_coords(kinematics, nd_inputs, D, U)
+    kinematics = to_model_coords(kinematics, nd_inputs, D, U, input_cols=input_cols)
     kinematics_scaled = x_scaler.transform(kinematics)
 
     if use_ur_context:
@@ -485,7 +483,8 @@ def diagnostic_teacher_forcing_vs_coupled(
     # DataFrame and re-fitting/transforming per step — needed now that n_steps
     # can span the full post-release record (1e5+ steps) rather than a short window.
     kinematics_full_scaled = x_scaler.transform(
-        to_model_coords(ordered[input_cols].to_numpy(dtype=np.float32), nd_inputs, D, U)
+        to_model_coords(ordered[input_cols].to_numpy(dtype=np.float32), nd_inputs, D, U,
+                        input_cols=input_cols)
     )
     if use_ur_context:
         ur_col_full = np.full((len(ordered), 1), ur_scaled, dtype=np.float32)
@@ -745,6 +744,7 @@ def run_coupled_viv(
     fn: Optional[float] = None,
     a_ref: Optional[float] = None,
     mu: float = 0.0,
+    track_hidden: bool = False,  # opt-in only; default False -> zero change to existing call sites
 ) -> dict:
     """
     Fully coupled GRU-structural VIV simulation.
@@ -805,7 +805,11 @@ def run_coupled_viv(
     x_scale = x_scaler.scale_.astype(np.float32)
     y_mean = float(y_scaler.mean_[0])
     y_scale = float(y_scaler.scale_[0])
-    nd_div = np.array([D, U, U * U / D], dtype=np.float32) if nd_inputs else None
+    # Name-keyed (not positional) so a restricted input_cols (e.g. ["vel"]
+    # for a velocity-only model) still divides each column by its own
+    # correct divisor rather than the wrong one at that array position.
+    _nd_divisor_by_name = {"disp": D, "vel": U, "acc": (U * U) / D} if nd_inputs else None
+    _state_names = ("disp", "vel", "acc")
 
     # ── Closure / forcing-mode setup ───────────────────────────────────
     # Validate required inputs for non-default forcing modes and precompute
@@ -820,12 +824,18 @@ def run_coupled_viv(
     # Component logging arrays (for decomposition/diagnostics)
     CL_det_arr = np.zeros(n_steps, dtype=np.float32)
     CL_vdp_arr = np.zeros(n_steps, dtype=np.float32)
+    hidden_norms = [] if track_hidden else None
+    hidden_vecs = [] if track_hidden else None
+    zmax_trace = [] if track_hidden else None
 
     with torch.inference_mode():
         for i in range(n_steps):
 
             x = torch.from_numpy(history).unsqueeze(0).to(device)
-            cl_scaled, _ = model(x)
+            cl_scaled, hn = model(x)
+            if track_hidden:
+                hidden_norms.append(float(torch.linalg.norm(hn[-1]).item()))
+                hidden_vecs.append(hn[-1].detach().cpu().numpy().ravel().copy())
             cl_det = 0.0 if gru_off else float(cl_scaled.item()) * y_scale + y_mean
 
             # Forcing law selection:
@@ -864,8 +874,15 @@ def run_coupled_viv(
             # Push h[i] (the state that *drove* this step) so that at the next
             # iteration the window ends at i, matching the training convention:
             #   predict CL[i+1] from kinematics [..., h[i]].
-            new_kinematics_raw = np.array([h[i], h_dot[i], h_ddot[i]], dtype=np.float32)
-            new_kinematics_t = new_kinematics_raw / nd_div if nd_inputs else new_kinematics_raw
+            _state_by_name = dict(zip(_state_names, (h[i], h_dot[i], h_ddot[i])))
+            new_kinematics_raw = np.array(
+                [_state_by_name[c] for c in input_cols], dtype=np.float32)
+            if nd_inputs:
+                new_kinematics_t = np.array(
+                    [_state_by_name[c] / _nd_divisor_by_name[c] for c in input_cols],
+                    dtype=np.float32)
+            else:
+                new_kinematics_t = new_kinematics_raw
             new_kinematics_scaled = (new_kinematics_t - x_mean) / x_scale
 
             if use_ur_context:
@@ -881,6 +898,8 @@ def run_coupled_viv(
 
             zmax = float(max(abs(v) for v in new_kinematics_scaled))
             max_abs_z_seen = max(max_abs_z_seen, zmax)
+            if track_hidden:
+                zmax_trace.append(zmax)
 
             if zmax > 6.0 and n_ood_warnings < 10:
                 n_ood_warnings += 1
@@ -907,6 +926,9 @@ def run_coupled_viv(
         "e_forcing": _e[:n_steps].copy(),
         "max_abs_scaled_kinematics": float(max_abs_z_seen),
         "n_ood_warnings": int(n_ood_warnings),
+        "hidden_norm": np.array(hidden_norms, dtype=np.float64) if track_hidden else None,
+        "hidden_state": np.stack(hidden_vecs, axis=0) if track_hidden else None,  # (n_steps, hidden_size)
+        "max_abs_z_trace": np.array(zmax_trace, dtype=np.float64) if track_hidden else None,
     }
 
 
@@ -914,9 +936,9 @@ def run_coupled_viv(
 
 def main(
     Ur: float = 6.0, # reduced velocity to simulate
-    cfd_dataset: str = "cylinder1000", # dataset name for loading CFD data
-    model_dataset: str = "Cylinder1000", # dataset name for loading model artifacts
-    total_time: float = 700.0, # total simulation time in seconds
+    cfd_dataset: str = "cylinder200", # dataset name for loading CFD data
+    model_dataset: str = "cylinder200", # dataset name for loading model artifacts
+    total_time: float = 300.0, # total simulation time in seconds
     checkpoint: str = "gru_best.pt",
     model_subdir: Optional[str] = None,
     handoff_offset_steps: int = 2000,
@@ -934,6 +956,7 @@ def main(
     a_ref_m: Optional[float] = None,
     make_tf_residual: bool = False,
     run_replay_diag: bool = False,
+    replay_duration_s: Optional[float] = None,
     output_dir: Optional[str] = None,
     ):
 
@@ -1011,19 +1034,21 @@ def main(
         B   = config["bridge_B_ref"]
         t_star_release = config["bridge_t_star_release"]
         dt  = None
-    else:
-        rho = 1.0
-        D   = config['cylinder1000_D_ref']
+    elif ds in CYLINDER200_ALIASES:
+        rho = config["cylinder200_rho"]
+        D   = config["cylinder200_D_ref"]
         B   = D
-        fn  = 0.2
-        M_star, zeta = 2.0, 0.007
-        m = M_star * rho * (np.pi * D**2 / 4.0)
-        k = m * (2*np.pi*fn)**2
-        c = 2.0 * m * (2*np.pi*fn) * zeta
-        t_star_release = 80.0
-        dt = 0.005
-        params_Re1000 = {"m": m, "c": c, "k": k,
-                         "cylinder_mass": m, "c_struct": c, "k_struct": k}
+        fn  = config["cylinder200_fn"]
+        params_Re1000 = cylinder200_structural_params()
+        m, c, k = params_Re1000["m"], params_Re1000["c"], params_Re1000["k"]
+        t_star_release = config["cylinder200_t_star_release"]
+        dt = config["cylinder200_dt"]
+    else:
+        raise ValueError(
+            f"coupled_inference: unsupported cfd_dataset '{cfd_dataset}'. "
+            f"Supported: 'bridge', cylinder200 (aliases: {sorted(CYLINDER200_ALIASES)}). "
+            f"The Re=1000 cylinder pipeline has been removed."
+        )
 
     U = Ur * fn * D
     t_release = t_star_release * D / U
@@ -1031,9 +1056,12 @@ def main(
     print(f"  m={m:.6e}  c={c:.6e}  k={k:.6e}  rho={rho}  t_release={t_release:.4f}s")
 
 
-    # ── Build model (read hidden_size from saved metrics) ─────────────────
+    # ── Build model (read hidden_size/input_cols from saved metrics) ───────
+    # input_cols is NOT hardcoded: a model trained on a restricted subset
+    # (e.g. --input_cols disp) has a different GRU input_size, and loading
+    # its state_dict against the wrong input_size raises immediately (a
+    # loud, unambiguous failure) rather than silently mismatching features.
     input_cols = ["disp", "vel", "acc"]
-    input_size = len(input_cols) + (1 if use_ur_context else 0)
     hidden_size, num_layers = 64, 2
     if model_subdir is not None:
         metrics_path = artifact_dir / "metrics_gru.json"
@@ -1045,6 +1073,8 @@ def main(
         hidden_size = saved_metrics["gru_config"].get("hidden_size", hidden_size)
         num_layers  = saved_metrics["gru_config"].get("num_layers", num_layers)
         seq_len = saved_metrics["gru_config"].get("seq_len", 1000)
+        input_cols = saved_metrics["gru_config"].get("input_cols", input_cols)
+    input_size = len(input_cols) + (1 if use_ur_context else 0)
 
 
     # ── Load CFD trajectory at this Ur ────────────────────────────────────
@@ -1110,11 +1140,10 @@ def main(
         # Sanity check: warm-start kinematics should NOT all be zero
     raw_kin = case_df.iloc[handoff_idx - seq_len : handoff_idx][input_cols].to_numpy()
     raw_kin = raw_kin * float(cfd_scale)
-    raw_kin = to_model_coords(raw_kin, nd_inputs, D, U)
+    raw_kin = to_model_coords(raw_kin, nd_inputs, D, U, input_cols=input_cols)
     print(f"  Warm-start raw stats (scaled by {cfd_scale}):")
-    print(f"    disp range: [{raw_kin[:,0].min():.5f}, {raw_kin[:,0].max():.5f}]")
-    print(f"    vel  range: [{raw_kin[:,1].min():.5f}, {raw_kin[:,1].max():.5f}]")
-    print(f"    acc  range: [{raw_kin[:,2].min():.5f}, {raw_kin[:,2].max():.5f}]")
+    for _i, _col in enumerate(input_cols):
+        print(f"    {_col:4s} range: [{raw_kin[:,_i].min():.5f}, {raw_kin[:,_i].max():.5f}]")
 
 
 
@@ -1250,7 +1279,7 @@ def main(
 
         axes[0].plot(diag["time"], diag["cfd_cl"], color="black", lw=0.8, label="CFD CL")
         axes[0].plot(diag["time"], diag["tf_cl"], color="tab:blue", lw=0.8, label="GRU teacher forcing")
-        axes[0].plot(diag["time"], diag["coupled_cl"], color="tab:orange", lw=0.8, label="GRU coupled")
+        axes[0].plot(diag["time"], diag["coupled_cl"], color="tab:orange", lw=0.8, label=present_model_label(ds, "GRU coupled"))
         axes[0].set_ylabel("$C_L$")
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
@@ -1270,10 +1299,15 @@ def main(
         print("[info] --make_tf_residual not set; skipping TF diagnostic (diag plot and residual generation)")
 
     if run_replay_diag:
+        # Default (replay_duration_s=None) preserves the original hardcoded
+        # 5000-step window exactly, for backward compatibility with any
+        # existing caller that doesn't pass the new argument.
+        replay_n_steps = (int(round(replay_duration_s / dt))
+                           if replay_duration_s is not None else 5000)
         replay_current = diagnostic_true_force_newmark_replay(
             case_df=case_df,
             handoff_idx=handoff_idx,
-            n_steps=5000,
+            n_steps=replay_n_steps,
             m=m,
             c=c,
             k=k,
@@ -1288,7 +1322,7 @@ def main(
         replay_next = diagnostic_true_force_newmark_replay(
             case_df=case_df,
             handoff_idx=handoff_idx,
-            n_steps=5000,
+            n_steps=replay_n_steps,
             m=m,
             c=c,
             k=k,
@@ -1306,16 +1340,26 @@ def main(
             else replay_next
         )
 
-        fig, ax = plt.subplots(figsize=(12, 4), constrained_layout=True)
-        ax.plot(best_replay["time"], best_replay["h_cfd"] / D, color="black", lw=0.8, label="CFD h/D")
-        ax.plot(best_replay["time"], best_replay["h_replay"] / D, color="tab:purple", lw=0.8, label=f"Newmark replay ({best_replay['force_timing']})")
-        ax.set_xlabel("Time [s]")
+        from viv_analysis.plot_style import (
+            CFD_STYLE, MODEL_STYLE, TEXT_WIDTH_IN, apply_thesis_style,
+        )
+        apply_thesis_style()
+        Tn_replay = 1.0 / fn
+        t_star_replay = (best_replay["time"] - t_handoff) / Tn_replay
+
+        fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 4.0), constrained_layout=True)
+        ax.plot(t_star_replay, best_replay["h_cfd"] / D, **{**CFD_STYLE, "label": "CFD"})
+        ax.plot(t_star_replay, best_replay["h_replay"] / D,
+                **{**MODEL_STYLE, "label": f"Newmark replay ({best_replay['force_timing']})"})
+        ax.set_xlabel(r"$(t-t_{\mathrm{h}})/T_n$")
         ax.set_ylabel("$h/D$")
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-        replay_png = results_out_dir / f"diagnostic_newmark_replay_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
+        replay_stem_name = f"diagnostic_newmark_replay_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}"
+        replay_png = results_out_dir / f"{replay_stem_name}.png"
         fig.savefig(replay_png, dpi=150)
+        fig.savefig(results_out_dir / f"{replay_stem_name}.pdf")
         plt.close(fig)
 
         print(f"Saved Newmark replay diagnostic to {replay_png}_{checkpoint}")
@@ -1412,8 +1456,14 @@ def main(
     FL   = 0.5 * rho * U**2 * B * CL
 
     # ── Save coupled trajectory for harness ───────────────────────────────
-    h_cfd_tail = case_df.sort_values("time")["disp"].to_numpy(dtype=np.float32)
+    _case_df_sorted = case_df.sort_values("time")
+    h_cfd_tail = _case_df_sorted["disp"].to_numpy(dtype=np.float32)
     h_cfd_tail = h_cfd_tail[handoff_idx : handoff_idx + n_steps]
+    # cl_cfd alongside h_cfd so closed_loop_metrics.py can compute CFD-side
+    # energy/phase/amplitude/frequency/stability from this npz alone,
+    # without re-loading the raw CFD dataset.
+    cl_cfd_tail = _case_df_sorted["cl"].to_numpy(dtype=np.float32)
+    cl_cfd_tail = cl_cfd_tail[handoff_idx : handoff_idx + n_steps]
     # canonical subdir name (use provided subdir or fallback to model_dataset)
     _sub = model_subdir or f"gru_{model_dataset}"
     # short tags to ensure filenames are unique per experimental factors
@@ -1445,7 +1495,7 @@ def main(
     target_a_ref_diagnostic_m = float(amp["a_ref_peak"])
 
     npz_out = results_out_dir / f"coupled_{cfd_dataset}_Ur{Ur}_{_exp_tag}_mu{mu_used}.npz"
-    np.savez(npz_out, t=t, h=h, cl=CL, h_cfd=h_cfd_tail, D=D, Ur=float(Ur),
+    np.savez(npz_out, t=t, h=h, cl=CL, h_cfd=h_cfd_tail, cl_cfd=cl_cfd_tail, D=D, Ur=float(Ur),
              model_subdir=_sub, forcing_mode=forcing_mode, noise_mode=noise_mode,
              gru_off=bool(gru_off), noise_scale=float(noise_scale), noise_seed=int(noise_seed),
              cl_det=result.get("CL_det"), cl_vdp=result.get("CL_vdp"), e=result.get("e_forcing"),
@@ -1500,7 +1550,7 @@ def main(
     fig, axes = plt.subplots(2, 1, figsize=(13, 6), constrained_layout=True)
 
     axes[0].plot(CFD_t, CFD_h / D, lw=0.8, color="black", alpha=0.7, label="CFD")
-    axes[0].plot(t, h / D, lw=1, color="tab:blue", alpha=0.9, label="GRU coupled")
+    axes[0].plot(t, h / D, lw=1, color="tab:blue", alpha=0.9, label=present_model_label(ds, "GRU coupled"))
     axes[0].axvline(t_handoff, color="green", ls="--", lw=1, alpha=0.7,
                     label=f"handoff t={t_handoff:.1f}s")
     axes[0].axhline(0, color="0.8", lw=1, ls=":")
@@ -1510,7 +1560,7 @@ def main(
     axes[0].grid(True, alpha=0.3)
  
     axes[1].plot(CFD_t, CFD_cl, lw=0.8, color="black", alpha=0.7, label="CFD")
-    axes[1].plot(t, CL, lw=1, color="tab:orange", alpha=0.9, label="GRU coupled")
+    axes[1].plot(t, CL, lw=1, color="tab:orange", alpha=0.9, label=present_model_label(ds, "GRU coupled"))
     axes[1].axvline(t_handoff, color="green", ls="--", lw=1, alpha=0.7)
     axes[1].axhline(0, color="0.8", lw=1, ls=":")
     axes[1].set_ylabel("$C_L$")
@@ -1544,15 +1594,15 @@ def main(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--Ur",type=float, default=6.0)
-    parser.add_argument("--total_time", type=float, default=500.0)
-    parser.add_argument("--cfd_dataset", type=str, default="cylinder1000",
+    parser.add_argument("--total_time", type=float, default=300.0)
+    parser.add_argument("--cfd_dataset", type=str, default="cylinder200",
                     help="Dataset key for loading CFD data")
-    parser.add_argument("--model_dataset", type=str, default="cylinder_re_1000",
+    parser.add_argument("--model_dataset", type=str, default="cylinder200",
                     help="Dataset key for loading model artifacts")
     parser.add_argument("--checkpoint", type=str, default="gru_best.pt",
                     help="Checkpoint filename within model artifact_dir")
     parser.add_argument("--model_subdir", type=str, default=None,
-                    help="Override: full subdir name like 'gru_cylinder_re_1000'")
+                    help="Override: full subdir name like 'gru_cylinder200'")
     parser.add_argument("--handoff_offset", type=int, default=2000,
                     help="CFD steps past (release+seq_len) for handoff. "
                          "Default 2000 = existing sweep; vary for noise floor.")
@@ -1596,6 +1646,11 @@ if __name__ == "__main__":
                     help="Regenerate TF residual and diagnostic plot. Run once per Ur. Required for new Ur with --noise_mode surrogate.")
     parser.add_argument("--run_replay_diag", action="store_true",
                     help="Run Newmark replay diagnostic (oracle for force/timing validation). Safe to run on demand.")
+    parser.add_argument("--replay_duration_s", type=positive_finite_float, default=None,
+                    help="Duration in seconds of the --run_replay_diag comparison "
+                         "window, starting at handoff. Default (omitted): the "
+                         "original fixed 5000-step window. Only used when "
+                         "--run_replay_diag is also passed.")
     parser.add_argument("--output_dir", type=str, default=None,
                     help="Where to write this run's own outputs (npz/png/receipt). "
                          "Relative paths are resolved under results/; absolute paths "
@@ -1625,6 +1680,7 @@ if __name__ == "__main__":
         a_ref_m=args.a_ref_m,
         make_tf_residual=args.make_tf_residual,
         run_replay_diag=args.run_replay_diag,
+        replay_duration_s=args.replay_duration_s,
         output_dir=args.output_dir,
     )
     

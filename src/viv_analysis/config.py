@@ -19,14 +19,18 @@ config = {
     "cylinder_dt":        0.02,   # Re=200 timestep [s]
     "cylinder_t_release": 60.0,   # physical release time [s]
 
-    "cylinder1000_D_ref":     0.4,   # Re=1000 cylinder diameter [m]
-    "cylinder1000_dt":        0.005, # Re=1000 timestep [s]
-    "cylinder1000_t_release": 16.0,  # physical release time [s]
-    "cylinder1000_U_inf":     1.0,   # freestream velocity [m/s]
-    "cylinder1000_zeta":      0.007,  # structural damping ratio (assumed)
-    "cylinder1000_rho" :      1.0,
-    "cylinder1000_fn":        0.2,
-    "cylinder1000_M_star":    2.0,
+    # Re=200 cylinder (completed dataset) -- the only primary parameters;
+    # everything else (U, mu, release_time, m, k, c) is DERIVED from these,
+    # never duplicated as separate numeric constants elsewhere.
+    "cylinder200_D_ref":           0.2,    # diameter [m]
+    "cylinder200_rho":             1.0,    # fluid density [kg/m^3]
+    "cylinder200_Re":              200.0,  # Reynolds number
+    "cylinder200_M_star":          10.0,   # mass ratio
+    "cylinder200_zeta":            0.01,   # structural damping ratio
+    "cylinder200_fn":              0.2,    # natural frequency [Hz]
+    "cylinder200_dt":              0.005,  # timestep [s]
+    "cylinder200_t_star_release":  40.0,   # nondimensional release time T*
+    "cylinder200_ref_area":        0.2,    # reference area [m^2 per unit span] (D * 1m span)
 
     # ── GRU architecture ───────────────────────────────────────────────────
     "hidden_size":   64,
@@ -64,8 +68,15 @@ config = {
     "motion_type":   "heave",
 
     # ── Supported datasets ─────────────────────────────────────────────────
-    "viv_dataset":   ["cylinder", "cylinder1000", "bridge"],
+    "viv_dataset":   ["cylinder", "cylinder200", "bridge"],
 }
+
+# Canonical primary key + accepted spellings for the completed Re=200
+# dataset. Matching is done against dataset.strip().lower().
+CYLINDER200_ALIASES = frozenset({
+    "cylinder200", "cylinder_re200", "cylinder_re_200", "re200",
+    "cylinder-re-200",
+})
 
 np.random.seed(config["seed"])
 
@@ -81,7 +92,10 @@ def prepare_gru_config(dataset: str, cfg: dict) -> dict:
         out["hidden_size"]  = cfg["hidden_size"]
         out["use_ur_context"] = False
 
-    elif ds in {"cylinder1000", "cylinder_re_1000", "re1000","re1000_disp","re1000_vel","re1000_acc"}:
+    elif ds in CYLINDER200_ALIASES:
+        # Same dt (0.005s) and multi-Ur/context structure as cylinder1000 --
+        # nothing about the input/output schema changed, only the physics,
+        # so seq_len/stride/architecture are deliberately kept identical.
         out["seq_len"]      = 1000
         out["stride_train"] = 8
         out["hidden_size"]  = cfg["hidden_size"]
@@ -98,29 +112,44 @@ def prepare_gru_config(dataset: str, cfg: dict) -> dict:
 
     return out
 
-def structural_params() -> dict:
-    rho = config['cylinder1000_rho']
-    D   = config['cylinder1000_D_ref']
-    fn  = config['cylinder1000_fn']
+def cylinder200_U(Ur: float) -> float:
+    """U(Ur) = Ur * fn * D."""
+    return float(Ur) * config["cylinder200_fn"] * config["cylinder200_D_ref"]
 
-    M_star = config['cylinder1000_M_star']
-    zeta   = config['cylinder1000_zeta']
+
+def cylinder200_mu(Ur: float) -> float:
+    """Dynamic viscosity implied by Re=200 at this Ur: mu = rho*U*D/Re."""
+    U = cylinder200_U(Ur)
+    return config["cylinder200_rho"] * U * config["cylinder200_D_ref"] / config["cylinder200_Re"]
+
+
+def cylinder200_release_time(Ur: float) -> float:
+    """release_time(Ur) = T_star_release * D / U(Ur)."""
+    U = cylinder200_U(Ur)
+    return config["cylinder200_t_star_release"] * config["cylinder200_D_ref"] / U
+
+
+def cylinder200_structural_params() -> dict:
+    rho = config["cylinder200_rho"]
+    D   = config["cylinder200_D_ref"]
+    fn  = config["cylinder200_fn"]
+
+    M_star = config["cylinder200_M_star"]
+    zeta   = config["cylinder200_zeta"]
     m = M_star * rho * (np.pi * D**2 / 4.0)
     omega_n = 2.0 * np.pi * fn
     k = m * omega_n**2
     c = 2.0 * m * omega_n * zeta
 
+    return {
+        "m": m,                 # kg/m (legacy key)
+        "c": c,                 # N*s/m (legacy key)
+        "k": k,                 # N/m (legacy key)
+        "cylinder_mass": m,     # kg/m
+        "c_struct": c,          # N*s/m
+        "k_struct": k,          # N/m
+    }
 
-    params_Re1000 = {
-            "m": m,                 # kg/m (legacy key)
-            "c": c,              # N*s/m (legacy key)
-            "k": k,                    # N/m (legacy key)
-            "cylinder_mass": m,    # kg/m
-            "c_struct": c,       # N*s/m
-            "k_struct": k,             # N/m
-        }
-    
-    return params_Re1000
 
 def bridge_structural_params() -> dict:
     rho = config['bridge_rho']

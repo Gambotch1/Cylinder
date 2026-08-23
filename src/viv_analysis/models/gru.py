@@ -9,7 +9,7 @@ from sklearn.preprocessing import StandardScaler
 from typing import Optional
 import pandas as pd
 
-from viv_analysis.utils import parse_ur_label
+from viv_analysis.utils import parse_ur_label, segment_by_time_gaps
 
 
 class VIV_GRU(nn.Module):
@@ -98,15 +98,22 @@ class VIVSequenceDataset(Dataset):
 
             release_t   = float(release_time.get(str(case_name), -np.inf))
             release_idx = int(np.searchsorted(times, release_t, side="left"))
-            start_i     = max(seq_len, release_idx + seq_len)
 
             if len(ordered) <= seq_len:
                 continue
 
-            for i in range(start_i, len(ordered), stride):
-                self.sequences.append(signal[i - seq_len : i].copy())
-                self.targets.append(float(target[i]))
-                self.case_names.append(str(case_name))
+            # Never let a window span a time-axis discontinuity (a
+            # discontinuous CFD restart -- see Ur=6.9491's ~77.5s gap):
+            # each segment is windowed independently, exactly as the whole
+            # array would have been in the no-gap case.
+            for seg_start, seg_end in segment_by_time_gaps(times):
+                start_i = max(seg_start + seq_len, release_idx + seq_len)
+                if start_i >= seg_end:
+                    continue
+                for i in range(start_i, seg_end, stride):
+                    self.sequences.append(signal[i - seq_len : i].copy())
+                    self.targets.append(float(target[i]))
+                    self.case_names.append(str(case_name))
 
     def __len__(self) -> int:
         return len(self.targets)

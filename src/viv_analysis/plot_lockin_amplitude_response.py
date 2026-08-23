@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import json
 
@@ -7,18 +8,34 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from viv_analysis.utils import PROJECT_ROOT
+from viv_analysis.utils import PROJECT_ROOT, present_model_label
 
 
 ROOT_DIR    = PROJECT_ROOT
-RESULTS_DIR = ROOT_DIR / "results" / "gru_Cylinder1000"
 OUT_DIR     = ROOT_DIR / "results" / "plots_validation"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def main() -> None:
+def main(
+    model_subdir: str = "gru_Cylinder1000",
+    dataset: str = "cylinder1000",
+    title: str = "Cylinder1000 — lock-in amplitude response (closed-loop GRU vs CFD)",
+    ur_min: float = 5.0,
+    ur_max: float = 7.0,
+    out_name: str = "Cylinder1000_lockin_amplitude_response.png",
+) -> None:
+    """
+    Plot closed-loop GRU vs CFD steady-state amplitude in the lock-in
+    regime, from a results/<model_subdir>/coupled_amplitude_sweep.csv
+    produced by run_lockin_sweep.py. Defaults reproduce the original
+    cylinder1000 plot byte-for-byte; pass model_subdir/dataset/title/
+    ur_min/ur_max/out_name for a different dataset (e.g. cylinder200) so
+    the legacy cylinder1000 figure at OUT_DIR/out_name is never overwritten.
+    """
+    results_dir = ROOT_DIR / "results" / model_subdir
+
     # ── Load coupled-inference sweep results ───────────────────────────────────
-    sweep_path = RESULTS_DIR / "coupled_amplitude_sweep.csv"
+    sweep_path = results_dir / "coupled_amplitude_sweep.csv"
     if not sweep_path.exists():
         raise FileNotFoundError(
             f"Coupled-inference sweep not found: {sweep_path}\n"
@@ -26,14 +43,16 @@ def main() -> None:
         )
 
     df = pd.read_csv(sweep_path)
-    df = df[(df["Ur"] >= 5.0) & (df["Ur"] <= 7.0)].copy()
+    df = df[(df["Ur"] >= ur_min) & (df["Ur"] <= ur_max)].copy()
     df = df.sort_values("Ur").reset_index(drop=True)
 
     if df.empty:
-        raise RuntimeError("No lock-in regime data found in coupled_amplitude_sweep.csv")
+        raise RuntimeError(
+            f"No data found in [{ur_min}, {ur_max}] in coupled_amplitude_sweep.csv"
+        )
 
     # ── Load case split labels from metrics ────────────────────────────────────
-    metrics_path = RESULTS_DIR / "metrics_gru.json"
+    metrics_path = results_dir / "metrics_gru.json"
     split_map: dict[str, str] = {}
     if metrics_path.exists():
         with open(metrics_path) as f:
@@ -72,7 +91,7 @@ def main() -> None:
     ax.plot(
         df["Ur"], df["ad_gru"],
         color="#d97706", lw=2.2, marker="s", ms=5.0,
-        label="GRU closed-loop", zorder=2,
+        label=present_model_label(dataset, "GRU closed-loop"), zorder=2,
     )
 
     # error fill
@@ -112,14 +131,11 @@ def main() -> None:
                 fontsize=9, color="#111827", ha="left", va="bottom",
             )
 
-    ax.set_xlim(4.95, 7.05)
+    ax.set_xlim(ur_min - 0.05, ur_max + 0.05)
     ax.set_ylim(bottom=0)
     ax.set_xlabel(r"Reduced velocity $U_r$", fontsize=13)
     ax.set_ylabel(r"Steady-state amplitude $A/D$", fontsize=13)
-    ax.set_title(
-        "Cylinder1000 — lock-in amplitude response (closed-loop GRU vs CFD)",
-        fontsize=15, pad=10,
-    )
+    ax.set_title(title, fontsize=15, pad=10)
 
     ax.text(
         0.02, 0.98,
@@ -131,11 +147,23 @@ def main() -> None:
     )
     ax.legend(ncols=2, frameon=False, loc="lower left")
 
-    out_png = OUT_DIR / "Cylinder1000_lockin_amplitude_response.png"
+    out_png = OUT_DIR / out_name
     fig.savefig(out_png, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved figure to {out_png}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__ or "")
+    parser.add_argument("--model_subdir", default="gru_Cylinder1000")
+    parser.add_argument("--dataset", default="cylinder1000")
+    parser.add_argument("--title",
+                    default="Cylinder1000 — lock-in amplitude response (closed-loop GRU vs CFD)")
+    parser.add_argument("--ur_min", type=float, default=5.0)
+    parser.add_argument("--ur_max", type=float, default=7.0)
+    parser.add_argument("--out_name", default="Cylinder1000_lockin_amplitude_response.png")
+    args = parser.parse_args()
+    main(
+        model_subdir=args.model_subdir, dataset=args.dataset, title=args.title,
+        ur_min=args.ur_min, ur_max=args.ur_max, out_name=args.out_name,
+    )

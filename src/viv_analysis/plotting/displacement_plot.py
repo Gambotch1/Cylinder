@@ -30,18 +30,11 @@ plt.rcParams.update({
 })
 DIR = Path(__file__).resolve().parents[3]
 
-Dataset = ["Cylinder200", "Cylinder1000"]
-
-# cdDir = DIR / 'data' / 'cd'
-# clDir = DIR / 'data' / 'cl'
-# dispDir = DIR / 'data' / 'disp'
-
-# Cylinder_Re1000_CD_DIR = DIR / 'data' / 'Cylinder' / 'cd'
-# Cylinder_Re1000_CL_DIR = DIR / 'data' / 'Cylinder' / 'cl'
-# Cylinder_Re1000_DISP_DIR = DIR / 'data' / 'Cylinder' / 'disp'
-
-# print(dispDir)
-
+# "Cylinder200" now points at the completed Re=200 dataset
+# (data/cylinder_Re_200/disp) -- the old Re=200 attempt this label used to
+# mean (data/disp, D=1.0) is gone from disk. The Re=1000 "Cylinder1000"
+# pipeline has been removed (data/cylinder_Re_1000 no longer present).
+Dataset = ["Cylinder200"]
 
 ROOT = DIR
 
@@ -83,10 +76,14 @@ def parse_fluent_out(filepath):
     
 def get_disp_dir(dataset: str) -> Path:
     if dataset == "Cylinder200":
-        return ROOT / "data" / "disp"
-    if dataset == "Cylinder1000":
-        return ROOT / "data" / "cylinder_Re_1000" / "disp"
-    raise ValueError(f"Unknown dataset: {dataset}")
+        return ROOT / "data" / "cylinder_Re_200" / "disp"
+    raise ValueError(f"Unknown dataset: {dataset}. The Re=1000 pipeline has been removed.")
+
+
+def _D_fn_Re(dataset: str) -> tuple[float, float, int]:
+    if dataset == "Cylinder200":
+        return config["cylinder200_D_ref"], config["cylinder200_fn"], 200
+    raise ValueError(f"Unknown dataset: {dataset}. The Re=1000 pipeline has been removed.")
 
 def collect_files(dataset: str):
     disp_dir = get_disp_dir(dataset)
@@ -111,8 +108,7 @@ def run(dataset: str):
     save_dir = ROOT / "plots_disp" / dataset
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    D  = 1.0 if dataset == "Cylinder200" else config['cylinder1000_D_ref']
-    fn = config['cylinder1000_fn']  # fixed natural frequency [Hz]
+    D, fn, Re = _D_fn_Re(dataset)
 
     for u_str, fpath in files.items():
         df = parse_fluent_out(fpath)
@@ -159,7 +155,7 @@ def run(dataset: str):
         plt.xlabel(r'Dimensionless time $t^* = Ut/D$', fontsize=13)
         plt.ylabel(r'Dimensionless displacement $h/D$', fontsize=13)
         plt.title(f'VIV response — $U_r = {U_red:.2f}$  '
-                  f'($U = {U:.4f}$ m/s,  Re=1000)')
+                  f'($U = {U:.4f}$ m/s,  Re={Re})')
         plt.xlim(t_star.min(), t_star.max())
         plt.legend(fontsize=11)
         plt.tight_layout()
@@ -195,8 +191,7 @@ def plot_frequency_curve(dataset: str, output_path=None):
         print(f"No .out files found for {dataset}")
         return
 
-    D  = 1.0 if dataset == "Cylinder200" else config['cylinder1000_D_ref']
-    fn = config['cylinder1000_fn']   # 0.2 Hz
+    D, fn, _Re = _D_fn_Re(dataset)
     St = 0.2                          # Strouhal number
 
     results = []
@@ -311,7 +306,7 @@ def parse_args():
         "dataset",
         nargs="?",
         default="Cylinder200",
-        choices=["Cylinder200", "Cylinder1000"],
+        choices=["Cylinder200"],
         help="Dataset to process",
     )
     return parser.parse_args()

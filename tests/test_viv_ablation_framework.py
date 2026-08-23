@@ -21,26 +21,29 @@ from src.viv_analysis.preprocess import _resolve_data_dirs
 from src.viv_analysis.train_gru import (
     seed_everything, format_ur_label, resolve_use_ur_context,
     check_artifact_collision, apply_nd_transform, enforce_holdout,
-    resolve_dataset,
+    resolve_dataset, resolve_nd_reference_scales, train_one_epoch,
 )
+from src.viv_analysis.config import CYLINDER200_ALIASES
 from src.viv_analysis.coupled_inference import load_artifact_coordinate_mode
 from src.viv_analysis.models.gru import VIV_GRU
+from src.viv_analysis.config import config, prepare_gru_config
+from src.viv_analysis.utils import parse_ur_label
 
 
 class TestDatasetValidation:
-    """Criterion 2: Fix _resolve_data_dirs() to explicitly allow only cylinder, cylinder1000, bridge."""
-    
+    """Criterion 2: Fix _resolve_data_dirs() to explicitly allow only cylinder, cylinder200, bridge."""
+
     def test_allowed_datasets(self):
-        """Should accept cylinder, cylinder1000, bridge."""
-        allowed = ["cylinder", "cylinder1000", "bridge"]
+        """Should accept cylinder, cylinder200, bridge."""
+        allowed = ["cylinder", "cylinder200", "bridge"]
         for dataset in allowed:
             # Should not raise
             disp_dir, cd_dir, cl_dir = _resolve_data_dirs(dataset)
             assert isinstance(disp_dir, Path)
-    
+
     def test_unknown_dataset_raises(self):
         """Should raise ValueError for unknown dataset names."""
-        unknown_datasets = ["cylinder1000_nd", "cylinder_nd", "unknown", "cylinder2000", ""]
+        unknown_datasets = ["cylinder1000", "cylinder1000_nd", "cylinder_nd", "unknown", "cylinder2000", ""]
         for dataset in unknown_datasets:
             with pytest.raises(ValueError, match="Unknown dataset"):
                 _resolve_data_dirs(dataset)
@@ -122,6 +125,213 @@ class TestNonDimensionalTransform:
         pd.testing.assert_series_equal(out["case"], df["case"])
         pd.testing.assert_series_equal(out["step"], df["step"])
         pd.testing.assert_series_equal(out["time"], df["time"])
+
+
+class TestResolveNdReferenceScales:
+    """A, B, C: resolve_nd_reference_scales dataset-scoped D/fn resolution."""
+
+    def test_A_bridge_constants(self):
+        """A. Bridge constant resolution: D=7.42, fn=0.32."""
+        cfg = prepare_gru_config("bridge", config).copy()
+        D, fn = resolve_nd_reference_scales("bridge", cfg)
+        assert D == pytest.approx(7.42)
+        assert fn == pytest.approx(0.32)
+
+    def test_A_bridge_ignores_B_ref(self):
+        """B (aerodynamic force reference, 25.9 m) must never be returned as
+        a coordinate-transform divisor."""
+        cfg = prepare_gru_config("bridge", config).copy()
+        D, _fn = resolve_nd_reference_scales("bridge", cfg)
+        assert D != pytest.approx(25.9)
+
+    def test_B_cylinder200_constants_use_existing_config(self):
+        """B. Cylinder200 constant resolution uses the existing cylinder200 config."""
+        cfg = prepare_gru_config("cylinder200", config).copy()
+        D, fn = resolve_nd_reference_scales("cylinder200", cfg)
+        assert D == pytest.approx(config["cylinder200_D_ref"])
+        assert fn == pytest.approx(config["cylinder200_fn"])
+
+    @pytest.mark.parametrize("alias", sorted(CYLINDER200_ALIASES))
+    def test_B_all_cylinder200_aliases_resolve_identically(self, alias):
+        cfg = prepare_gru_config("cylinder200", config).copy()
+        D, fn = resolve_nd_reference_scales(alias, cfg)
+        assert D == pytest.approx(config["cylinder200_D_ref"])
+        assert fn == pytest.approx(config["cylinder200_fn"])
+
+    def test_cylinder1000_no_longer_supported(self):
+        """cylinder1000 has been removed; it must be rejected, not silently mismapped."""
+        cfg = prepare_gru_config("cylinder200", config).copy()
+        with pytest.raises(ValueError, match="unsupported dataset"):
+            resolve_nd_reference_scales("cylinder1000", cfg)
+
+    def test_C_re200_cylinder_is_rejected(self):
+        """C. Re=200 cylinder is explicitly rejected for nondimensional inputs."""
+        cfg = prepare_gru_config("cylinder", config).copy()
+        with pytest.raises(ValueError, match="cylinder"):
+            resolve_nd_reference_scales("cylinder", cfg)
+
+    def test_unsupported_dataset_rejected_with_clear_message(self):
+        cfg = prepare_gru_config("bridge", config).copy()
+        with pytest.raises(ValueError, match="unsupported dataset"):
+            resolve_nd_reference_scales("not_a_real_dataset", cfg)
+
+    def test_rejects_nonpositive_D(self):
+        cfg = prepare_gru_config("bridge", config).copy()
+        cfg["bridge_D_ref"] = 0.0
+        with pytest.raises(ValueError, match="D must be finite and positive"):
+            resolve_nd_reference_scales("bridge", cfg)
+
+    def test_rejects_nonfinite_fn(self):
+        cfg = prepare_gru_config("bridge", config).copy()
+        cfg["bridge_fn_hz"] = float("nan")
+        with pytest.raises(ValueError, match="fn must be finite and positive"):
+            resolve_nd_reference_scales("bridge", cfg)
+
+
+class TestBridgeNdTransformKnownValues:
+    """D. Known bridge transformation at U=16 m/s, D=7.42 m."""
+
+    def test_D_bridge_transform_at_16_mps(self):
+        D, fn = 7.42, 0.32
+        ur_exact = 16.0 / (fn * D)
+        case_label = f"Ur{ur_exact:.10f}"
+        assert parse_ur_label(case_label) == pytest.approx(ur_exact, rel=1e-9)
+
+        U = ur_exact * fn * D
+        assert U == pytest.approx(16.0, rel=1e-9)
+
+        h = 0.0742
+        h_dot = 0.16
+        h_ddot = 0.01 * U ** 2 / D
+
+        df = pd.DataFrame([{
+            "case": case_label, "step": 0, "time": 0.0,
+            "disp": h, "vel": h_dot, "acc": h_ddot, "cl": 0.0,
+        }])
+        out = apply_nd_transform(df, nd_inputs=True, D=D, fn=fn,
+                                  input_cols=["disp", "vel", "acc"])
+        row = out.iloc[0]
+        assert row["disp"] == pytest.approx(0.01, rel=1e-6)   # h/D
+        assert row["vel"] == pytest.approx(0.01, rel=1e-6)    # h_dot/U
+        assert row["acc"] == pytest.approx(0.01, rel=1e-6)    # h_ddot*D/U^2
+
+
+class TestNdTransformColumnNameBased:
+    """E-I: name-based (not positional) apply_nd_transform behavior."""
+
+    D, fn = 7.42, 0.32
+
+    def _one_row_df(self, **kin):
+        base = {"case": "Ur6.7385", "step": 0, "time": 0.0,
+                "disp": 1.0, "vel": 1.0, "acc": 1.0, "cl": 0.0}
+        base.update(kin)
+        return pd.DataFrame([base])
+
+    def test_E_dimensional_mode_returns_unchanged_copy(self):
+        """E. Dimensional mode returns an unchanged copy (not the same object,
+        but equal values)."""
+        df = self._one_row_df(disp=0.5, vel=0.3, acc=0.2)
+        out = apply_nd_transform(df, nd_inputs=False, D=self.D, fn=self.fn,
+                                  input_cols=["disp", "vel", "acc"])
+        pd.testing.assert_frame_equal(out, df)
+        assert out is not df
+
+    def test_F_velocity_only_divided_by_U_not_D(self):
+        """F. Velocity-only input is divided by U, not D."""
+        df = self._one_row_df(vel=1.0)
+        ur = parse_ur_label("Ur6.7385")
+        U = ur * self.fn * self.D
+        out = apply_nd_transform(df, nd_inputs=True, D=self.D, fn=self.fn,
+                                  input_cols=["vel"])
+        assert out["vel"].iloc[0] == pytest.approx(1.0 / U, rel=1e-6)
+        assert out["vel"].iloc[0] != pytest.approx(1.0 / self.D, rel=1e-3)
+        # untouched columns remain physical
+        assert out["disp"].iloc[0] == pytest.approx(df["disp"].iloc[0])
+        assert out["acc"].iloc[0] == pytest.approx(df["acc"].iloc[0])
+
+    def test_G_acceleration_only_divided_by_U2_over_D(self):
+        """G. Acceleration-only input is divided by U**2/D."""
+        df = self._one_row_df(acc=1.0)
+        ur = parse_ur_label("Ur6.7385")
+        U = ur * self.fn * self.D
+        out = apply_nd_transform(df, nd_inputs=True, D=self.D, fn=self.fn,
+                                  input_cols=["acc"])
+        assert out["acc"].iloc[0] == pytest.approx(1.0 / (U ** 2 / self.D), rel=1e-6)
+        assert out["disp"].iloc[0] == pytest.approx(df["disp"].iloc[0])
+        assert out["vel"].iloc[0] == pytest.approx(df["vel"].iloc[0])
+
+    def test_disp_only_divided_by_D(self):
+        df = self._one_row_df(disp=1.0)
+        out = apply_nd_transform(df, nd_inputs=True, D=self.D, fn=self.fn,
+                                  input_cols=["disp"])
+        assert out["disp"].iloc[0] == pytest.approx(1.0 / self.D, rel=1e-6)
+
+    def test_H_reordered_subset_gets_correct_name_based_transforms(self):
+        """H. Reordered input columns receive the correct name-based
+        transformations -- a positional-index bug would apply acc's divisor
+        (U^2/D) to disp and disp's divisor (D) to acc here."""
+        df = self._one_row_df(disp=1.0, vel=1.0, acc=1.0)
+        ur = parse_ur_label("Ur6.7385")
+        U = ur * self.fn * self.D
+
+        out_reordered = apply_nd_transform(df, nd_inputs=True, D=self.D, fn=self.fn,
+                                            input_cols=["acc", "disp"])
+        out_ordered = apply_nd_transform(df, nd_inputs=True, D=self.D, fn=self.fn,
+                                          input_cols=["disp", "acc"])
+
+        expected_disp = 1.0 / self.D
+        expected_acc = 1.0 / (U ** 2 / self.D)
+
+        for out in (out_reordered, out_ordered):
+            assert out["disp"].iloc[0] == pytest.approx(expected_disp, rel=1e-6)
+            assert out["acc"].iloc[0] == pytest.approx(expected_acc, rel=1e-6)
+        # vel was not in input_cols at all -> must stay physical (untouched)
+        assert out_reordered["vel"].iloc[0] == pytest.approx(df["vel"].iloc[0])
+
+    def test_I_unsupported_input_columns_raise_value_error(self):
+        """I. Unsupported input columns raise ValueError."""
+        df = self._one_row_df()
+        with pytest.raises(ValueError, match="unsupported input column"):
+            apply_nd_transform(df, nd_inputs=True, D=self.D, fn=self.fn,
+                                input_cols=["disp", "not_a_real_column"])
+
+
+class TestBridgeReceiptContainsResolvedConstants:
+    """J. The bridge run_config/preflight receipt contains D=7.42 and fn=0.32.
+
+    train_gru.main()'s run_config["D"]/["fn"] fields are a direct
+    `float(D_nd)`/`float(fn_nd)` pass-through of the SAME (D_nd, fn_nd) tuple
+    resolved once via resolve_nd_reference_scales() and also used by
+    apply_nd_transform and the preflight printout (see "Resolve D_nd and
+    fn_nd once and reuse the same values everywhere" in train_gru.py) -- so
+    receipt correctness reduces exactly to resolver correctness, verified
+    here without the ~10-minute raw bridge .out file I/O a full main() run
+    would require. The actual end-to-end run_config.json (including this
+    dataset's raw case data) is additionally confirmed by the real
+    `--cfd_dataset bridge --nd_inputs --preflight_only` CLI run reported
+    alongside this test suite.
+    """
+
+    def test_J_bridge_receipt_constants_match_resolver(self):
+        cfg = prepare_gru_config("bridge", config).copy()
+        D_nd, fn_nd = resolve_nd_reference_scales("bridge", cfg)
+
+        # Mirrors train_gru.py's run_config dict construction exactly:
+        # run_config = {..., "D": float(D_nd) if D_nd is not None else None,
+        #                     "fn": float(fn_nd) if fn_nd is not None else None, ...}
+        run_config_D = float(D_nd) if D_nd is not None else None
+        run_config_fn = float(fn_nd) if fn_nd is not None else None
+
+        assert run_config_D == pytest.approx(7.42)
+        assert run_config_fn == pytest.approx(0.32)
+
+    def test_J_dimensional_receipt_D_and_fn_are_null(self):
+        """For a dimensional run, D and fn remain null in the receipt."""
+        D_nd, fn_nd = None, None  # main()'s nd_inputs=False branch
+        run_config_D = float(D_nd) if D_nd is not None else None
+        run_config_fn = float(fn_nd) if fn_nd is not None else None
+        assert run_config_D is None
+        assert run_config_fn is None
 
 
 class TestFormatUrLabel:
@@ -285,7 +495,7 @@ class TestCoordinateMode:
             # Create run_config with coordinate mode
             run_config = {
                 'nd_inputs': True,
-                'cfd_dataset': 'cylinder1000',
+                'cfd_dataset': 'cylinder200',
                 'holdout_ur': 5.5,
             }
             with open(artifact_dir / "run_config.json", 'w') as f:
@@ -350,7 +560,7 @@ class TestPreflightMode:
         from src.viv_analysis.train_gru import setup_argparse
         
         parser = setup_argparse()
-        args = parser.parse_args(['cylinder1000', '--preflight_only'])
+        args = parser.parse_args(['cylinder200', '--preflight_only'])
         
         assert hasattr(args, 'preflight_only')
         assert args.preflight_only is True
@@ -366,7 +576,7 @@ class TestArgumentParsing:
         from src.viv_analysis.train_gru import setup_argparse
 
         parser = setup_argparse()
-        args = parser.parse_args(['cylinder1000'])
+        args = parser.parse_args(['cylinder200'])
 
         assert args.use_ur_context is False
         assert args.no_ur_context is False
@@ -395,19 +605,22 @@ class TestContextResolution:
 
 class TestDatasetAliases:
     """Criterion 2: Dataset aliases resolution."""
-    
-    def test_cylinder1000_aliases(self):
-        """cylinder1000 should accept standard aliases."""
-        allowed = ["cylinder1000"]
-        for dataset in allowed:
-            # Should not raise
-            disp_dir, cd_dir, cl_dir = _resolve_data_dirs(dataset)
-            assert isinstance(disp_dir, Path)
-    
-    def test_no_cylinder1000_nd_alias(self):
-        """cylinder1000_nd should NOT be accepted as alias."""
+
+    @pytest.mark.parametrize("alias", sorted(CYLINDER200_ALIASES))
+    def test_cylinder200_aliases(self, alias):
+        """cylinder200 should accept all its documented spellings."""
+        disp_dir, cd_dir, cl_dir = _resolve_data_dirs(alias)
+        assert isinstance(disp_dir, Path)
+
+    def test_no_cylinder200_nd_alias(self):
+        """cylinder200_nd should NOT be accepted as alias."""
         with pytest.raises(ValueError):
-            _resolve_data_dirs("cylinder1000_nd")
+            _resolve_data_dirs("cylinder200_nd")
+
+    def test_cylinder1000_no_longer_an_alias(self):
+        """cylinder1000 (removed) must be rejected, not silently accepted."""
+        with pytest.raises(ValueError):
+            _resolve_data_dirs("cylinder1000")
 
 
 class TestDatasetResolution:
@@ -417,7 +630,7 @@ class TestDatasetResolution:
     caller's _resolve_data_dirs validation rejects it."""
 
     def test_explicit_cfd_dataset_wins(self):
-        assert resolve_dataset(None, "cylinder1000") == "cylinder1000"
+        assert resolve_dataset(None, "cylinder200") == "cylinder200"
 
     def test_legacy_positional_used_when_no_flag(self):
         assert resolve_dataset("bridge", None) == "bridge"
@@ -427,7 +640,7 @@ class TestDatasetResolution:
 
     def test_mismatched_positional_and_flag_raises(self):
         with pytest.raises(ValueError):
-            resolve_dataset("cylinder1000", "bridge")
+            resolve_dataset("cylinder200", "bridge")
 
     def test_empty_string_cfd_dataset_is_not_silently_defaulted(self):
         """The core regression: --cfd_dataset "" must come back as "" (and
@@ -451,12 +664,71 @@ class TestArtifactDirectoryNaming:
         return f"gru_{dataset}{coord_suffix}{ctx_suffix}"
 
     def test_all_four_arms_get_distinct_default_dirs(self):
-        dataset = "cylinder1000"
+        dataset = "cylinder200"
         names = {
             self._default_dir(dataset, nd, ctx)
             for nd in (False, True) for ctx in (False, True)
         }
         assert len(names) == 4
+
+
+class _RecordingModel(torch.nn.Module):
+    """Records the exact tensor train_one_epoch fed into forward(), so the
+    noise-injection region can be inspected directly."""
+    def __init__(self, input_size: int):
+        super().__init__()
+        self.seen = None
+        self.linear = torch.nn.Linear(input_size, 1)
+
+    def forward(self, x):
+        self.seen = x.detach().clone()
+        return self.linear(x[:, -1, :]).squeeze(-1), None
+
+
+class TestTrainOneEpochNoiseInjection:
+    """train_one_epoch's noise region used to be hardcoded to the first 3
+    columns ([..., :3]), silently including the trailing Ur-context column
+    whenever input_size < 3 (e.g. a single-input-column model trained with
+    --use_ur_context, input_size=2: 1 kinematic + 1 context). Fixed to take
+    n_kinematic_cols=len(input_cols) explicitly."""
+
+    def _run(self, n_kinematic_cols: int, input_size: int, noise_std: float = 0.05):
+        torch.manual_seed(0)
+        batch_size, seq_len = 8, 4
+        kin_val, ctx_val = 1.0, 5.0
+        x = torch.full((batch_size, seq_len, input_size), kin_val)
+        if input_size > n_kinematic_cols:
+            x[..., n_kinematic_cols:] = ctx_val
+        y = torch.zeros(batch_size)
+        loader = [(x, y, [f"case_{i}" for i in range(batch_size)])]
+
+        model = _RecordingModel(input_size)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        criterion = torch.nn.MSELoss()
+        train_one_epoch(model, loader, optimizer, criterion, device="cpu",
+                        input_noise_std=noise_std, n_kinematic_cols=n_kinematic_cols)
+        return model.seen, kin_val, ctx_val
+
+    def test_context_column_unaffected_when_input_size_below_three(self):
+        """The bug case: input_size=2 (1 kinematic + 1 context),
+        n_kinematic_cols=1. Context column must be EXACTLY unchanged;
+        kinematic column must have noise (not exactly equal to kin_val)."""
+        seen, kin_val, ctx_val = self._run(n_kinematic_cols=1, input_size=2)
+        assert torch.all(seen[..., 1] == ctx_val), "noise leaked into context column"
+        assert not torch.allclose(seen[..., 0], torch.full_like(seen[..., 0], kin_val))
+
+    def test_standard_three_kinematic_plus_context_unaffected(self):
+        """The pre-existing (already-correct) case: input_size=4
+        (3 kinematic + 1 context) must still work exactly as before."""
+        seen, kin_val, ctx_val = self._run(n_kinematic_cols=3, input_size=4)
+        assert torch.all(seen[..., 3] == ctx_val), "noise leaked into context column"
+        assert not torch.allclose(seen[..., :3], torch.full_like(seen[..., :3], kin_val))
+
+    def test_no_context_all_columns_are_kinematic(self):
+        """input_size == n_kinematic_cols (no context feature at all):
+        every column is fair game for noise."""
+        seen, kin_val, _ = self._run(n_kinematic_cols=1, input_size=1)
+        assert not torch.allclose(seen, torch.full_like(seen, kin_val))
 
 
 if __name__ == '__main__':

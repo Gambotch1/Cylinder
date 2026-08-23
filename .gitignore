@@ -21,3 +21,4 @@ env/
 *.log
 *.egg-info
 *.log
+*.bsub

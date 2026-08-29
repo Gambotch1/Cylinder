@@ -157,7 +157,8 @@ def bridge_ur_list_from_model(model_subdir: str) -> list[float]:
         cases = cs["train"] + cs["val"] + cs["test"]
         ur_list = sorted({parse_ur_label(c) for c in cases})
 
-    live_df = merge_dataframes(dataset="bridge")
+    live_df = merge_dataframes(dataset="bridge", fn_hz=config["bridge_fn_hz"],
+                               d_ref=config["bridge_D_ref"])
     live_cases = {parse_ur_label(str(c)) for c in live_df["case"].drop_duplicates()}
     stale = [ur for ur in ur_list if ur not in live_cases]
     if stale:
@@ -226,7 +227,10 @@ def main():
             raise SystemExit("--model_subdir is required for --dataset bridge")
         cfd_dataset = "bridge"
         D = BRIDGE_D
-        default_total_time = 700.0
+        # Every bridge CFD case tops out at t=300s (several earlier), so a
+        # longer default just runs the surrogate past the last point any
+        # CFD reference exists for.
+        default_total_time = 300.0
         fn_hz = config["bridge_fn_hz"]
         configs = [(args.model_subdir, "gru_best.pt", args.label or args.model_subdir)]
         Ur_list = ([float(x) for x in args.ur_list.split(",")] if args.ur_list

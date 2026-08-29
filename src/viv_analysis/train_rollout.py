@@ -1,52 +1,25 @@
 #!/usr/bin/env python3
-"""
-Period-based differentiable curriculum rollout training for the bridge
-no-acceleration GRU-Newmark surrogate.
+"""Two-branch rollout-informed refinement for the bridge GRU surrogate.
 
-Warm-starts from the resonance-enriched one-step checkpoint (trained with
-the 16 m/s / 17 m/s lock-in cases forced into training -- see
-results/gru_bridge_nd_context_noacc_final22_peaktrain), then fine-tunes with
-genuine backpropagation through the full GRU -> force -> Newmark rollout
-chain, in four sequential phases whose horizon is a fraction of the bridge
-structural period T_n:
+This driver implements the method described by
+``sec:bridge_rollout_refinement`` and is intentionally separate from the
+period-based curriculum driver in ``train_rollout.py``.
 
-    Phase 1: H = 0.25 T_n,  5 epochs
-    Phase 2: H = 0.50 T_n,  5 epochs
-    Phase 3: H = 1.00 T_n, 10 epochs
-    Phase 4: H = 2.00 T_n, 15 epochs
+Objective
+---------
 
-Mechanics (rollout_chunk, Newmark_beta, build_next_row_torch) are imported
-UNCHANGED from rollout_training.py -- that module was already fully
-differentiable end-to-end within a chunk (verified directly: Newmark_beta is
-pure tensor arithmetic with no numpy/detach/item calls, and
-tests/test_rollout_training.py::TestGradientFlow already passes). The one
-thing this script does NOT do, unlike the previous iters-per-stage driver
-that used to live here, is truncate the backward pass mid-phase: each
-phase's ENTIRE horizon H is run as one rollout_chunk call with no internal
-detach, so backprop genuinely spans the complete requested horizon --
-"reduce batch size first" (see --batch_size / OOM handling below) is the
-only lever for a horizon that doesn't fit in memory, per the task spec.
+    L = L_TF + lambda_roll * L_state_roll
 
-Loss: pointwise MSE in scaled C_L space, averaged over the WHOLE horizon --
-rollout_training.loss_cl, unchanged. No trajectory-tracking, work-matching,
-spectral, phase, or regularisation terms (rollout_training.loss_roll /
-loss_W_roll exist for other callers but are never invoked here).
+``L_TF`` is evaluated on independent CFD-prescribed GRU windows.  The
+rollout branch places the same GRU inside the differentiable
+GRU -> force -> Newmark-beta -> generated-state feedback loop and compares
+the generated displacement and velocity with the corresponding CFD states.
+Both branches use the same sampled intervals and update only GRU parameters.
 
-Train/val/test partition: read verbatim from the warm-start checkpoint's own
-run_config.json (train_cases/val_cases/test_cases), never recomputed --
-this checkpoint was trained on the 22-case in-scope subset with Ur6.7385
-(16 m/s) and Ur7.1597 (17 m/s) forced into train (see train_gru.py's
---exclude_ur / --force_train_ur), which differs from the older 27-case
-17/5/5 split this script used to assert; using the checkpoint's own record
-guarantees this script trains on exactly the same partition, never a
-silently different one.
-
-Case-boundary guarantee: sample_batch_starts/build_batch_from_case (both
-imported unchanged from rollout_training.py) operate on a single case_df at
-a time and cap the usable start range at
-len(case_df) - max_future_steps - 1, so a rollout batch is always drawn from
-one case's own trajectory and never reads past that case's end into another
-case's rows.
+The baseline architecture, weights, scalers, Ur statistics, and recorded
+train/validation/test partition are reused without refitting.  Test cases are
+recorded in the output metadata but are never loaded for training or model
+selection.
 """
 from __future__ import annotations
 
@@ -54,7 +27,7 @@ import argparse
 import hashlib
 import json
 import pickle
-import subprocess
+import random
 from pathlib import Path
 
 import numpy as np
@@ -62,513 +35,631 @@ import torch
 
 from viv_analysis.config import bridge_structural_params, config
 from viv_analysis.models.gru import VIV_GRU
-from viv_analysis.coupled_inference import Newmark_beta
 from viv_analysis.preprocess import load_bridge_df_cached
 from viv_analysis.rollout_training import (
-    ScalerConstants, build_batch_from_case, build_next_row_torch, loss_cl, rollout_chunk,
+    ScalerConstants,
+    build_batch_from_case,
+    build_tf_batch_from_case,
+    loss_cl,
+    loss_roll,
+    rollout_chunk,
     sample_batch_starts,
 )
 from viv_analysis.utils import PROJECT_ROOT, parse_ur_label
 
-DEFAULT_WARM_START = str(PROJECT_ROOT / "results" / "gru_bridge_nd_context_noacc_final22_peaktrain")
-DEFAULT_HORIZON_FRACTIONS = [0.25, 0.50, 1.00, 2.00]
-DEFAULT_EPOCHS_PER_PHASE = [5, 5, 10, 15]
+
+DEFAULT_BASELINE = PROJECT_ROOT / "results" / "gru_bridge_p0_nd_context_noacc"
+DEFAULT_HORIZONS_S = (0.5, 3.125, 6.5, 10.0, 20.0)
 
 
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def _git_state() -> dict:
-    def _run(args):
-        try:
-            return subprocess.check_output(args, cwd=PROJECT_ROOT, text=True).strip()
-        except Exception as e:
-            return f"<unavailable: {e}>"
-    return {"commit": _run(["git", "rev-parse", "HEAD"]),
-            "dirty": _run(["git", "status", "--porcelain"]) != ""}
+def seed_everything(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
-def load_frozen_checkpoint(checkpoint_dir: Path, device: str):
-    with open(checkpoint_dir / "run_config.json") as f:
-        rc = json.load(f)
-    with open(checkpoint_dir / "x_scaler.pkl", "rb") as f:
-        x_scaler = pickle.load(f)
-    with open(checkpoint_dir / "y_scaler.pkl", "rb") as f:
-        y_scaler = pickle.load(f)
-    with open(checkpoint_dir / "ur_stats.pkl", "rb") as f:
-        ur_stats_pkl = pickle.load(f)
+def load_baseline(artifact_dir: Path, device: str) -> dict:
+    with (artifact_dir / "run_config.json").open() as stream:
+        run_config = json.load(stream)
+    with (artifact_dir / "metrics_gru.json").open() as stream:
+        metrics = json.load(stream)
+    with (artifact_dir / "x_scaler.pkl").open("rb") as stream:
+        x_scaler = pickle.load(stream)
+    with (artifact_dir / "y_scaler.pkl").open("rb") as stream:
+        y_scaler = pickle.load(stream)
+    with (artifact_dir / "ur_stats.pkl").open("rb") as stream:
+        ur_payload = pickle.load(stream)
 
-    input_cols = rc["input_cols"]
-    use_ur_context = bool(rc["use_ur_context"])
-    nd_inputs = bool(rc["nd_inputs"])
-    input_size = len(input_cols) + (1 if use_ur_context else 0)
+    if run_config.get("cfd_dataset") != "bridge":
+        raise ValueError("The refinement driver accepts only a bridge checkpoint.")
+    if not bool(run_config.get("nd_inputs")):
+        raise ValueError("The proposed refinement requires the nondimensional baseline.")
 
+    input_cols = list(run_config["input_cols"])
+    if "disp" not in input_cols or "vel" not in input_cols:
+        raise ValueError("The state loss requires both displacement and velocity inputs.")
+
+    gru_config = metrics["gru_config"]
+    use_ur_context = bool(run_config["use_ur_context"])
     model = VIV_GRU(
-        input_size=input_size,
-        hidden_size=config["hidden_size"],
-        num_layers=config["num_layers"],
-        dropout=config["dropout"],
+        input_size=len(input_cols) + int(use_ur_context),
+        hidden_size=int(gru_config["hidden_size"]),
+        num_layers=int(gru_config["num_layers"]),
+        dropout=float(gru_config["dropout"]),
     ).to(device)
-    ckpt_path = checkpoint_dir / "gru_best.pt"
-    model.load_state_dict(torch.load(ckpt_path, map_location=device))
 
-    return dict(
-        model=model, x_scaler=x_scaler, y_scaler=y_scaler,
-        ur_stats=(ur_stats_pkl["mean"], ur_stats_pkl["std"]),
-        input_cols=input_cols, use_ur_context=use_ur_context, nd_inputs=nd_inputs,
-        run_config=rc, checkpoint_sha256=_sha256(ckpt_path), checkpoint_path=str(ckpt_path),
-        train_cases=sorted(rc["train_cases"], key=parse_ur_label),
-        val_cases=sorted(rc["val_cases"], key=parse_ur_label),
-        test_cases=sorted(rc["test_cases"], key=parse_ur_label),
+    checkpoint_path = artifact_dir / "gru_best.pt"
+    payload = torch.load(checkpoint_path, map_location=device)
+    state_dict = payload.get("model_state_dict", payload) if isinstance(payload, dict) else payload
+    model.load_state_dict(state_dict)
+
+    train_cases = list(run_config["train_cases"])
+    val_cases = list(run_config["val_cases"])
+    test_cases = list(run_config["test_cases"])
+    if set(train_cases) & set(val_cases) or set(train_cases) & set(test_cases) or set(val_cases) & set(test_cases):
+        raise ValueError("The baseline partition contains overlapping cases.")
+    if sorted(run_config.get("scaler_fit_cases", train_cases)) != sorted(train_cases):
+        raise ValueError("The recorded scaler-fit cases do not match the training partition.")
+
+    return {
+        "model": model,
+        "x_scaler": x_scaler,
+        "y_scaler": y_scaler,
+        "ur_stats": (float(ur_payload["mean"]), float(ur_payload["std"])),
+        "input_cols": input_cols,
+        "use_ur_context": use_ur_context,
+        "nd_inputs": True,
+        "seq_len": int(run_config["seq_len"]),
+        "train_cases": sorted(train_cases, key=parse_ur_label),
+        "val_cases": sorted(val_cases, key=parse_ur_label),
+        "test_cases": sorted(test_cases, key=parse_ur_label),
+        "run_config": run_config,
+        "gru_config": gru_config,
+        "checkpoint_path": checkpoint_path,
+        "checkpoint_sha256": sha256(checkpoint_path),
+    }
+
+
+def load_raw_bridge_data():
+    """Return physical bridge data; ND conversion occurs exactly once later."""
+    D = float(config["bridge_D_ref"])
+    fn = float(config["bridge_fn_hz"])
+    structural = bridge_structural_params()
+    raw_df = load_bridge_df_cached(
+        fn_hz=fn,
+        d_ref=D,
+        bridge_structural_params=structural,
     )
 
-
-def load_canonical_bridge_data():
-    """Live bridge cache (19.5 m/s / Ur=8.2126 already excluded upstream at
-    the cache level) -- which cases actually get TRAINED on is decided
-    entirely by the warm-start checkpoint's own recorded partition (see
-    load_frozen_checkpoint), not by anything computed here."""
-    D = config["bridge_D_ref"]; fn = config["bridge_fn_hz"]
-    params_bridge = bridge_structural_params()
-    raw_df = load_bridge_df_cached(fn_hz=fn, d_ref=D, bridge_structural_params=params_bridge)
-
-    # Mirrors train_gru.py's "quarantine short bridge cases" step exactly.
     sizes = raw_df.groupby("case").size().sort_values()
-    BRIDGE_MIN_FRAC = 0.05
-    med = float(sizes.median())
-    drop = set(sizes[sizes < BRIDGE_MIN_FRAC * med].index)
-    if drop:
-        print(f"Quarantining {len(drop)} bridge case(s): {sorted(drop)}")
-        raw_df = raw_df[~raw_df["case"].isin(drop)].copy()
+    minimum = 0.05 * float(sizes.median())
+    short_cases = set(sizes[sizes < minimum].index)
+    if short_cases:
+        raw_df = raw_df[~raw_df["case"].isin(short_cases)].copy()
     return raw_df
 
 
-def compute_release_time(raw_df, cases: list[str]) -> dict[str, float]:
-    """t_release(Ur) = t*_release * D_ref / U, the same UDF law
-    train_gru.py::_bridge_split uses (imported constants, not re-derived)."""
-    D = config["bridge_D_ref"]; fn = config["bridge_fn_hz"]
-    t_star = config["bridge_t_star_release"]
-    out = {}
-    for case in cases:
-        ur = parse_ur_label(case)
-        U = ur * fn * D
-        out[case] = float(t_star * D / U)
-    return out
+def release_times(cases: list[str]) -> dict[str, float]:
+    D = float(config["bridge_D_ref"])
+    fn = float(config["bridge_fn_hz"])
+    t_star = float(config["bridge_t_star_release"])
+    return {
+        case: t_star * D / (parse_ur_label(case) * fn * D)
+        for case in cases
+    }
 
 
-def compute_effective_dt(raw_df, any_case: str) -> float:
-    """Effective dt AFTER dataset subsampling, read directly from the
-    cached dataframe's own time column (never hard-coded)."""
-    times = raw_df[raw_df["case"] == any_case].sort_values("time")["time"].to_numpy(dtype=np.float64)
-    return float(np.median(np.diff(times)))
+def case_dt(case_df) -> float:
+    times = case_df.sort_values("time")["time"].to_numpy(dtype=np.float64)
+    differences = np.diff(times)
+    if len(differences) == 0 or not np.isfinite(differences).all():
+        raise ValueError("Invalid time axis in bridge case.")
+    dt = float(np.median(differences))
+    if dt <= 0:
+        raise ValueError(f"Non-positive effective timestep: {dt}")
+    return dt
 
 
-def run_full_horizon(
-    model, batch: dict, n_steps: int,
-    sc: ScalerConstants, q: float, D: float, m: float, c: float, k: float,
-    input_cols: list[str], nd_inputs: bool, use_ur_context: bool,
-    optimizer: torch.optim.Optimizer | None, grad_clip_norm: float | None,
-) -> float:
-    """One training (or, with optimizer=None, validation) example: the
-    ENTIRE n_steps horizon as a single rollout_chunk call -- no TBPTT
-    truncation, no detach anywhere in the graph between step 1 and step
-    n_steps. Loss = mean over ALL n_steps of scaled-C_L MSE (rollout_
-    training.loss_cl), nothing else. Returns the scalar loss value."""
-    window = batch["window"]
-    h_state, hdot_state, hddot_state = batch["h_state"], batch["hdot_state"], batch["hddot_state"]
-    U, dt, ur_scaled = batch["U"], batch["dt"], batch["ur_scaled"]
+def build_tf_batch_for_starts(
+    case_df,
+    case_name: str,
+    starts: list[int],
+    n_steps: int,
+    baseline: dict,
+    D: float,
+    fn: float,
+    device: str,
+) -> dict:
+    """Build one independent CFD-window example for every rollout start.
 
-    ctx = torch.enable_grad() if optimizer is not None else torch.no_grad()
-    with ctx:
-        out = rollout_chunk(
-            model=model, window=window, h_state=h_state, hdot_state=hdot_state,
-            hddot_state=hddot_state, n_steps=n_steps, dt=dt, m=m, c=c, k=k, q=q,
-            U=U, D=D, input_cols=input_cols, nd_inputs=nd_inputs, sc=sc,
-            use_ur_context=use_ur_context, ur_scaled=ur_scaled,
-        )
-        cfd_cl = batch["cfd_cl"][:, :n_steps]
-        loss = loss_cl(out["cl_scaled"], cfd_cl, sc.y_mean, sc.y_scale)
-
-    if optimizer is not None:
-        optimizer.zero_grad()
-        loss.backward()
-        if grad_clip_norm is not None:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
-        optimizer.step()
-
-    return float(loss.detach())
-
-
-def run_one_example_with_oom_backoff(
-    case_df, case_name, release_t, seq_len, input_cols, x_scaler, nd_inputs, D, fn,
-    use_ur_context, ur_stats, n_steps, device, model, sc, q, m, c, k,
-    optimizer, grad_clip_norm, batch_size, rng,
-    min_batch_size: int = 1,
-) -> tuple[float, int]:
-    """Wraps one gradient-updated (or val) example with the specified OOM
-    fallback: halve batch_size and retry (never shorten n_steps). Returns
-    (loss, batch_size_actually_used); raises RuntimeError if even
-    min_batch_size doesn't fit."""
-    bs = batch_size
-    while True:
-        try:
-            starts = sample_batch_starts(case_df, release_t, seq_len, n_steps, bs, rng)
-            batch = build_batch_from_case(
-                case_df, case_name, starts, seq_len, input_cols, x_scaler, nd_inputs, D, fn,
-                use_ur_context, ur_stats, n_steps, device,
-            )
-            loss = run_full_horizon(
-                model, batch, n_steps, sc, q, D, m, c, k, input_cols, nd_inputs,
-                use_ur_context, optimizer, grad_clip_norm,
-            )
-            return loss, bs
-        except torch.cuda.OutOfMemoryError:
-            torch.cuda.empty_cache()
-            if bs <= min_batch_size:
-                raise RuntimeError(
-                    f"CUDA OOM at n_steps={n_steps} even at batch_size={min_batch_size} -- "
-                    f"this horizon is infeasible on available VRAM without shortening it "
-                    f"(explicitly disallowed). Reduce --batch_size further or use a "
-                    f"smaller-VRAM-footprint fallback outside this script's scope."
-                )
-            new_bs = max(min_batch_size, bs // 2)
-            print(f"    [OOM] n_steps={n_steps} batch_size={bs} -- retrying at batch_size={new_bs}")
-            bs = new_bs
-
-
-def smoke_test(args, device):
-    """1-batch forward+backward with H>1: verify no detach/in-place/NaN/OOM
-    errors, and confirm an early rollout step's prediction receives a
-    genuine, nonzero gradient from a later step's loss.
-
-    IMPORTANT METHODOLOGY NOTE, corrected after an earlier false alarm: this
-    must be checked against the actual per-step tensors produced inside the
-    rollout loop (cl_preds[i] etc., BEFORE they are torch.stack()-ed into
-    rollout_chunk's returned "cl_scaled"), not via
-    torch.autograd.grad(out["cl_scaled"][:, j], out["cl_scaled"]). That
-    earlier form differentiates a SLICE of the stacked tensor with respect
-    to the stacked tensor itself -- a trivial local indexing relationship
-    (a one-hot selector) by construction, regardless of any real recurrent
-    dependency among the tensors that were stacked to build it. It never
-    reaches back to the original per-step tensors, and produced a spurious
-    "exactly 0.0" result that was a measurement artifact, not a real
-    property of the model (verified directly: d(CL_pred[s+2])/d(h[s+1]) is
-    ~2409 and d(loss[s+2])/d(CL_pred[s]) is ~2.7e-6, both genuinely
-    nonzero, when measured against the real per-step tensors below).
-
-    This function therefore inlines rollout_chunk's exact per-step logic
-    (same imported Newmark_beta / build_next_row_torch calls, same
-    operation order) instead of calling it as a black box, purely so the
-    individual per-step prediction tensors are directly available to
-    differentiate against.
+    The teacher-forced branch retains the aerodynamic mapping; it does not
+    need to materialize every heavily-overlapping window from the rollout
+    interval.  One target per sampled rollout start keeps this branch
+    independent and avoids an unnecessary ``B * H * seq_len`` GRU graph.
     """
-    print("=" * 60)
-    print("[SMOKE TEST] loading warm-start checkpoint and one training case...")
-    ckpt = load_frozen_checkpoint(Path(args.warm_start_checkpoint), device)
-    model = ckpt["model"]
-    sc = ScalerConstants.from_sklearn(ckpt["x_scaler"], ckpt["y_scaler"])
-    D = config["bridge_D_ref"]; fn = config["bridge_fn_hz"]; B_ref = config["bridge_B_ref"]
-    rho = config["bridge_rho"]; seq_len = config["bridge_seq_len"]
-    sp = bridge_structural_params(); m, c, k = sp["m"], sp["c"], sp["k"]
-    q = 0.5 * rho * B_ref
-    input_cols, nd_inputs, use_ur_context = ckpt["input_cols"], ckpt["nd_inputs"], ckpt["use_ur_context"]
+    batches = [
+        build_tf_batch_from_case(
+            case_df=case_df,
+            case_name=case_name,
+            start_idx=start,
+            n_steps=1,
+            seq_len=baseline["seq_len"],
+            input_cols=baseline["input_cols"],
+            x_scaler=baseline["x_scaler"],
+            nd_inputs=baseline["nd_inputs"],
+            D=D,
+            fn=fn,
+            use_ur_context=baseline["use_ur_context"],
+            ur_stats=baseline["ur_stats"],
+            device=device,
+        )
+        for start in starts
+    ]
+    return {
+        "x": torch.cat([batch["x"] for batch in batches], dim=0),
+        "cl_cfd": torch.cat([batch["cl_cfd"] for batch in batches], dim=0),
+    }
 
-    raw_df = load_canonical_bridge_data()
-    case_name = ckpt["train_cases"][0]
-    case_df = raw_df[raw_df["case"] == case_name].sort_values("time").reset_index(drop=True)
-    release_t = compute_release_time(raw_df, [case_name])[case_name]
-    U_case = parse_ur_label(case_name) * fn * D
 
-    n_steps = 4  # H > 1; just enough to have a real step s and step s+2
-    rng = np.random.default_rng(0)
-    starts = sample_batch_starts(case_df, release_t, seq_len, n_steps, 1, rng)
-    batch = build_batch_from_case(
-        case_df, case_name, starts, seq_len, input_cols, ckpt["x_scaler"],
-        nd_inputs, D, fn, use_ur_context, ckpt["ur_stats"], n_steps, device,
+def two_branch_losses(
+    model,
+    case_df,
+    case_name: str,
+    starts: list[int],
+    n_steps: int,
+    baseline: dict,
+    scaler_constants: ScalerConstants,
+    D: float,
+    fn: float,
+    m: float,
+    c: float,
+    k: float,
+    rho: float,
+    B_ref: float,
+    device: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Evaluate the independent TF branch and differentiable state branch."""
+    rollout_batch = build_batch_from_case(
+        case_df=case_df,
+        case_name=case_name,
+        starts=starts,
+        seq_len=baseline["seq_len"],
+        input_cols=baseline["input_cols"],
+        x_scaler=baseline["x_scaler"],
+        nd_inputs=baseline["nd_inputs"],
+        D=D,
+        fn=fn,
+        use_ur_context=baseline["use_ur_context"],
+        ur_stats=baseline["ur_stats"],
+        max_future_steps=n_steps,
+        device=device,
+    )
+    U = float(rollout_batch["U"])
+    q = 0.5 * rho * U**2 * B_ref
+    out = rollout_chunk(
+        model=model,
+        window=rollout_batch["window"],
+        h_state=rollout_batch["h_state"],
+        hdot_state=rollout_batch["hdot_state"],
+        hddot_state=rollout_batch["hddot_state"],
+        n_steps=n_steps,
+        dt=float(rollout_batch["dt"]),
+        m=m,
+        c=c,
+        k=k,
+        q=q,
+        U=U,
+        D=D,
+        input_cols=baseline["input_cols"],
+        nd_inputs=baseline["nd_inputs"],
+        sc=scaler_constants,
+        use_ur_context=baseline["use_ur_context"],
+        ur_scaled=float(rollout_batch["ur_scaled"]),
     )
 
-    model.train()
-    win = batch["window"]
-    h_i, hdot_i, hddot_i = batch["h_state"], batch["hdot_state"], batch["hddot_state"]
-    dt, U, ur_scaled = batch["dt"], U_case, batch["ur_scaled"]
-    qU2 = q * U_case ** 2
+    tf_batch = build_tf_batch_for_starts(
+        case_df, case_name, starts, n_steps, baseline, D, fn, device
+    )
+    tf_pred_scaled, _ = model(tf_batch["x"])
+    l_tf = loss_cl(
+        tf_pred_scaled,
+        tf_batch["cl_cfd"],
+        scaler_constants.y_mean,
+        scaler_constants.y_scale,
+    )
 
-    cl_preds = []
-    for step in range(n_steps):
-        pred_scaled, _ = model(win)
-        cl_phys = pred_scaled * sc.y_scale + sc.y_mean
-        F = qU2 * cl_phys
-        h_next, hdot_next, hddot_next = Newmark_beta(F=F, h=h_i, h_dot=hdot_i, h_ddot=hddot_i, dt=dt, m=m, c=c, k=k)
-        new_row = build_next_row_torch(h_i, hdot_i, hddot_i, input_cols, nd_inputs, D, U,
-                                       sc.x_mean, sc.x_scale, use_ur_context, ur_scaled)
-        win = torch.cat([win[:, 1:, :], new_row.unsqueeze(1)], dim=1)
-        cl_preds.append(pred_scaled)
-        h_i, hdot_i, hddot_i = h_next, hdot_next, hddot_next
-
-    cl_scaled_target = (batch["cfd_cl"][:, :n_steps] - sc.y_mean) / sc.y_scale
-    losses = [(cl_preds[i] - cl_scaled_target[:, i]) ** 2 for i in range(n_steps)]
-    total_loss = torch.mean(torch.stack(losses, dim=1))
-
-    assert torch.isfinite(total_loss).all(), "[SMOKE TEST] loss is not finite"
-
-    # Isolated cross-step check, against the REAL per-step tensors: does
-    # step-2's loss ALONE (not the mean over all steps) reach step 0's
-    # prediction? This is the actual claim "an early prediction step
-    # receives a non-zero gradient from a later step loss" is about.
-    cross_step_grad = torch.autograd.grad(losses[2].sum(), cl_preds[0], retain_graph=True, allow_unused=True)[0]
-    assert cross_step_grad is not None and torch.isfinite(cross_step_grad).all(), \
-        "[SMOKE TEST] cross-step gradient is None/non-finite -- graph is broken"
-    assert cross_step_grad.abs().sum() > 0, \
-        "[SMOKE TEST] step 0 received EXACTLY zero gradient from step 2's loss -- graph is broken"
-
-    total_loss.backward()
-    grads = [p.grad for p in model.parameters()]
-    assert any(g is not None and torch.isfinite(g).all() and g.abs().sum() > 0 for g in grads), \
-        "[SMOKE TEST] no finite nonzero gradient reached model parameters"
-
-    print(f"[SMOKE TEST] loss={float(total_loss):.6f}")
-    print(f"[SMOKE TEST] d(loss[step=2])/d(CL_pred[step=0]) = {float(cross_step_grad.abs().sum()):.6e} "
-          f"-- nonzero: genuine cross-step gradient confirmed (measured against the real "
-          f"per-step tensors, not a re-sliced view of the stacked output).")
-    print("[SMOKE TEST] PASSED: loss.backward() succeeded, no NaN/Inf/OOM, model parameters "
-          "received finite nonzero gradient, and an early step's prediction is confirmed to "
-          "receive nonzero gradient from a later step's loss in isolation.")
-    print("=" * 60)
+    disp_idx = baseline["input_cols"].index("disp")
+    vel_idx = baseline["input_cols"].index("vel")
+    l_state = loss_roll(
+        out["h"],
+        out["hdot"],
+        rollout_batch["cfd_h"][:, :n_steps],
+        rollout_batch["cfd_hdot"][:, :n_steps],
+        D=D,
+        U=U,
+        x_mean=scaler_constants.x_mean,
+        x_scale=scaler_constants.x_scale,
+        disp_idx=disp_idx,
+        vel_idx=vel_idx,
+    )
+    return l_tf, l_state
 
 
-def parse_args():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--warm_start_checkpoint", default=DEFAULT_WARM_START,
-                  help="Frozen one-step checkpoint directory to fine-tune from "
-                       "(weights/scalers/partition all used AS-IS).")
-    p.add_argument("--output_dir", required=True)
-    p.add_argument("--horizon_fractions", default=",".join(str(x) for x in DEFAULT_HORIZON_FRACTIONS),
-                  help="Comma-separated rollout horizon per phase, as a fraction of T_n.")
-    p.add_argument("--epochs_per_phase", default=",".join(str(x) for x in DEFAULT_EPOCHS_PER_PHASE),
-                  help="Comma-separated epoch count per phase (one epoch = one pass "
-                       "over all training cases, shuffled).")
-    p.add_argument("--lr", type=float, default=config["lr"],
-                  help="Initial LR -- defaults to config['lr'], the resonance-enriched "
-                       "one-step run's own optimiser setting.")
-    p.add_argument("--weight_decay", type=float, default=config["weight_decay"])
-    p.add_argument("--lr_reduction_factor", type=float, default=0.5,
-                  help="LR multiplier applied at every curriculum phase transition.")
-    p.add_argument("--grad_clip_norm", type=float, default=1.0,
-                  help="Existing gradient-clipping max-norm; pass 0 to disable.")
-    p.add_argument("--batch_size", type=int, default=4,
-                  help="Rollout examples per gradient step. Kept small by default: "
-                       "unlike the old TBPTT driver, a phase's full horizon is never "
-                       "truncated, so late phases (H=2*T_n) hold a much larger graph.")
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--val_batch_size", type=int, default=1)
-    p.add_argument("--smoke_test", action="store_true",
-                  help="Run the 1-batch gradient-flow smoke test and exit -- no training.")
-    return p.parse_args()
+def deterministic_starts(
+    case_df,
+    release_t: float,
+    seq_len: int,
+    n_steps: int,
+    batch_size: int,
+    seed: int,
+) -> list[int]:
+    return sample_batch_starts(
+        case_df,
+        release_t,
+        seq_len,
+        n_steps,
+        batch_size,
+        np.random.default_rng(seed),
+    )
 
 
-def main():
+def validate(
+    model,
+    raw_df,
+    val_cases: list[str],
+    releases: dict[str, float],
+    horizons_s: tuple[float, ...],
+    batch_size: int,
+    baseline: dict,
+    scaler_constants: ScalerConstants,
+    physics: dict,
+    device: str,
+    lambda_roll: float,
+    seed: int,
+) -> dict:
+    """Evaluate fixed validation starts without touching test cases."""
+    was_training = model.training
+    model.eval()
+    per_horizon: dict[str, dict] = {}
+
+    with torch.no_grad():
+        for horizon_i, horizon_s in enumerate(horizons_s):
+            case_rows = []
+            for case_i, case_name in enumerate(val_cases):
+                case_df = raw_df[raw_df["case"] == case_name].sort_values("time").reset_index(drop=True)
+                n_steps = max(2, int(round(horizon_s / case_dt(case_df))))
+                starts = deterministic_starts(
+                    case_df,
+                    releases[case_name],
+                    baseline["seq_len"],
+                    n_steps,
+                    batch_size,
+                    seed + 1000 * horizon_i + case_i,
+                )
+                l_tf, l_state = two_branch_losses(
+                    model=model,
+                    case_df=case_df,
+                    case_name=case_name,
+                    starts=starts,
+                    n_steps=n_steps,
+                    baseline=baseline,
+                    scaler_constants=scaler_constants,
+                    device=device,
+                    **physics,
+                )
+                case_rows.append({
+                    "case": case_name,
+                    "l_tf": float(l_tf),
+                    "l_state": float(l_state),
+                    "combined": float(l_tf + lambda_roll * l_state),
+                    "n_steps": n_steps,
+                })
+            key = f"{horizon_s:g}s"
+            per_horizon[key] = {
+                "mean_l_tf": float(np.mean([row["l_tf"] for row in case_rows])),
+                "mean_l_state": float(np.mean([row["l_state"] for row in case_rows])),
+                "median_l_state": float(np.median([row["l_state"] for row in case_rows])),
+                "mean_combined": float(np.mean([row["combined"] for row in case_rows])),
+                "per_case": case_rows,
+            }
+
+    if was_training:
+        model.train()
+
+    return {
+        "horizons": per_horizon,
+        "selection_score": float(np.mean([
+            values["median_l_state"] for values in per_horizon.values()
+        ])),
+        "mean_l_tf": float(np.mean([
+            values["mean_l_tf"] for values in per_horizon.values()
+        ])),
+    }
+
+
+def save_compatible_artifact(output_dir: Path, baseline: dict, state_dict: dict, manifest: dict) -> None:
+    torch.save(state_dict, output_dir / "gru_best.pt")
+    for name, obj in (
+        ("x_scaler.pkl", baseline["x_scaler"]),
+        ("y_scaler.pkl", baseline["y_scaler"]),
+        ("ur_stats.pkl", {
+            "mean": baseline["ur_stats"][0],
+            "std": baseline["ur_stats"][1],
+            "use_ur_context": baseline["use_ur_context"],
+            "nd_inputs": baseline["nd_inputs"],
+            "coordinate_mode": "nondimensional",
+            "cfd_dataset": "bridge",
+            "exp_subdir": output_dir.name,
+        }),
+    ):
+        with (output_dir / name).open("wb") as stream:
+            pickle.dump(obj, stream)
+
+    run_config = dict(baseline["run_config"])
+    run_config.update({
+        "output_directory": str(output_dir),
+        "source": "train_rollout_refinement.py two-branch refinement",
+        "warm_start_checkpoint": str(baseline["checkpoint_path"]),
+        "refinement": manifest,
+    })
+    with (output_dir / "run_config.json").open("w") as stream:
+        json.dump(run_config, stream, indent=2)
+
+    with (output_dir / "metrics_gru.json").open("w") as stream:
+        json.dump({
+            "dataset": "bridge",
+            "coordinate_mode": "nondimensional",
+            "nd_inputs": True,
+            "use_ur_context": baseline["use_ur_context"],
+            "gru_config": baseline["gru_config"],
+            "case_split": {
+                "train": baseline["train_cases"],
+                "val": baseline["val_cases"],
+                "test": baseline["test_cases"],
+            },
+            "scaler_fit_cases": baseline["train_cases"],
+            "ur_stats_fit_cases": baseline["train_cases"],
+        }, stream, indent=2)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
+    parser.add_argument("--output_dir", type=Path, required=True)
+    parser.add_argument("--rollout_steps", type=int, default=250)
+    parser.add_argument("--passes", type=int, default=6)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--val_batch_size", type=int, default=1)
+    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--weight_decay", type=float, default=1e-5)
+    parser.add_argument("--lambda_roll", type=float, default=0.08064)
+    parser.add_argument("--lambda_ramp_updates", type=int, default=17)
+    parser.add_argument("--grad_clip_norm", type=float, default=1.0)
+    parser.add_argument(
+        "--validation_horizons_s",
+        default=",".join(str(value) for value in DEFAULT_HORIZONS_S),
+    )
+    parser.add_argument(
+        "--tf_loss_tolerance",
+        type=float,
+        default=0.05,
+        help="Maximum relative increase in validation TF loss allowed during selection.",
+    )
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--smoke_test", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> None:
     args = parse_args()
+    if args.rollout_steps < 2 or args.passes < 1 or args.batch_size < 1:
+        raise ValueError("rollout_steps>=2, passes>=1 and batch_size>=1 are required.")
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    torch.manual_seed(args.seed)
+    seed_everything(args.seed)
+    baseline = load_baseline(args.baseline, device)
+    raw_df = load_raw_bridge_data()
+
+    available = set(raw_df["case"].astype(str).unique())
+    required = set(baseline["train_cases"] + baseline["val_cases"])
+    missing = sorted(required - available)
+    if missing:
+        raise ValueError(f"Training/validation cases missing from the live bridge cache: {missing}")
+
+    D = float(config["bridge_D_ref"])
+    fn = float(config["bridge_fn_hz"])
+    physics = {
+        "D": D,
+        "fn": fn,
+        "m": float(bridge_structural_params()["m"]),
+        "c": float(bridge_structural_params()["c"]),
+        "k": float(bridge_structural_params()["k"]),
+        "rho": float(config["bridge_rho"]),
+        "B_ref": float(config["bridge_B_ref"]),
+    }
+    releases = release_times(baseline["train_cases"] + baseline["val_cases"])
+    scaler_constants = ScalerConstants.from_sklearn(
+        baseline["x_scaler"], baseline["y_scaler"]
+    )
+    horizons_s = tuple(float(value) for value in args.validation_horizons_s.split(","))
+
+    args.output_dir.mkdir(parents=True, exist_ok=False)
+    dt_values = {
+        case: case_dt(raw_df[raw_df["case"] == case])
+        for case in baseline["train_cases"] + baseline["val_cases"]
+    }
+    manifest = {
+        "objective": "L_TF + lambda_roll * L_state_roll",
+        "rollout_steps": args.rollout_steps,
+        "nominal_rollout_duration_s": args.rollout_steps * float(np.median(list(dt_values.values()))),
+        "passes": args.passes,
+        "batch_size": args.batch_size,
+        "lr": args.lr,
+        "weight_decay": args.weight_decay,
+        "lambda_roll_final": args.lambda_roll,
+        "lambda_ramp_updates": args.lambda_ramp_updates,
+        "grad_clip_norm": args.grad_clip_norm,
+        "validation_horizons_s": horizons_s,
+        "tf_loss_tolerance": args.tf_loss_tolerance,
+        "seed": args.seed,
+        "baseline_checkpoint": str(baseline["checkpoint_path"]),
+        "baseline_checkpoint_sha256": baseline["checkpoint_sha256"],
+        "train_cases": baseline["train_cases"],
+        "val_cases": baseline["val_cases"],
+        "test_cases_recorded_but_not_loaded": baseline["test_cases"],
+        "scalers_refit": False,
+        "structural_parameters_trainable": False,
+        "graph_truncation_within_rollout": False,
+        "effective_dt_by_case_s": dt_values,
+    }
+    with (args.output_dir / "run_manifest.json").open("w") as stream:
+        json.dump(manifest, stream, indent=2)
+
+    model = baseline["model"]
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
     rng = np.random.default_rng(args.seed)
 
-    if args.smoke_test:
-        smoke_test(args, device)
-        return
+    baseline_validation = validate(
+        model=model,
+        raw_df=raw_df,
+        val_cases=baseline["val_cases"],
+        releases=releases,
+        horizons_s=horizons_s,
+        batch_size=args.val_batch_size,
+        baseline=baseline,
+        scaler_constants=scaler_constants,
+        physics=physics,
+        device=device,
+        lambda_roll=args.lambda_roll,
+        seed=args.seed,
+    )
+    baseline_tf_limit = baseline_validation["mean_l_tf"] * (1.0 + args.tf_loss_tolerance)
+    history = {"manifest": manifest, "baseline_validation": baseline_validation, "passes": []}
 
-    grad_clip_norm = args.grad_clip_norm if args.grad_clip_norm > 0 else None
+    selected_state = {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
+    selected_score = baseline_validation["selection_score"]
+    selected_pass = 0
+    global_update = 0
 
-    ckpt = load_frozen_checkpoint(Path(args.warm_start_checkpoint), device)
-    model, x_scaler, y_scaler = ckpt["model"], ckpt["x_scaler"], ckpt["y_scaler"]
-    input_cols, use_ur_context, nd_inputs = ckpt["input_cols"], ckpt["use_ur_context"], ckpt["nd_inputs"]
-    ur_stats = ckpt["ur_stats"]
-    train_cases, val_cases, test_cases = ckpt["train_cases"], ckpt["val_cases"], ckpt["test_cases"]
-    sc = ScalerConstants.from_sklearn(x_scaler, y_scaler)
+    for pass_index in range(1, args.passes + 1):
+        model.train()
+        cases = list(baseline["train_cases"])
+        rng.shuffle(cases)
+        training_rows = []
 
-    D = config["bridge_D_ref"]; fn = config["bridge_fn_hz"]; B_ref = config["bridge_B_ref"]
-    rho = config["bridge_rho"]; seq_len = config["bridge_seq_len"]
-    sp = bridge_structural_params(); m, c, k = sp["m"], sp["c"], sp["k"]
-    q = 0.5 * rho * B_ref
+        for case_name in cases:
+            case_df = raw_df[raw_df["case"] == case_name].sort_values("time").reset_index(drop=True)
+            starts = sample_batch_starts(
+                case_df,
+                releases[case_name],
+                baseline["seq_len"],
+                args.rollout_steps,
+                args.batch_size,
+                rng,
+            )
+            l_tf, l_state = two_branch_losses(
+                model=model,
+                case_df=case_df,
+                case_name=case_name,
+                starts=starts,
+                n_steps=args.rollout_steps,
+                baseline=baseline,
+                scaler_constants=scaler_constants,
+                device=device,
+                **physics,
+            )
 
-    print(f"Loaded warm-start checkpoint: {ckpt['checkpoint_path']}  sha256={ckpt['checkpoint_sha256']}")
-    print(f"  input_cols={input_cols}  use_ur_context={use_ur_context}  nd_inputs={nd_inputs}")
+            global_update += 1
+            ramp = min(1.0, global_update / max(1, args.lambda_ramp_updates))
+            lambda_now = args.lambda_roll * ramp
+            total = l_tf + lambda_now * l_state
 
-    raw_df = load_canonical_bridge_data()
-    release_time = compute_release_time(raw_df, train_cases + val_cases + test_cases)
-    dt = compute_effective_dt(raw_df, train_cases[0])
-    print(f"Partition (from checkpoint's own run_config.json): "
-          f"train({len(train_cases)})={train_cases}")
-    print(f"                                                   val({len(val_cases)})={val_cases}")
+            optimizer.zero_grad(set_to_none=True)
+            total.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), args.grad_clip_norm
+            )
+            optimizer.step()
 
-    # ── Period-based curriculum: T_n, effective dt -> steps_per_period -> ──
-    # ── rollout_steps per phase, computed here, never hard-coded ───────────
-    T_n = 1.0 / fn
-    steps_per_period = round(T_n / dt)
-    horizon_fractions = [float(x) for x in args.horizon_fractions.split(",")]
-    epochs_per_phase = [int(x) for x in args.epochs_per_phase.split(",")]
-    assert len(horizon_fractions) == len(epochs_per_phase)
-    rollout_steps_per_phase = [round(frac * steps_per_period) for frac in horizon_fractions]
+            training_rows.append({
+                "case": case_name,
+                "global_update": global_update,
+                "lambda_roll": lambda_now,
+                "l_tf": float(l_tf.detach()),
+                "l_state": float(l_state.detach()),
+                "total": float(total.detach()),
+                "grad_norm_pre_clip": float(grad_norm),
+            })
 
-    print(f"\nT_n = 1/fn = {T_n:.6f} s   effective dt = {dt:.6f} s   "
-          f"steps_per_period = round(T_n/dt) = {steps_per_period}")
-    for i, (frac, n_steps, n_ep) in enumerate(zip(horizon_fractions, rollout_steps_per_phase, epochs_per_phase)):
-        print(f"  Phase {i+1}: horizon = {frac:g} * T_n  ->  rollout_steps = "
-              f"round({frac:g} * {steps_per_period}) = {n_steps}  ({n_steps * dt:.3f}s), {n_ep} epochs")
-    print()
+            if args.smoke_test:
+                break
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+        validation = validate(
+            model=model,
+            raw_df=raw_df,
+            val_cases=baseline["val_cases"],
+            releases=releases,
+            horizons_s=horizons_s,
+            batch_size=args.val_batch_size,
+            baseline=baseline,
+            scaler_constants=scaler_constants,
+            physics=physics,
+            device=device,
+            lambda_roll=args.lambda_roll,
+            seed=args.seed,
+        )
+        eligible = validation["mean_l_tf"] <= baseline_tf_limit
+        score = validation["selection_score"]
+        if eligible and score < selected_score:
+            selected_score = score
+            selected_pass = pass_index
+            selected_state = {
+                name: value.detach().cpu().clone()
+                for name, value in model.state_dict().items()
+            }
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        checkpoint_path = args.output_dir / f"refinement_pass{pass_index}.pt"
+        torch.save(model.state_dict(), checkpoint_path)
+        history["passes"].append({
+            "pass": pass_index,
+            "training": training_rows,
+            "validation": validation,
+            "tf_eligible": eligible,
+            "checkpoint": str(checkpoint_path),
+        })
+        with (args.output_dir / "train_history.json").open("w") as stream:
+            json.dump(history, stream, indent=2)
 
-    run_manifest = {
-        "warm_start_checkpoint": ckpt["checkpoint_path"],
-        "warm_start_checkpoint_sha256": ckpt["checkpoint_sha256"],
-        "T_n_s": T_n, "fn_hz": fn, "effective_dt_s": dt, "steps_per_period": steps_per_period,
-        "horizon_fractions": horizon_fractions, "epochs_per_phase": epochs_per_phase,
-        "rollout_steps_per_phase": rollout_steps_per_phase,
-        "initial_lr": args.lr, "weight_decay": args.weight_decay,
-        "lr_reduction_factor": args.lr_reduction_factor, "grad_clip_norm": args.grad_clip_norm,
-        "batch_size": args.batch_size, "seed": args.seed,
-        "train_cases": train_cases, "val_cases": val_cases, "test_cases": test_cases,
-        "input_cols": input_cols, "use_ur_context": use_ur_context, "nd_inputs": nd_inputs,
-        "loss_formula": "(1/H) * sum_{s=1}^{H} (C_L_pred_scaled[s] - C_L_target_scaled[s])^2 "
-                        "-- rollout_training.loss_cl, no other loss terms",
-        "graph_truncation": "NONE within a phase -- each phase's full horizon H is one "
-                            "rollout_chunk call, backpropagated through in full. OOM "
-                            "fallback is batch_size halving only (horizon never shortened).",
-        "git": _git_state(),
-    }
-    with open(output_dir / "run_manifest.json", "w") as f:
-        json.dump(run_manifest, f, indent=2)
-    print(f"Run manifest saved to {output_dir/'run_manifest.json'}")
+        print(
+            f"pass={pass_index}/{args.passes} "
+            f"train_tf={np.mean([row['l_tf'] for row in training_rows]):.6g} "
+            f"train_state={np.mean([row['l_state'] for row in training_rows]):.6g} "
+            f"val_tf={validation['mean_l_tf']:.6g} "
+            f"val_state_score={score:.6g} eligible={eligible}"
+        )
+        if args.smoke_test:
+            break
 
-    history = {"phases": []}
-    global_best_state = None
+    manifest["selected_pass"] = selected_pass
+    manifest["selected_validation_score"] = selected_score
+    save_compatible_artifact(args.output_dir, baseline, selected_state, manifest)
+    with (args.output_dir / "train_history.json").open("w") as stream:
+        json.dump(history, stream, indent=2)
 
-    for phase_i, (n_steps, n_epochs) in enumerate(zip(rollout_steps_per_phase, epochs_per_phase)):
-        phase_no = phase_i + 1
-        print(f"\n=== Phase {phase_no}/{len(rollout_steps_per_phase)}: "
-              f"H={n_steps} steps ({n_steps*dt:.3f}s = {horizon_fractions[phase_i]:g} T_n), "
-              f"{n_epochs} epochs, lr={optimizer.param_groups[0]['lr']:.3e} ===")
-
-        phase_best_val = float("inf")
-        phase_best_state = None
-        phase_history = {"phase": phase_no, "n_steps": n_steps, "epochs": []}
-
-        for epoch in range(n_epochs):
-            model.train()
-            epoch_cases = list(train_cases)
-            rng.shuffle(epoch_cases)
-            train_losses = []
-            for case_name in epoch_cases:
-                case_df = raw_df[raw_df["case"] == case_name].sort_values("time").reset_index(drop=True)
-                U_case = parse_ur_label(case_name) * fn * D
-                loss_val, bs_used = run_one_example_with_oom_backoff(
-                    case_df, case_name, release_time[case_name], seq_len, input_cols, x_scaler,
-                    nd_inputs, D, fn, use_ur_context, ur_stats, n_steps, device, model, sc,
-                    q * U_case ** 2, m, c, k, optimizer, grad_clip_norm,
-                    args.batch_size, rng,
-                )
-                train_losses.append(loss_val)
-                if bs_used != args.batch_size:
-                    print(f"    [note] case={case_name} completed at reduced batch_size={bs_used}")
-
-            model.eval()
-            val_losses = []
-            for vc in val_cases:
-                vdf = raw_df[raw_df["case"] == vc].sort_values("time").reset_index(drop=True)
-                U_v = parse_ur_label(vc) * fn * D
-                loss_val, _ = run_one_example_with_oom_backoff(
-                    vdf, vc, release_time[vc], seq_len, input_cols, x_scaler, nd_inputs, D, fn,
-                    use_ur_context, ur_stats, n_steps, device, model, sc, q * U_v ** 2, m, c, k,
-                    None, grad_clip_norm, args.val_batch_size, np.random.default_rng(0),
-                )
-                val_losses.append(loss_val)
-
-            train_mean = float(np.mean(train_losses))
-            val_mean = float(np.mean(val_losses)) if val_losses else float("nan")
-            print(f"  phase={phase_no} epoch={epoch+1}/{n_epochs}  "
-                  f"train_loss={train_mean:.6f}  val_loss={val_mean:.6f}")
-            phase_history["epochs"].append({"epoch": epoch + 1, "train_loss": train_mean, "val_loss": val_mean})
-
-            if val_mean < phase_best_val:
-                phase_best_val = val_mean
-                phase_best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
-                torch.save({
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "phase": phase_no, "epoch": epoch + 1, "val_loss": val_mean,
-                }, output_dir / f"best_phase{phase_no}.pt")
-                print(f"    [val] new best for phase {phase_no} ({phase_best_val:.6f}), checkpoint saved")
-
-        history["phases"].append({**phase_history, "best_val_loss": phase_best_val})
-
-        # ── Curriculum transition: load best-of-phase weights, keep the ──
-        # ── SAME optimizer object (Adam's accumulated state untouched), ──
-        # ── halve LR. Also applies after the LAST phase, so `model` ends ──
-        # ── the run holding Phase 4's best weights. ──────────────────────
-        if phase_best_state is not None:
-            model.load_state_dict(phase_best_state)
-            global_best_state = phase_best_state
-        for g in optimizer.param_groups:
-            g["lr"] *= args.lr_reduction_factor
-
-    final_ckpt_path = output_dir / "gru_best.pt"
-    if global_best_state is not None:
-        torch.save(global_best_state, final_ckpt_path)
-    else:
-        torch.save(model.state_dict(), final_ckpt_path)
-        print("No validation improvement recorded in any phase; saved final model state as gru_best.pt.")
-
-    with open(output_dir / "x_scaler.pkl", "wb") as f:
-        pickle.dump(x_scaler, f)
-    with open(output_dir / "y_scaler.pkl", "wb") as f:
-        pickle.dump(y_scaler, f)
-    with open(output_dir / "ur_stats.pkl", "wb") as f:
-        pickle.dump({"mean": ur_stats[0], "std": ur_stats[1], "use_ur_context": use_ur_context,
-                    "nd_inputs": nd_inputs, "coordinate_mode": "nondimensional" if nd_inputs else "dimensional",
-                    "cfd_dataset": "bridge", "exp_subdir": output_dir.name}, f)
-    # run_config.json in the SAME shape train_gru.py-produced checkpoints use,
-    # so the unmodified evaluate_all.py / bridge_ur_list_from_model can load
-    # this checkpoint exactly like any other.
-    with open(output_dir / "run_config.json", "w") as f:
-        json.dump({
-            "cfd_dataset": "bridge", "coordinate_mode": "nondimensional" if nd_inputs else "dimensional",
-            "nd_inputs": nd_inputs, "use_ur_context": use_ur_context, "input_cols": input_cols,
-            "train_cases": train_cases, "val_cases": val_cases, "test_cases": test_cases,
-            "D": D, "fn": fn, "seq_len": seq_len,
-            "source": "train_rollout.py curriculum rollout fine-tune",
-            "warm_start_checkpoint": ckpt["checkpoint_path"],
-        }, f, indent=2)
-    # metrics_gru.json's gru_config sub-object -- coupled_inference.py's
-    # main() reads hidden_size/num_layers/seq_len/input_cols from HERE
-    # (metrics_path.exists() branch), not from run_config.json, and only
-    # hidden_size/num_layers/input_cols have a pre-assigned default before
-    # that branch -- seq_len does not, so omitting this file entirely
-    # raises UnboundLocalError in the unmodified evaluator (confirmed
-    # directly: coupled_inference.py line 1075 sets seq_len only inside
-    # `if metrics_path.exists()`). Writing this is making OUR checkpoint
-    # conform to what the frozen evaluator already expects, not modifying
-    # the evaluator itself.
-    with open(output_dir / "metrics_gru.json", "w") as f:
-        json.dump({
-            "gru_config": {
-                "hidden_size": config["hidden_size"], "num_layers": config["num_layers"],
-                "seq_len": seq_len, "input_cols": input_cols,
-            },
-        }, f, indent=2)
-    with open(output_dir / "train_history.json", "w") as f:
-        json.dump(history, f, indent=2)
-
-    print(f"\nDone. Final checkpoint: {final_ckpt_path}")
-    print(f"Per-phase best checkpoints (model+optimizer state): "
-          f"{[str(output_dir / f'best_phase{i+1}.pt') for i in range(len(rollout_steps_per_phase))]}")
+    print(f"Selected refinement pass: {selected_pass}")
+    print(f"Evaluator-compatible checkpoint: {args.output_dir / 'gru_best.pt'}")
 
 
 if __name__ == "__main__":

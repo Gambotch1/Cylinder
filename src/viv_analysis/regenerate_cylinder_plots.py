@@ -96,7 +96,16 @@ def replot_timeseries(coupled_eval_dir: Path, cfd_df: pd.DataFrame, dataset: str
         axes[0].axhline(0, color="0.8", lw=1, ls=":")
         axes[0].set_ylabel(r"$h/D$")
         axes[0].set_xlim(0, 200)
-        axes[0].legend(loc="upper right")
+        axes[0].legend(
+            loc="lower center",
+            bbox_to_anchor=(0.5, 1.01),
+            ncol=2,
+            frameon=False,
+            borderaxespad=0.0,
+            columnspacing=1.2,
+            handlelength=1.8,
+            handletextpad=0.5,
+        )
         axes[0].grid(True, alpha=0.3)
 
 

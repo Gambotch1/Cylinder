@@ -202,8 +202,16 @@ def plot_tf_result_thesis(
     # figures) an in-axes legend box scales up right along with the text
     # and can cover a large fraction of the panel's own data (verified
     # directly: ~1/4 of the panel at font_scale=1/0.48).
-    ax_full.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncol=1,
-                   frameon=False, borderaxespad=0.0)
+    ax_full.legend(
+    loc="lower center",
+    bbox_to_anchor=(0.5, 1.01),
+    ncol=2,
+    frameon=False,
+    borderaxespad=0.0,
+    columnspacing=1.2,
+    handlelength=1.8,
+    handletextpad=0.5,
+    )
 
     zoom_mask = t <= zoom_duration
     ax_zoom.plot(t_disp[zoom_mask], cl_true[zoom_mask], **{**cfd_kwargs, "label": "_nolegend_"})
@@ -350,8 +358,16 @@ def plot_coupled_thesis(
     # avoids the font_scale-at-reduced-display-width issue where a larger-
     # text in-axes legend box covers a growing fraction of the panel (see
     # plot_tf_result_thesis's identical fix).
-    axes[0].legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncol=1,
-                   frameon=False, borderaxespad=0.0)
+    axes[0].legend(
+    loc="lower center",
+    bbox_to_anchor=(0.5, 1.01),
+    ncol=2,
+    frameon=False,
+    borderaxespad=0.0,
+    columnspacing=1.2,
+    handlelength=1.8,
+    handletextpad=0.5,
+    )
 
     axes[1].plot(CFD_t_d2, CFD_cl_d, **{**cfd_kwargs, "label": "_nolegend_"})
     axes[1].plot(t_d2, CL_d, **{**model_kwargs, "label": "_nolegend_"})
@@ -745,8 +761,16 @@ def plot_open_loop_representative(
     ax_full.grid(True, which="major")
     # See plot_tf_result_thesis's identical legend for why this sits above
     # the axes rather than inside the data area at "upper right".
-    ax_full.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncol=1,
-                   frameon=False, borderaxespad=0.0)
+    ax_full.legend(
+    loc="lower center",
+    bbox_to_anchor=(0.5, 1.01),
+    ncol=2,
+    frameon=False,
+    borderaxespad=0.0,
+    columnspacing=1.2,
+    handlelength=1.8,
+    handletextpad=0.5,
+    )
 
     ax_zoom.plot(t_disp[zoom_mask], cl_true[zoom_mask], **{**cfd_kwargs, "label": "_nolegend_"})
     ax_zoom.plot(t_disp[zoom_mask], cl_pred[zoom_mask], **{**model_kwargs, "label": "_nolegend_"})

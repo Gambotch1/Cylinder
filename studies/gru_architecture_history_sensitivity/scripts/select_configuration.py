@@ -161,7 +161,8 @@ def build_pareto_table(dataset: str, agg: pd.DataFrame) -> pd.DataFrame:
 
     df["short_intermediate_rollout_evidence"] = (
         "not computed -- this study's closed-loop protocol is full-duration only "
-        "(500s cylinder200 / 700s bridge), per the task's explicit requirement that "
+        "(500s cylinder200 / 300s bridge, matching bridge's actual max CFD "
+        "reference duration), per the task's explicit requirement that "
         "short-horizon improvement alone is not sufficient evidence."
     )
 

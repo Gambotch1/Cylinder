@@ -157,11 +157,13 @@ def main() -> dict:
         "handoff_offset_steps_default": 2000,
         "closed_loop_full_duration_convention": {
             "cylinder200_s": 500.0,
-            "bridge_s": 700.0,
+            "bridge_s": 300.0,
             "note": "cylinder200 changed from 700s to 500s in production "
-                    "convention as of this session; bridge remains 700s. "
-                    "This study's closed-loop protocol uses these same "
-                    "per-dataset full-duration values so results are "
+                    "convention as of an earlier session; bridge changed from "
+                    "700s to 300s later, matching the actual max CFD reference "
+                    "duration (every bridge case tops out at t=300s, several "
+                    "earlier). This study's closed-loop protocol uses these "
+                    "same per-dataset full-duration values so results are "
                     "directly comparable to current production evaluations.",
         },
         "reference_quality_classifiers": {

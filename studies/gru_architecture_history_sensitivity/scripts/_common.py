@@ -138,7 +138,14 @@ def cleanup_model_subdir_alias(link_name: str) -> None:
         link_path.unlink()
 
 
-FULL_DURATION_S = {"cylinder200": 500.0, "bridge": 700.0}
+
+# bridge=300.0: every bridge CFD case tops out at t=300s (several end
+# earlier -- e.g. Ur7.265 at ~128s), confirmed directly against
+# data/cache/bridge_ds20_trim100_v1.parquet. A longer closed-loop duration
+# only runs the surrogate further past the last point any CFD reference
+# exists for, without adding validation value -- wasted compute, not a
+# more rigorous test.
+FULL_DURATION_S = {"cylinder200": 500.0, "bridge": 300.0}
 
 
 def run_coupled_sweep(run_dir: Path, cases: list[str], out_dir: Path,

@@ -69,6 +69,18 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=100,
                    help="Default 100 (the audited production baseline). "
                         "Smoke runs pass --epochs 1.")
+    p.add_argument("--batch_size", type=int, default=None,
+                   help="Overrides configs/architecture_grid.json's "
+                        "fixed_hyperparameters.batch_size (512) for THIS run "
+                        "only. The grid is fixed-hyperparameters-by-construction "
+                        "specifically so no config gets this override silently -- "
+                        "use only as a disclosed, deliberate exception (e.g. a "
+                        "history point whose backward-pass memory footprint "
+                        "does not fit at batch_size=512 on available hardware), "
+                        "never to tune away a bad early result. Recorded "
+                        "verbatim in study_receipt.json's batch_size field, "
+                        "with fixed_hyperparameters_deviation set, so it is "
+                        "never mistaken for the grid default downstream.")
     return p.parse_args()
 
 
@@ -89,12 +101,18 @@ def main() -> None:
 
     exp_subdir = exp_subdir_arg(output_dir)
 
+    batch_size = args.batch_size if args.batch_size is not None else fixed["batch_size"]
+    if args.batch_size is not None:
+        print(f"WARNING: --batch_size {args.batch_size} overrides the fixed grid "
+              f"value ({fixed['batch_size']}) for this run only -- disclosed "
+              f"exception, recorded in study_receipt.json.")
+
     train_gru_argv = [
         "train_gru.py",
         "--cfd_dataset", args.dataset,
         "--seq_len", str(args.seq_len),
         "--epochs", str(args.epochs),
-        "--batch_size", str(fixed["batch_size"]),
+        "--batch_size", str(batch_size),
         "--seed", str(args.seed),
         "--num_workers", "0",
         "--noise_std", str(fixed["noise_std"]),
@@ -183,6 +201,12 @@ def main() -> None:
         "dt_s": (0.005 if args.dataset == "cylinder200" else 0.002),
         "sequence_duration_s": args.seq_len * (0.005 if args.dataset == "cylinder200" else 0.002),
         "seed": args.seed,
+        "batch_size": batch_size,
+        "fixed_hyperparameters_deviation": (
+            None if args.batch_size is None else
+            f"batch_size={batch_size} overrides the grid's fixed value "
+            f"({fixed['batch_size']}) -- disclosed exception, not the study default."
+        ),
         "optimizer": "Adam", "lr": fixed["lr"], "weight_decay": fixed["weight_decay"],
         "scaler_source": "sklearn StandardScaler fit_scalers()",
         "scaler_fit_partition": run_config["scaler_fit_cases"],

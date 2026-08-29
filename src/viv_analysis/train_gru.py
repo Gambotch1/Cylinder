@@ -176,6 +176,35 @@ def enforce_holdout(train_cases: set, val_cases: set, test_cases: set,
     return train_cases, val_cases, test_cases
 
 
+def enforce_force_train(train_cases: set, val_cases: set, test_cases: set,
+                        all_cases: set, force_train_ur: list[float] | None) -> tuple:
+    """
+    Move specific Ur case(s) into train, out of val/test -- the opposite
+    direction of enforce_holdout, for deliberately including cases (e.g.
+    a lock-in peak) the automatic split otherwise held out of training.
+    """
+    if not force_train_ur:
+        return train_cases, val_cases, test_cases
+
+    for ur in force_train_ur:
+        label = format_ur_label(ur)
+        if label not in all_cases:
+            raise ValueError(f"force_train Ur={ur} (label={label}) not found in data.")
+        train_cases = train_cases | {label}
+        val_cases = val_cases - {label}
+        test_cases = test_cases - {label}
+
+    overlap_tv = train_cases & val_cases
+    overlap_tt = train_cases & test_cases
+    overlap_vt = val_cases & test_cases
+    if overlap_tv or overlap_tt or overlap_vt:
+        raise ValueError(
+            f"Split overlap detected: train∩val={overlap_tv}, "
+            f"train∩test={overlap_tt}, val∩test={overlap_vt}")
+
+    return train_cases, val_cases, test_cases
+
+
 def format_ur_label(ur: float) -> str:
     """Format a Ur value as a canonical label."""
     from viv_analysis.utils import format_ur_label as original_format
@@ -619,6 +648,29 @@ def setup_argparse() -> argparse.ArgumentParser:
         help="Hold out a specific Ur from training (e.g., 5.5)"
     )
     parser.add_argument(
+        "--exclude_ur", type=float, nargs="+", default=None,
+        help="Drop specific Ur case(s) from the dataset entirely, before "
+             "train/val/test splitting -- e.g. --exclude_ur 8.4232 8.6338 "
+             "8.8443 9.2655 10.1078 for the in-scope 22-case bridge subset "
+             "(excludes every case at/above 20 m/s). Different from "
+             "--holdout_ur (which keeps the case, just forces it into "
+             "test): this removes it from all three partitions, so the "
+             "model never trains, validates, or tests against it. Recorded "
+             "verbatim in run_config.json's exclude_ur field."
+    )
+    parser.add_argument(
+        "--force_train_ur", type=float, nargs="+", default=None,
+        help="Move specific Ur case(s) into the training set, out of "
+             "whichever of val/test split_cases() put them in (e.g. "
+             "--force_train_ur 6.7385 7.1597). Symmetric to --holdout_ur "
+             "but multi-valued and the opposite direction: an explicit, "
+             "disclosed deviation from the dataset's normal automatic "
+             "split, not a silent one -- recorded verbatim in "
+             "run_config.json's force_train_ur field. Raises if a value "
+             "is not found in the retained dataset, or overlaps "
+             "--holdout_ur."
+    )
+    parser.add_argument(
         "--epochs", type=int, default=None,
         help="Number of training epochs (default: dataset config)"
     )
@@ -803,6 +855,24 @@ def main() -> None:
             print(f"Quarantining {len(drop)} bridge case(s): {sorted(drop)}")
             raw_df = raw_df[~raw_df['case'].isin(drop)].copy()
     
+    # ── Drop explicitly excluded case(s) entirely (before splitting) ──────
+    exclude_labels = ([format_ur_label(u) for u in args.exclude_ur]
+                      if args.exclude_ur else [])
+    if exclude_labels:
+        present = set(str(c) for c in raw_df["case"].drop_duplicates())
+        missing = set(exclude_labels) - present
+        if missing:
+            raise ValueError(f"--exclude_ur label(s) {missing} not found in data.")
+        overlap = set(exclude_labels) & {
+            format_ur_label(u) for u in (args.force_train_ur or [])
+        }
+        if overlap:
+            raise ValueError(
+                f"--exclude_ur and --force_train_ur both reference {overlap} "
+                f"-- contradictory (drop entirely vs force into training).")
+        print(f"Excluding {len(exclude_labels)} case(s) entirely: {exclude_labels}")
+        raw_df = raw_df[~raw_df["case"].isin(exclude_labels)].copy()
+
     all_cases_unsplit = sorted(str(c) for c in raw_df["case"].drop_duplicates())
     print(f"Cases loaded (before split): {all_cases_unsplit}")
     
@@ -817,6 +887,21 @@ def main() -> None:
         train_cases, val_cases, test_cases = enforce_holdout(
             train_cases, val_cases, test_cases, set(all_cases_unsplit),
             args.holdout_ur
+        )
+
+    # ── Force specific case(s) into train ──────────────────────────────────
+    if args.force_train_ur is not None and args.holdout_ur is not None:
+        overlap = {format_ur_label(u) for u in args.force_train_ur} & {format_ur_label(args.holdout_ur)}
+        if overlap:
+            raise ValueError(
+                f"--force_train_ur and --holdout_ur both reference {overlap} "
+                f"-- contradictory (hold out of training vs force into it).")
+    if args.force_train_ur is not None:
+        print(f"Force-train: ur={args.force_train_ur}  "
+              f"label(s)={[format_ur_label(u) for u in args.force_train_ur]}")
+        train_cases, val_cases, test_cases = enforce_force_train(
+            train_cases, val_cases, test_cases, set(all_cases_unsplit),
+            args.force_train_ur
         )
 
     print(f"Train: {sorted(train_cases)}")
@@ -909,6 +994,11 @@ def main() -> None:
         "use_ur_context": use_ur_context,
         "holdout_ur": args.holdout_ur,
         "holdout_label": holdout_label,
+        "exclude_ur": args.exclude_ur,
+        "exclude_labels": exclude_labels or None,
+        "force_train_ur": args.force_train_ur,
+        "force_train_labels": ([format_ur_label(u) for u in args.force_train_ur]
+                               if args.force_train_ur else None),
         "input_cols": input_cols,
         "acc_source": args.acc_source,
         "amplitude_aware_loss": args.amplitude_aware_loss,
@@ -1077,6 +1167,8 @@ def main() -> None:
         "coordinate_mode": coord_mode,
         "cfd_dataset": dataset,
         "holdout_ur": args.holdout_ur,
+        "exclude_ur": args.exclude_ur,
+        "force_train_ur": args.force_train_ur,
         # output_dir.name is the ACTUAL resolved directory name (includes
         # _nd/_ctx/_noctx when --exp_subdir was omitted -- see "Determine
         # artifact directory" above); args.exp_subdir alone was stale
@@ -1169,6 +1261,8 @@ def main() -> None:
         "use_ur_context": use_ur_context,
         "holdout_ur": args.holdout_ur,
         "holdout_label": holdout_label,
+        "exclude_ur": args.exclude_ur,
+        "force_train_ur": args.force_train_ur,
         "gru_config": {k: v for k, v in cfg.items() if not callable(v)},
         "case_split": {
             "train": sorted(train_cases),

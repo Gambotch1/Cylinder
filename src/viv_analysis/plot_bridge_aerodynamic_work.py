@@ -200,8 +200,14 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
     apply_thesis_style()
     import matplotlib.pyplot as plt
 
+    # Window bounds (bandpass_window_periods, phase_window_periods) stay in
+    # units of structural periods Tn=1/fn -- that's the physically relevant
+    # scale for picking "while the LCO is still above the noise floor" --
+    # but the plotted/displayed x-axis is now the convective/reduced time
+    # t*=(t-t_h)U/D, consistent with the other bridge closed-loop figures.
     Tn = 1.0 / result["fn"]
-    t_star = result["t_rel"] / Tn
+    t_periods = result["t_rel"] / Tn
+    t_star = result["t_rel"] * result["U"] / result["D"]
 
     fig, (ax_phase, ax_bp, ax_cyc) = plt.subplots(
         3, 1, figsize=(TEXT_WIDTH_IN, 7.5),
@@ -215,8 +221,10 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
     # signal indistinguishable from noise and becomes uninformative.
     ph = result["phase"]
     lo_ph, hi_ph = phase_window_periods
-    ph_mask = (ph["t_center"] / Tn >= lo_ph) & (ph["t_center"] / Tn <= hi_ph)
-    ax_phase.plot(ph["t_center"][ph_mask] / Tn, ph["phase_lag_deg"][ph_mask], color=MODEL_COLOR,
+    ph_periods = ph["t_center"] / Tn
+    ph_star = ph["t_center"] * result["U"] / result["D"]
+    ph_mask = (ph_periods >= lo_ph) & (ph_periods <= hi_ph)
+    ax_phase.plot(ph_star[ph_mask], ph["phase_lag_deg"][ph_mask], color=MODEL_COLOR,
                   marker="o", ms=3, lw=1.05)
     ax_phase.axhline(0, color="gray", lw=0.6, ls=":")
     ax_phase.axhline(90, color="gray", lw=0.6, ls="--")
@@ -229,7 +237,8 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
     ax_phase.text(0.995, 183, "aerodynamic damping", transform=trans, ha="right",
                   va="bottom", fontsize=7, style="italic", color="dimgray")
     ax_phase.set_ylabel(r"absolute phase difference [deg]")
-    ax_phase.set_xlim(lo_ph, hi_ph)
+    ax_phase.set_xlim(lo_ph * Tn * result["U"] / result["D"],
+                      hi_ph * Tn * result["U"] / result["D"])
     ax_phase.set_ylim(-10, 195)
     ax_phase.set_yticks([0, 45, 90, 135, 180])
     ax_phase.annotate("(a)", xy=(-0.1, 1.0), xycoords="axes fraction",
@@ -240,7 +249,7 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
     # the point of this panel is the phase relationship, not the dimensional
     # magnitudes (already reported via c_exc and the cycle-resolved work).
     lo_p, hi_p = bandpass_window_periods
-    mask = (t_star >= lo_p) & (t_star <= hi_p)
+    mask = (t_periods >= lo_p) & (t_periods <= hi_p)
     F_bp_win = result["F_L_bp"][mask]
     hdot_bp_win = result["h_dot_bp"][mask]
     F_norm = F_bp_win / np.sqrt(np.mean(F_bp_win**2))
@@ -265,7 +274,7 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
 
     # Cumulative work is zero at handoff. Each subsequent value belongs at
     # the end of the corresponding complete structural period.
-    work_time_star = np.concatenate(([0.0], cyc["t_end"] / Tn))
+    work_time_star = np.concatenate(([0.0], cyc["t_end"] * result["U"] / result["D"]))
     W_net_plot = np.concatenate(([0.0], W_net))
 
     ax_cyc.plot(work_time_star, W_net_plot,
@@ -293,7 +302,7 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
     clip_on=False,
     )
     ax_cyc.set_ylabel(r"$W_{\mathrm{net}}=W_f-W_d$ [J/m]")
-    ax_cyc.set_xlabel(r"$(t-t_{\mathrm{h}})/T_n$")
+    ax_cyc.set_xlabel(r"$(t-t_{\mathrm{h}})U/D$")
 
     fig.align_ylabels([ax_phase, ax_bp, ax_cyc])
     fig.tight_layout()

@@ -258,6 +258,7 @@ def plot_coupled_thesis(
     dataset_note: str | None = None,
     max_display_points: int = 8000,
     fn: float | None = None,
+    U: float | None = None,
     font_scale: float = 1.0,
 ) -> dict:
     """Closed-loop (coupled GRU-structural) time-series figure: normalized
@@ -282,10 +283,15 @@ def plot_coupled_thesis(
     and produces very large files without adding visible information at
     thesis page size.
 
-    fn: if given, the x-axis is nondimensionalized as (t-t_handoff)/T_n
-        (T_n=1/fn, handoff at 0) instead of raw seconds -- opt-in so the
-        cylinder chapter's existing figures (which don't pass fn) render
-        exactly as before; only the bridge chapter passes this.
+    fn: if given (and U is not), the x-axis is nondimensionalized as
+        (t-t_handoff)/T_n (T_n=1/fn, handoff at 0) instead of raw seconds --
+        opt-in so the cylinder chapter's existing figures (which don't pass
+        fn) render exactly as before.
+    U: if given, the x-axis is nondimensionalized as the convective/reduced
+        time t*=t*U/D instead of raw seconds (no handoff shift -- t* runs
+        from the CFD case's own t=0, matching the t*=tU/D convention
+        directly, not a handoff-relative one). Takes precedence over fn
+        when both are given.
     font_scale: multiplies axes/tick/legend font sizes by this factor
         without changing figsize -- same convention as plot_open_loop_
         representative/plot_tf_result_thesis's font_scale, for appendix
@@ -316,7 +322,11 @@ def plot_coupled_thesis(
     else:
         raise ValueError(f"h_mode must be 'raw' or 'mean_removed', got {h_mode!r}")
 
-    if fn is not None:
+    if U is not None:
+        t_plot, CFD_t_plot = t * U / D, CFD_t * U / D
+        t_handoff_plot = t_handoff * U / D if t_handoff is not None else None
+        time_xlabel = r"$t^*=tU/D$"
+    elif fn is not None:
         Tn = 1.0 / fn
         t0 = t_handoff if t_handoff is not None else 0.0
         t_plot, CFD_t_plot = (t - t0) / Tn, (CFD_t - t0) / Tn
@@ -343,8 +353,8 @@ def plot_coupled_thesis(
     # over CFD. MODEL_STYLE/CFD_STYLE's dashed/solid distinction is kept
     # as-is for lower-cycle-density figures (open-loop zoom, amplitude
     # response) where it renders cleanly.
-    cfd_kwargs = {**CFD_STYLE, "linestyle": "-"}
-    model_kwargs = {**MODEL_STYLE, "linestyle": "-", "label": "GRU-coupled response"}
+    cfd_kwargs = {**CFD_STYLE, "linestyle": "-", "linewidth": 0.6}
+    model_kwargs = {**MODEL_STYLE, "linestyle": "-", "linewidth": 0.6, "label": "GRU-coupled response"}
 
     fig, axes = plt.subplots(2, 1, figsize=(TEXT_WIDTH_IN, 4.5), sharex=True,
                              constrained_layout=True)

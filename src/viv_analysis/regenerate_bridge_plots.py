@@ -111,13 +111,15 @@ def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame,
 
         # CFD trajectory mask
         cfd_mask = case["CFD_t"] <= 200
+        fn = config["bridge_fn_hz"]
+        U = case["Ur"] * fn * case["D"]
         r = plot_coupled_thesis(
             case["t"][model_mask], case["h"][model_mask], case["CL"][model_mask], case["D"],
             case["CFD_t"][cfd_mask], case["CFD_h"][cfd_mask], case["CFD_cl"][cfd_mask],
             case_label=case_label, output_dir=thesis_dir,
             condition_label=f"$U_r={case['Ur']:g}$", t_handoff=case["t_handoff"],
             h_mode="mean_removed", dataset_note=dataset_note,
-            fn=config["bridge_fn_hz"], font_scale=appendix_font_scale,
+            U=U, font_scale=appendix_font_scale,
         )
         results[case["Ur"]] = r
         print(f"  wrote {r['pdf_path'].name}")

@@ -35,11 +35,14 @@ BASELINE_DIR = PROJECT_ROOT / "results" / "gru_bridge_nd_context_noacc_v1_couple
 OUT_DIR = EVAL_DIR / "thesis_figures"
 
 # These figures are inserted in the thesis with \includegraphics[width=0.8\textwidth,...].
-# apply_thesis_style() tunes font sizes for a figure spanning the full \textwidth, so the
-# saved figure is enlarged by 1/INCLUDE_WIDTH_FRAC here; LaTeX's downscale to 0.8\textwidth
-# then restores the intended physical size (and font-to-figure ratio) on the page.
+# apply_thesis_style()'s font sizes are absolute points, tuned so a figure saved at
+# figsize width=TEXT_WIDTH_IN reads correctly when included at width=\textwidth (LaTeX
+# scale factor 1, no distortion). Declaring the saved figure's width as
+# TEXT_WIDTH_IN*INCLUDE_WIDTH_FRAC here -- matching its actual on-page display width --
+# keeps that same scale factor of 1 at this narrower inclusion width, instead of
+# shrinking the fonts by inflating the saved figure and letting LaTeX scale it back down.
 INCLUDE_WIDTH_FRAC = 0.8
-FIG_WIDTH_IN = TEXT_WIDTH_IN / INCLUDE_WIDTH_FRAC
+FIG_WIDTH_IN = TEXT_WIDTH_IN * INCLUDE_WIDTH_FRAC
 
 MODE_COLOR = {
     "none": MODEL_COLOR,
@@ -69,7 +72,7 @@ def plot_amplitude_error_by_mode() -> tuple[Path, Path]:
     cfd_a_star = float(df["cfd_A_star"].dropna().iloc[0])
 
     modes = ["none", "replay", "surrogate", "white"]
-    fig, (ax_a, ax_stab) = plt.subplots(1, 2, figsize=(FIG_WIDTH_IN, 3.4 / INCLUDE_WIDTH_FRAC),
+    fig, (ax_a, ax_stab) = plt.subplots(1, 2, figsize=(FIG_WIDTH_IN, 3.4 * INCLUDE_WIDTH_FRAC),
                                          gridspec_kw={"width_ratios": [1.3, 1.0]})
 
     x_positions, x_labels = [], []
@@ -183,7 +186,7 @@ def plot_representative_traces() -> tuple[Path, Path]:
 
     plot_duration = 200.0
 
-    fig, ax = plt.subplots(figsize=(FIG_WIDTH_IN, 3.6 / INCLUDE_WIDTH_FRAC))
+    fig, ax = plt.subplots(figsize=(FIG_WIDTH_IN, 3.6 * INCLUDE_WIDTH_FRAC))
 
     cfd = cases["none"]
     t_cfd_rel = cfd["CFD_t"] - t_h

@@ -22,3 +22,14 @@ env/
 *.egg-info
 *.log
 *.bsub
+*.npz
+*.json
+*.pdf
+*.txt
+*.csv
+*.pkl
+*.pt
+*.tex
+*.parquet
+*.bsub
+*.sh

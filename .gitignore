@@ -33,3 +33,4 @@ env/
 *.parquet
 *.bsub
 *.sh
+/bsub_jobs

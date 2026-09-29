@@ -120,6 +120,11 @@ def sample_batch_starts(
     release_idx = int(np.searchsorted(ordered_times, release_t))
     lo = release_idx + seq_len
     hi = len(ordered_times) - max_future_steps - 1
+    if hi <= lo:
+        raise ValueError(
+            f"Case too short for {max_future_steps}-step rollout starting "
+            f"after release+seq_len: usable range [{lo},{hi}]."
+        )
     edges = np.linspace(lo, hi, batch_size + 1)
     starts = [int(rng.integers(int(edges[i]), int(edges[i + 1]) + 1))
               for i in range(batch_size)]

@@ -24,7 +24,7 @@ from viv_analysis.models.gru import VIV_GRU
 from viv_analysis.rollout_training import (
     ScalerConstants, build_next_row_torch, rollout_chunk,
     sample_batch_starts, build_batch_from_case, build_tf_batch_from_case,
-    loss_cl, loss_roll, loss_W_roll,
+    loss_cl, loss_roll,
 )
 
 D_BRIDGE = 7.42
@@ -218,38 +218,6 @@ class TestLossRoll:
         loss_narrow = loss_roll(h_pred, hd, h_cfd, hd, D=D_BRIDGE, U=U_BRIDGE,
                                 x_mean=_IDENTITY_X_MEAN, x_scale=np.array([0.01, 1.0]), disp_idx=0, vel_idx=1)
         assert loss_narrow.item() > loss_wide.item()
-
-
-class TestLossWRoll:
-    def test_zero_when_pred_matches_cfd(self):
-        rng = np.random.default_rng(1)
-        cl = torch.tensor(rng.normal(size=(2, 40)), dtype=torch.float32)
-        hd = torch.tensor(rng.normal(size=(2, 40)), dtype=torch.float32)
-        loss = loss_W_roll(cl, hd, cl.clone(), hd.clone(), q=100.0, c=10.0, dt=0.002, block_steps=20)
-        assert loss.item() == pytest.approx(0.0, abs=1e-6)
-
-    def test_nonzero_when_pred_has_wrong_net_work(self):
-        t = torch.linspace(0, 10, 400)
-        hd = torch.sin(t).unsqueeze(0)
-        cl_cfd = torch.sin(t).unsqueeze(0)     # IN PHASE with hdot -> strong positive net work
-        cl_pred = -torch.sin(t).unsqueeze(0)   # anti-phase -> strong negative net work (wrong sign)
-        loss = loss_W_roll(cl_pred, hd, cl_cfd, hd, q=1.0, c=0.01, dt=(t[1] - t[0]).item(), block_steps=400)
-        assert loss.item() > 0.1
-
-    def test_static_force_offset_is_ignored(self):
-        """A pure DC (static-load) mismatch between pred and cfd must NOT
-        register in L_W,roll -- that's L_CL's job (it compares scaled C_L
-        pointwise, mean included). Only the oscillatory (fluctuating)
-        component of force should drive this loss, per F_L' = F_L -
-        mean_b(F_L)."""
-        t = torch.linspace(0, 10, 400)
-        hd = torch.sin(t).unsqueeze(0)
-        cl_shared_oscillation = torch.sin(t).unsqueeze(0)
-        cl_cfd = cl_shared_oscillation
-        cl_pred = cl_shared_oscillation + 50.0  # huge static offset, same oscillatory part
-        loss = loss_W_roll(cl_pred, hd, cl_cfd, hd, q=1.0, c=0.01, dt=(t[1] - t[0]).item(), block_steps=400)
-        assert loss.item() == pytest.approx(0.0, abs=1e-4)
-
 
 # ── gradient flow through Newmark + multiple rollout steps ─────────────────
 

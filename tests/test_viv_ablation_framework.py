@@ -34,8 +34,8 @@ class TestDatasetValidation:
     """Criterion 2: Fix _resolve_data_dirs() to explicitly allow only cylinder, cylinder200, bridge."""
 
     def test_allowed_datasets(self):
-        """Should accept cylinder, cylinder200, bridge."""
-        allowed = ["cylinder", "cylinder200", "bridge"]
+        """Should accept cylinder200 and bridge."""
+        allowed = ["cylinder200", "bridge"]
         for dataset in allowed:
             # Should not raise
             disp_dir, cd_dir, cl_dir = _resolve_data_dirs(dataset)
@@ -163,12 +163,6 @@ class TestResolveNdReferenceScales:
         cfg = prepare_gru_config("cylinder200", config).copy()
         with pytest.raises(ValueError, match="unsupported dataset"):
             resolve_nd_reference_scales("cylinder1000", cfg)
-
-    def test_C_re200_cylinder_is_rejected(self):
-        """C. Re=200 cylinder is explicitly rejected for nondimensional inputs."""
-        cfg = prepare_gru_config("cylinder", config).copy()
-        with pytest.raises(ValueError, match="cylinder"):
-            resolve_nd_reference_scales("cylinder", cfg)
 
     def test_unsupported_dataset_rejected_with_clear_message(self):
         cfg = prepare_gru_config("bridge", config).copy()

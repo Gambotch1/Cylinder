@@ -224,9 +224,8 @@ def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None
 def normalize_cfd_dataset(dataset: str) -> str:
     """Canonicalize a dataset name/alias for compatibility comparisons.
 
-    Maps every known cylinder200 spelling to "cylinder200", "bridge" to
-    itself, and the old Re=200 "cylinder" dataset to itself (distinct from
-    cylinder200). Unknown strings pass through lowercased/stripped --
+    Maps every known cylinder200 spelling to "cylinder200" and "bridge" to
+    itself. Unknown strings pass through lowercased/stripped --
     comparing an unknown string against a canonical one simply won't match,
     which is the correct "different dataset" outcome rather than a crash.
     """
@@ -235,8 +234,6 @@ def normalize_cfd_dataset(dataset: str) -> str:
         return "bridge"
     if ds in CYLINDER200_ALIASES:
         return "cylinder200"
-    if ds == "cylinder":
-        return "cylinder"
     return ds
 
 

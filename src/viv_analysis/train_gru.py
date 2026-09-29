@@ -65,13 +65,6 @@ def resolve_nd_reference_scales(dataset: str, cfg: dict) -> tuple[float, float]:
     elif ds in CYLINDER200_ALIASES:
         D = float(cfg["cylinder200_D_ref"])
         fn = float(cfg["cylinder200_fn"])
-    elif ds == "cylinder":
-        raise ValueError(
-            "Nondimensional inputs are not supported for the old Re=200 "
-            "'cylinder' dataset in this project -- only cylinder200 "
-            "(and its aliases) and bridge are. "
-            "Use --dim_inputs / omit --nd_inputs for 'cylinder'."
-        )
     else:
         raise ValueError(
             f"resolve_nd_reference_scales: unsupported dataset '{dataset}'. "
@@ -236,7 +229,7 @@ def resolve_dataset(dataset_pos: str | None, dataset_cli: str | None) -> str:
         return dataset_cli
     if dataset_pos is not None:
         return dataset_pos
-    return "cylinder"
+    return "cylinder200"
 
 
 def check_artifact_collision(output_dir: Path, overwrite: bool) -> None:
@@ -256,14 +249,6 @@ def check_artifact_collision(output_dir: Path, overwrite: bool) -> None:
 
 
 # ── Dataset-specific split definitions ────────────────────────────────────────
-
-def _cylinder_split(cases: list[str], release_t: float) -> tuple:
-    train = {"Ur3.0","Ur5.6","Ur5.0","Ur6.0","Ur6.5","Ur9.0","Ur4.6","Ur5.4", "Ur2.0","Ur3.6","Ur2.5","Ur3.8"}
-    val   = {"Ur4.0","Ur4.4","Ur5.2","Ur4.8","Ur8.0","Ur3.2","Ur12.0","Ur10.0"}
-    test  = {"Ur4.2","Ur5.8","Ur7.0","Ur3.4","Ur11.0"}
-    rt    = {v: release_t for v in cases}
-    return train, val, test, rt
-
 
 def _cylinder200_split(cases: list[str]) -> tuple:
     """
@@ -329,8 +314,6 @@ def _bridge_split(cases: list[str], fn_hz: float,
 def split_cases(cases: list[str], dataset: str,
                 cfg: dict) -> tuple[set, set, set, dict]:
     ds = dataset.strip().lower()
-    if ds == "cylinder":
-        return _cylinder_split(cases, release_t=cfg["cylinder_t_release"])
     if ds in CYLINDER200_ALIASES:
         return _cylinder200_split(cases)
     if ds == "bridge":

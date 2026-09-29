@@ -185,12 +185,12 @@ def merge_dataframes(
 
     Parameters
     ----------
-    dataset : "cylinder" (default), "cylinder200", or "bridge"
+    dataset : "cylinder200" (default) or "bridge"
     fn_hz   : bridge natural frequency [Hz]  — required for bridge
     d_ref   : bridge reference depth [m]     — required for bridge
     convert_bridge_to_ur : if True, convert m/s case labels to Ur labels
     """
-    ds = (dataset or os.getenv("VIV_DATASET", "cylinder")).strip().lower()
+    ds = (dataset or os.getenv("VIV_DATASET", "cylinder200")).strip().lower()
     disp_dir, cd_dir, cl_dir = _resolve_data_dirs(ds)
 
     disp_df = read_out_directory(disp_dir, "disp")

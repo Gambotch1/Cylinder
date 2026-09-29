@@ -1,28 +1,10 @@
 #!/usr/bin/env python3
 """
 Regenerate cylinder200 closed-loop (coupled GRU-structural) figures from
-ALREADY-SAVED results (the .npz trajectories + receipt.json from a prior
-`evaluate_all.py --dataset cylinder200` sweep, and its sweep_results.csv).
-No model inference, no coupled simulation is re-run.
-
-Two output tracks, kept deliberately separate:
-
-  - replot_timeseries / replot_sweep_summary: fast diagnostic-style replot
-    (ad hoc colors, old figsize/dpi, in-figure title) -- kept for a quick
-    "just refresh under whatever apply_thesis_style() currently sets"
-    check. Overwrites results/<model>_coupled_eval/coupled_viv_Ur*.png and
-    sweep_results.png in place, same as before.
-
-  - replot_timeseries_thesis / replot_sweep_summary_thesis: the actual
-    thesis figures (thesis_plots.plot_coupled_thesis /
-    plot_amplitude_response_thesis -- CFD_STYLE/MODEL_STYLE, correct
-    thesis figure width, 600dpi, no title, PDF+PNG+caption, display-only
-    decimation). Written to a SEPARATE
-    results/<model>_coupled_eval/thesis_figures/ directory -- never
-    overwrites the diagnostic PNGs above.
+ALREADY-SAVED results
 
 Usage:
-    python -m src.viv_analysis.regenerate_cylinder_plots \
+    python -m src.viv_analysis.plotting.regenerate_cylinder_plots \
         --model_subdir gru_cylinder200_dim_context 
         --model_subdir gru_cylinder200_nd_context_noacc \
         --model_column gru_cylinder200_nd_context_noacc \
@@ -39,11 +21,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from viv_analysis.plot_style import apply_thesis_style
+from viv_analysis.plotting.plot_style import apply_thesis_style
 apply_thesis_style()
 
+from viv_analysis.config import cylinder200_U
 from viv_analysis.evaluate_all import load_full_cfd_df
-from viv_analysis.thesis_plots import (
+from viv_analysis.plotting.thesis_plots import (
     plot_amplitude_response_thesis, plot_coupled_thesis, ur_tag,
 )
 from viv_analysis.utils import PROJECT_ROOT, format_ur_label, present_model_label
@@ -72,10 +55,6 @@ def _load_case(npz_path: Path, cfd_df: pd.DataFrame):
                CFD_t=case_df["time"].to_numpy(), CFD_h=case_df["disp"].to_numpy(),
                CFD_cl=case_df["cl"].to_numpy())
 
-
-# ── Fast diagnostic-style replot (unchanged from before; ad hoc colors,
-# old figsize/dpi/title -- kept only as a quick "did the global rcParams
-# change" check, NOT the thesis output) ─────────────────────────────────
 
 def replot_timeseries(coupled_eval_dir: Path, cfd_df: pd.DataFrame, dataset: str = "cylinder200") -> list[Path]:
     written = []
@@ -155,19 +134,11 @@ def replot_sweep_summary(coupled_eval_dir: Path, dataset: str = "cylinder200") -
     return out_png
 
 
-# ── Thesis-quality output (the actual deliverable) ─────────────────────
 
 def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame, dataset: str,
                              dataset_note: str | None,
-                             appendix_font_scale: float = 1.0) -> dict[float, dict]:
-    """appendix_font_scale != 1.0: writes to thesis_figures/appendix_narrow/
-    instead of thesis_figures/ directly. Closed-loop figures have no
-    separate "representative" filename the way plot_open_loop_representative/
-    plot_tf_result_thesis do -- every case shares the same closed_loop_Ur*
-    naming, so regenerating at a narrower appendix scale IN PLACE would
-    silently overwrite whichever case gets picked as the full-width main-
-    text figure. A separate subdirectory keeps both scales available at
-    once instead of forcing a choice at generation time."""
+                             appendix_font_scale: float = 1.0,
+                             linewidth: float = 0.6) -> dict[float, dict]:
     thesis_dir = coupled_eval_dir / "thesis_figures"
     if appendix_font_scale != 1.0:
         thesis_dir = thesis_dir / "appendix_narrow"
@@ -188,7 +159,7 @@ def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame, datas
             case_label=case_label, output_dir=thesis_dir,
             condition_label=f"$U_r={case['Ur']:g}$", t_handoff=case["t_handoff"],
             h_mode="raw", dataset_note=dataset_note,
-            font_scale=appendix_font_scale,
+            U=cylinder200_U(case["Ur"]), font_scale=appendix_font_scale, linewidth=linewidth,
         )
         results[case["Ur"]] = r
         print(f"  wrote {r['pdf_path'].name}")
@@ -217,10 +188,6 @@ def replot_sweep_summary_thesis(coupled_eval_dir: Path, model_column: str,
 
 
 def select_representative_cases(coupled_eval_dir: Path, model_column: str) -> dict:
-    """Data-driven (not subjective) pick of one low-Ur, one near-peak, and
-    one high-Ur case for the main chapter -- everything else stays
-    appendix-only. low/high = the sweep's own Ur extremes; near-peak = the
-    case with the largest CFD steady-state amplitude (the lock-in peak)."""
     csv_path = coupled_eval_dir / "sweep_results.csv"
     if not csv_path.exists():
         return {}

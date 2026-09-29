@@ -23,8 +23,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from viv_analysis.config import config
 from viv_analysis.evaluate_all import load_full_cfd_df
-from viv_analysis.plot_style import (
+from viv_analysis.plotting.plot_style import (
     CFD_COLOR, ERROR_COLOR, MODEL_COLOR, SECONDARY_COLOR, TEXT_WIDTH_IN,
     apply_thesis_style,
 )
@@ -34,13 +35,6 @@ EVAL_DIR = PROJECT_ROOT / "results" / "gru_bridge_nd_context_noacc_stochastic_cl
 BASELINE_DIR = PROJECT_ROOT / "results" / "gru_bridge_nd_context_noacc_v1_coupled_eval"
 OUT_DIR = EVAL_DIR / "thesis_figures"
 
-# These figures are inserted in the thesis with \includegraphics[width=0.8\textwidth,...].
-# apply_thesis_style()'s font sizes are absolute points, tuned so a figure saved at
-# figsize width=TEXT_WIDTH_IN reads correctly when included at width=\textwidth (LaTeX
-# scale factor 1, no distortion). Declaring the saved figure's width as
-# TEXT_WIDTH_IN*INCLUDE_WIDTH_FRAC here -- matching its actual on-page display width --
-# keeps that same scale factor of 1 at this narrower inclusion width, instead of
-# shrinking the fonts by inflating the saved figure and letting LaTeX scale it back down.
 INCLUDE_WIDTH_FRAC = 0.8
 FIG_WIDTH_IN = TEXT_WIDTH_IN * INCLUDE_WIDTH_FRAC
 
@@ -122,27 +116,6 @@ def plot_amplitude_error_by_mode() -> tuple[Path, Path]:
     fig.savefig(stem.with_suffix(".png"), dpi=200)
     plt.close(fig)
 
-    n_surrogate = (df["noise_mode"] == "surrogate").sum()
-    n_white = (df["noise_mode"] == "white").sum()
-    caption = (
-        r"Closed-loop response amplitude $A^*$ (left) and rollout stability "
-        r"outcome (right) under additive residual noise injected into the "
-        r"predicted $C_L$ during closed-loop rollout, at the lock-in peak "
-        rf"case (Ur6.7385, $U=16$\,m/s), model "
-        r"\texttt{gru\_bridge\_nd\_context\_noacc}. Deterministic (no noise) "
-        r"and replay (fixed trace) are single runs; surrogate- and "
-        rf"white-noise modes are swept over {n_surrogate} and {n_white} "
-        r"independent seeds respectively (dots = individual seeds, tick = "
-        r"median). All noise-injected variants remain far below the CFD "
-        rf"reference amplitude ($A^*_{{\mathrm{{CFD}}}}={cfd_a_star:.4f}$); "
-        r"injecting noise does not recover lock-in amplitude and instead "
-        r"shifts the qualitative rollout outcome away from divergence "
-        r"toward decay-to-rest (and, for a subset of white-noise seeds, a "
-        r"low-amplitude stationary limit cycle), indicating the residual "
-        r"noise perturbs the trajectory without correcting the underlying "
-        r"amplitude deficit."
-    )
-    stem.with_suffix(".caption.txt").write_text(caption + "\n")
     return stem.with_suffix(".pdf"), stem.with_suffix(".png")
 
 
@@ -170,10 +143,12 @@ def plot_representative_traces() -> tuple[Path, Path]:
         "none": next(BASELINE_DIR.glob("*Ur6.7385*noise-none*.npz")),
         "surrogate": next(EVAL_DIR.glob("*noise-surrogate*seed0*.npz")),
         "white": next(EVAL_DIR.glob("*noise-white*seed0*.npz")),
-        "replay": next(EVAL_DIR.glob("*noise-replay*.npz")),
     }
     cases = {mode: _load_case(p, cfd_df) for mode, p in files.items()}
     D = cases["none"]["D"]
+    Ur = 6.7385
+    fn = config["bridge_fn_hz"]
+    U = Ur * fn * D
 
     t_h = cases["none"]["t_handoff"]
     for mode, c in cases.items():
@@ -191,21 +166,26 @@ def plot_representative_traces() -> tuple[Path, Path]:
     cfd = cases["none"]
     t_cfd_rel = cfd["CFD_t"] - t_h
     cfd_mask = (t_cfd_rel >= 0.0) & (t_cfd_rel <= plot_duration)
-    ax.plot(t_cfd_rel[cfd_mask], (cfd["CFD_h"][cfd_mask] - np.mean(cfd["CFD_h"][cfd_mask])) / D,
+    ax.plot(t_cfd_rel[cfd_mask] * U / D, (cfd["CFD_h"][cfd_mask] - np.mean(cfd["CFD_h"][cfd_mask])) / D,
             color=CFD_COLOR, lw=1.0, label="CFD reference")
 
-    for mode in ["none", "surrogate", "white", "replay"]:
+    # Local override, this figure only -- MODE_LABEL is shared with
+    # plot_amplitude_error_by_mode's x-tick labels, which must keep
+    # reading "Surrogate noise".
+    legend_label = dict(MODE_LABEL, surrogate="Frequency-matched\nresidual")
+
+    for mode in ["none", "surrogate", "white"]:
         c = cases[mode]
         t_model_rel = c["t"] - c["t_handoff"]
         mask = t_model_rel <= plot_duration
-        ax.plot(t_model_rel[mask], (c["h"][mask] - np.mean(c["h"][mask])) / D,
+        ax.plot(t_model_rel[mask] * U / D, (c["h"][mask] - np.mean(c["h"][mask])) / D,
                 color=MODE_COLOR[mode], lw=0.95,
                 ls=("-" if mode == "none" else (0, (4, 2))),
-                label=MODE_LABEL[mode].replace("\n", " "))
+                label=legend_label[mode].replace("\n", " "))
 
     ax.axvline(0.0, color="gray", lw=0.6, ls=":")
     ax.set_ylabel(r"$(h-\bar h)/D$")
-    ax.set_xlabel(r"$t-t_{\mathrm{h}}$ [s]")
+    ax.set_xlabel(r"$t^*=(t-t_{\mathrm{h}})U/D$")
     ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncol=3, frameon=False,
               borderaxespad=0.0, fontsize=7.8)
 
@@ -215,18 +195,6 @@ def plot_representative_traces() -> tuple[Path, Path]:
     fig.savefig(stem.with_suffix(".pdf"))
     fig.savefig(stem.with_suffix(".png"), dpi=200)
     plt.close(fig)
-
-    caption = (
-        r"Representative closed-loop displacement traces at the lock-in "
-        r"peak case (Ur6.7385, $U=16$\,m/s) under each noise mode (one "
-        r"representative seed shown for surrogate and white noise), "
-        r"against the CFD reference. All model variants collapse toward a "
-        r"small residual response well below the CFD lock-in amplitude "
-        r"regardless of the injected noise mode -- see "
-        r"Fig.~\ref{fig:stochastic_closure_amplitude_and_stability} for "
-        r"the amplitude and stability-outcome summary across all seeds."
-    )
-    stem.with_suffix(".caption.txt").write_text(caption + "\n")
     return stem.with_suffix(".pdf"), stem.with_suffix(".png")
 
 

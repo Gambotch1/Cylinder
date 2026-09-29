@@ -1,30 +1,7 @@
 #!/usr/bin/env python3
 """
-Differentiable closed-loop rollout mechanics for GRU-structural VIV fine-tuning.
-
-Mirrors coupled_inference.py::run_coupled_viv step-for-step (same operation
-order, same one-step-delay convention for which structural state gets pushed
-into the GRU's input history window), but with torch tensors end-to-end so
-gradients can flow from a rollout loss back through the Newmark structural
-integration and through however many rollout steps are chained before a
-detach point.
-
-Newmark_beta (imported, not reimplemented) is pure tensor arithmetic
-(+, -, *, /) with no numpy-only calls, so it is already autograd-compatible
-for torch.Tensor inputs -- reusing it directly guarantees the differentiable
-structural step is bit-for-bit the same formula as the validated
-non-differentiable coupled-inference path (and the oracle-force replay that
-verified it against Fluent in this diagnostic campaign).
-
-Background (VIV bridge closed-loop generalization-failure diagnosis, see
-results/open_loop_energy_diagnostic/ and results/closed_loop_diagnostic_Ur6.7385/):
-the frozen no-acceleration GRU checkpoint is pointwise-accurate in teacher
-forcing (R^2~0.995-0.999) but its own closed-loop rollout desynchronizes from
-the CFD lock-in frequency within ~1-2s (hidden state) and the surrogate
-aerodynamic force flips from exciting to damping within ~6.5-7s (c_exc sign
-flip, confirmed independently via cross-spectral phase: CFD-path phi~-9deg,
-coupled-path phi~+177deg). None of that is visible to a loss computed only on
-CFD-prescribed (teacher-forced) histories -- hence rollout-aware fine-tuning.
+Closed-loop simulation connecting a PyTorch GRU model with a Newmark-beta
+physics solver to fine-tune predictions over time.
 """
 from __future__ import annotations
 
@@ -40,9 +17,7 @@ from viv_analysis.utils import parse_ur_label
 
 @dataclass
 class ScalerConstants:
-    """Frozen (never refit -- "do not change the scaler convention") scaler
-    parameters as plain floats/arrays, precomputed once so the rollout loop
-    doesn't pay StandardScaler's per-call input validation at every step."""
+    """Stores normalization parameters (mean and scaling factor)."""
     x_mean: np.ndarray
     x_scale: np.ndarray
     y_mean: float
@@ -64,12 +39,7 @@ def build_next_row_torch(
     x_mean: np.ndarray, x_scale: np.ndarray,
     use_ur_context: bool, ur_scaled: float,
 ) -> torch.Tensor:
-    """Physical structural state (B,) tensors -> one new standardized GRU
-    input row (B, n_features). Exactly mirrors run_coupled_viv's per-step
-    "update kinematic history window" block (coupled_inference.py L866-884):
-    name-keyed divisor lookup (never positional), same nd-transform formula,
-    same StandardScaler-equivalent affine transform, same Ur-context append.
-    """
+    """Normalizes current displacement, velocity, and acceleration into a GRU input row."""
     state_by_name = {"disp": h_i, "vel": hdot_i, "acc": hddot_i}
     kin = torch.stack([state_by_name[c] for c in input_cols], dim=-1)  # (B, n_kin)
 
@@ -79,10 +49,12 @@ def build_next_row_torch(
                                 dtype=kin.dtype, device=kin.device)
         kin = kin / divisors
 
+    # Standardise: (X - mean) / scale
     x_mean_t = torch.as_tensor(x_mean, dtype=kin.dtype, device=kin.device)
     x_scale_t = torch.as_tensor(x_scale, dtype=kin.dtype, device=kin.device)
     kin_scaled = (kin - x_mean_t) / x_scale_t
 
+    # Append Ur_context (Ur) if provided
     if use_ur_context:
         ur_col = torch.full((kin_scaled.shape[0], 1), float(ur_scaled),
                             dtype=kin.dtype, device=kin.device)
@@ -97,44 +69,37 @@ def rollout_chunk(
     input_cols: list[str], nd_inputs: bool, sc: ScalerConstants,
     use_ur_context: bool, ur_scaled: float,
 ) -> dict:
-    """Run n_steps of the closed GRU-Newmark loop, batched over the leading
-    dim of `window`/`h_state`/etc. Gradients flow through the WHOLE chunk
-    (no detachment inside this function) -- the caller decides where to
-    truncate (TBPTT) by calling .detach() on this function's returned
-    window/h_state/hdot_state/hddot_state before starting the next chunk.
-
-    Step order and the h[i] "pushed" (not h[i+1]) convention are copied
-    verbatim from run_coupled_viv (coupled_inference.py L827-904) so a
-    no-grad call of this function, given identical scalars/initial state,
-    reproduces run_coupled_viv's trajectory to floating-point precision --
-    see tests/test_rollout_training.py::test_rollout_chunk_matches_run_coupled_viv.
+    """Run n_steps of the closed GRU-Newmark loop while tracking gradients
     """
     win = window
     h_i, hdot_i, hddot_i = h_state, hdot_state, hddot_state
     cl_scaled_steps, cl_phys_steps, h_steps, hdot_steps = [], [], [], []
 
     for _ in range(n_steps):
-        pred_scaled, _ = model(win)                       # (B,)
-        cl_phys = pred_scaled * sc.y_scale + sc.y_mean     # inverse-transform
+        # 1.Predict aerodynamic force coefficient (scaled) using GRU
+        pred_scaled, _ = model(win)                      
+        cl_phys = pred_scaled * sc.y_scale + sc.y_mean     
         F = q * cl_phys
 
+        # 2.Phyics step: Calculate net structural response (h, hdot, hddot) using Newmark-beta
         h_next, hdot_next, hddot_next = Newmark_beta(
             F=F, h=h_i, h_dot=hdot_i, h_ddot=hddot_i, dt=dt, m=m, c=c, k=k,
         )
 
-        # Push the state that DROVE this step (h_i, pre-update) -- matches
-        # "predict CL[i+1] from kinematics [...,h[i]]" in run_coupled_viv.
+        # 3.Slide window: Drop oldest time step, append new physical state
         new_row = build_next_row_torch(
             h_i, hdot_i, hddot_i, input_cols, nd_inputs, D, U,
             sc.x_mean, sc.x_scale, use_ur_context, ur_scaled,
         )
         win = torch.cat([win[:, 1:, :], new_row.unsqueeze(1)], dim=1)
 
+        # 4.Track ouptuts 
         cl_scaled_steps.append(pred_scaled)
         cl_phys_steps.append(cl_phys)
         h_steps.append(h_i)
         hdot_steps.append(hdot_i)
 
+        # 5.Adanve state
         h_i, hdot_i, hddot_i = h_next, hdot_next, hddot_next
 
     return dict(
@@ -150,20 +115,11 @@ def sample_batch_starts(
     case_df: pd.DataFrame, release_t: float, seq_len: int, max_future_steps: int,
     batch_size: int, rng: np.random.Generator,
 ) -> list[int]:
-    """Pick `batch_size` start indices (each usable as a handoff_idx into
-    warmup_history-style windowing), stratified across the case's usable
-    post-release range so a single training iteration sees samples "spread
-    throughout the CFD trajectory, including growth, high-amplitude and
-    decaying portions" (not clustered only near the release transient)."""
+    """Selects random starting points across usable time-series data."""
     ordered_times = case_df["time"].to_numpy(dtype=np.float64)
     release_idx = int(np.searchsorted(ordered_times, release_t))
     lo = release_idx + seq_len
     hi = len(ordered_times) - max_future_steps - 1
-    if hi <= lo:
-        raise ValueError(
-            f"Case too short for {max_future_steps}-step rollout starting "
-            f"after release+seq_len: usable range [{lo},{hi}]."
-        )
     edges = np.linspace(lo, hi, batch_size + 1)
     starts = [int(rng.integers(int(edges[i]), int(edges[i + 1]) + 1))
               for i in range(batch_size)]
@@ -290,10 +246,9 @@ def build_tf_batch_from_case(
 
 def loss_cl(cl_scaled_pred: torch.Tensor, cl_cfd_phys: torch.Tensor,
            y_mean: float, y_scale: float) -> torch.Tensor:
-    """Pointwise MSE in the SAME scaled C_L space the base model was
-    pretrained in (mirrors the pretraining criterion, just evaluated on
-    rollout-generated predictions instead of teacher-forced ones)."""
+    """MSE Loss for predicted force against ground truth CFD force."""
     cl_cfd_scaled = (cl_cfd_phys - y_mean) / y_scale
+    
     return torch.mean((cl_scaled_pred - cl_cfd_scaled) ** 2)
 
 
@@ -301,72 +256,10 @@ def loss_roll(h_pred: torch.Tensor, hdot_pred: torch.Tensor,
              h_cfd: torch.Tensor, hdot_cfd: torch.Tensor,
              D: float, U: float, x_mean: np.ndarray, x_scale: np.ndarray,
              disp_idx: int, vel_idx: int) -> torch.Tensor:
-    """Trajectory-tracking MSE in the FULL standardized units the model's
-    own inputs are normalized to (nd-transform THEN the frozen x_scaler's
-    affine transform) -- not just raw nd units (h/D, hdot/U).
-
-    This match matters: L_CL is computed in y_scaler-standardized (unit-
-    variance-ish) C_L space, so if L_roll were left in raw nd units, its
-    numeric magnitude would be ~1e-3-1e-6 (h/D, hdot/U are themselves small
-    fractions, squared) versus L_CL's O(1) scale -- observed directly in a
-    smoke run (roll~1e-5 vs cl~1-7 over a 750-step rollout), meaning
-    lambda_roll=1 would have had negligible effect on gradients despite
-    being nominally "on". Standardizing both losses to the same O(1) scale
-    keeps a single lambda_roll meaningful across curriculum stages."""
+    """MSE Loss for predicted physical motion vs ground truth CFD trajectory."""
     h_pred_std = (h_pred / D - x_mean[disp_idx]) / x_scale[disp_idx]
     h_cfd_std = (h_cfd / D - x_mean[disp_idx]) / x_scale[disp_idx]
     hdot_pred_std = (hdot_pred / U - x_mean[vel_idx]) / x_scale[vel_idx]
     hdot_cfd_std = (hdot_cfd / U - x_mean[vel_idx]) / x_scale[vel_idx]
+
     return torch.mean((h_pred_std - h_cfd_std) ** 2) + torch.mean((hdot_pred_std - hdot_cfd_std) ** 2)
-
-
-def loss_W_roll(cl_phys_pred: torch.Tensor, hdot_pred: torch.Tensor,
-                cl_cfd: torch.Tensor, hdot_cfd: torch.Tensor,
-                q: float, c: float, dt: float, block_steps: int,
-                eps: float = 1e-6) -> torch.Tensor:
-    """Work-matching loss evaluated INSIDE the rollout (not on CFD-
-    prescribed histories): per block of `block_steps`, compare the
-    self-generated net aerodynamic work W_net,pred = int(F_pred*hdot_pred)dt
-    - int(c*hdot_pred^2)dt against the CFD's own W_net,cfd over the SAME
-    absolute time block, normalized by that block's GROSS exchanged energy
-    S_W,b = int(|F_pred*hdot_pred|)dt (always positive; ties the
-    normalization to the model's own current work scale rather than
-    dividing by a possibly-near-zero net-work reference).
-
-    ELL_W,roll = mean_b [ (W_net,pred,b - W_net,cfd,b) / (S_W,b + eps) ]^2
-
-    Uses the FLUCTUATING force F_L' = F_L - mean_b(F_L) (each path's own
-    per-block mean subtracted, independently) for the oscillatory-work
-    integral -- the mean/static load level is already constrained by the
-    plain pointwise L_CL (which compares scaled C_L directly, including its
-    mean), so leaving the static component in W_f would let a static-offset
-    mismatch (mean load / static deflection error) contaminate what is
-    meant to be a diagnostic of oscillatory excitation-vs-damping. The
-    structural dissipation term W_d is NOT mean-subtracted (c*hdot^2 is the
-    correct instantaneous dissipation regardless of any DC force offset,
-    and hdot is zero-mean in any full-cycle block already)."""
-    B, T = cl_phys_pred.shape
-    n_blocks = max(1, T // block_steps)
-    losses = []
-    for b in range(n_blocks):
-        sl = slice(b * block_steps, min((b + 1) * block_steps, T))
-        F_pred = q * cl_phys_pred[:, sl]
-        F_cfd = q * cl_cfd[:, sl]
-        hd_pred = hdot_pred[:, sl]
-        hd_cfd = hdot_cfd[:, sl]
-
-        F_pred_prime = F_pred - F_pred.mean(dim=1, keepdim=True)
-        F_cfd_prime = F_cfd - F_cfd.mean(dim=1, keepdim=True)
-
-        W_f_pred = torch.sum(F_pred_prime * hd_pred, dim=1) * dt
-        W_d_pred = torch.sum(c * hd_pred ** 2, dim=1) * dt
-        W_net_pred = W_f_pred - W_d_pred
-
-        W_f_cfd = torch.sum(F_cfd_prime * hd_cfd, dim=1) * dt
-        W_d_cfd = torch.sum(c * hd_cfd ** 2, dim=1) * dt
-        W_net_cfd = W_f_cfd - W_d_cfd
-
-        S_W = torch.sum(torch.abs(F_pred_prime * hd_pred), dim=1) * dt
-        losses.append(((W_net_pred - W_net_cfd) / (S_W + eps)) ** 2)
-
-    return torch.mean(torch.stack(losses))

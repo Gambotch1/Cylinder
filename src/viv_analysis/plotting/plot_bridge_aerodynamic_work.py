@@ -2,65 +2,6 @@
 Thesis figure for sec:bridge_aerodynamic_work -- aerodynamic work performed
 by the surrogate during CLOSED-LOOP (coupled) inference, at Ur=6.7385
 (U=16 m/s, the bridge deck's critical velocity).
-
-REWRITE NOTE: the original version of this figure computed the
-"fluctuating" force as F_L'(t) - mean(F_L'(t)) using the mean over the
-WHOLE ~680s post-handoff record. That is wrong for this case: the coupled
-CL saturates to a near-constant value within ~3.4s of handoff and stays
-there for virtually the entire record (see the CL-saturation/attractor-
-collapse finding), so the full-record mean is essentially equal to the
-saturated plateau value itself, not a meaningful "DC level" for the early,
-still-oscillatory part of the trajectory. Subtracting it from the first
-few periods does not isolate an oscillatory component -- it just replots
-the ramp-up transient into saturation, offset by a constant close to its
-own endpoint (verified directly: this produced the "-6000 to 0 N/m,
-one-sided, not oscillating around zero" artifact this rewrite fixes).
-Confirmed by a domain expert review of the resulting figure -- not a
-hypothetical concern.
-
-This version avoids ANY global-record mean or single fixed analysis
-window. Three genuinely DC-robust diagnostics instead:
-
-  1. Sliding-window cross-spectral phase of F_L' relative to hdot at f_n
-     (open_loop_energy_diagnostics.phase_difference_rad, which itself
-     mean-removes only over whatever window it's given -- 2-period
-     windows here, stepped by 1 period, so the mean removed is always
-     LOCAL to that window). This reproduces, on the CURRENT checkpoint
-     and dataset, both the ~6.5-7s exciting-to-damping flip and the
-     ~177 degree post-flip antiphase value referenced in earlier
-     diagnostic work (rollout_training.py's docstring) -- verified
-     directly here, not assumed: periods 0-2 (t=0-6.2s) give -53.6 deg;
-     periods 2-4 onward (t>=6.2s) give +173 to +180 deg for several
-     periods running.
-
-  2. Zero-phase Butterworth band-pass (0.5fn-1.5fn, same structural-band
-     convention diagnose.py already uses elsewhere in this project)
-     applied to the RAW force and velocity traces. A band-pass filter
-     has no DC component by construction, so this sidesteps the global-
-     vs-local-mean question entirely rather than answering it with a
-     different mean.
-
-  3. Cycle-resolved work: W_f and W_d integrated over each individual
-     structural period using the RAW (non-detrended) signals. This is
-     robust to any DC/quasi-steady offset in F_L' for a different reason
-     than band-passing -- over one closed period, displacement returns
-     close to its own starting value, so a locally-constant force
-     component contributes close to zero net work regardless of its
-     magnitude (∫ F̄·ḣ dt = F̄·Δh_cycle ≈ 0 when Δh_cycle ≈ 0). Replaces
-     the old continuous cumulative-integral panel, which used the same
-     flawed global mean as the old top panel.
-
-c_exc is now computed from the band-pass-filtered force/velocity (method
-2), not the old global-mean-removed ones -- documented explicitly since
-Eq. bridge_excitation_coefficient's overbar notation is otherwise
-ambiguous about which convention is meant.
-
-rho, B, fn from viv_analysis.config; c from bridge_structural_params(); U
-from Ur*fn*D -- the SAME convention coupled_inference.py itself uses to
-convert Ur to a dimensional velocity, not re-derived independently.
-
-Time axes are nondimensionalized by the structural period T_n=1/fn,
-(t-t_h)/T_n, consistent with the rest of the chapter.
 """
 from __future__ import annotations
 
@@ -73,8 +14,8 @@ from scipy.integrate import trapezoid
 from scipy.signal import butter, sosfiltfilt
 
 from viv_analysis.config import bridge_structural_params, config
-from viv_analysis.open_loop_energy_diagnostics import phase_difference_rad
-from viv_analysis.plot_style import (
+from viv_analysis.diagnostic.open_loop_energy_diagnostics import phase_difference_rad
+from viv_analysis.plotting.plot_style import (
     MODEL_COLOR, SECONDARY_COLOR, TEXT_WIDTH_IN, apply_thesis_style,
 )
 
@@ -108,12 +49,6 @@ def sliding_phase(t: np.ndarray, F_L: np.ndarray, h_dot: np.ndarray, fn: float,
             n_samples.append(int(m.sum()))
         start += stride_s
     phases_deg = np.array(phases_deg)
-    # phase_difference_rad wraps to (-180, 180] deg, where +180 and -180 are
-    # the SAME antiphase condition -- plotting the signed value produces an
-    # artificial jump whenever noise pushes the estimate across that
-    # branch cut. phase_lag_deg = |phase_deg| in [0, 180] is single-valued:
-    # 0 deg = force and velocity in phase (aerodynamic excitation), 180 deg
-    # = antiphase (aerodynamic damping). This is the quantity plotted.
     return {"t_center": np.array(centers), "phase_deg": phases_deg,
             "phase_lag_deg": np.abs(phases_deg), "n_samples": np.array(n_samples)}
 
@@ -196,15 +131,24 @@ def compute_aerodynamic_work(npz_path: Path) -> dict:
 
 def plot_aerodynamic_work(result: dict, out_path_stem: Path,
                           bandpass_window_periods: tuple[float, float] = (0.0, 10.0),
-                          phase_window_periods: tuple[float, float] = (0.0, 30.0)):
+                          phase_window_periods: tuple[float, float] = (0.0, 30.0),
+                          font_scale: float = 1.0):
+    """font_scale: multiplies axes/tick/legend/title font sizes by this
+    factor without changing figsize -- same rcParams-multiplier convention
+    as thesis_plots.py's figures. Pass 1/display_fraction, e.g. 1/0.8 for
+    0.8\\textwidth."""
     apply_thesis_style()
+    import matplotlib as mpl
     import matplotlib.pyplot as plt
+    if font_scale != 1.0:
+        mpl.rcParams.update({
+            "axes.labelsize": mpl.rcParams["axes.labelsize"] * font_scale,
+            "axes.titlesize": mpl.rcParams["axes.titlesize"] * font_scale,
+            "xtick.labelsize": mpl.rcParams["xtick.labelsize"] * font_scale,
+            "ytick.labelsize": mpl.rcParams["ytick.labelsize"] * font_scale,
+            "legend.fontsize": mpl.rcParams["legend.fontsize"] * font_scale,
+        })
 
-    # Window bounds (bandpass_window_periods, phase_window_periods) stay in
-    # units of structural periods Tn=1/fn -- that's the physically relevant
-    # scale for picking "while the LCO is still above the noise floor" --
-    # but the plotted/displayed x-axis is now the convective/reduced time
-    # t*=(t-t_h)U/D, consistent with the other bridge closed-loop figures.
     Tn = 1.0 / result["fn"]
     t_periods = result["t_rel"] / Tn
     t_star = result["t_rel"] * result["U"] / result["D"]
@@ -213,12 +157,6 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
         3, 1, figsize=(TEXT_WIDTH_IN, 7.5),
         gridspec_kw={"height_ratios": [1.0, 1.0, 1.0]},
     )
-
-    # (a) sliding-window phase vs time, windowed to periods where the
-    # band-passed oscillation amplitude is still well above the residual
-    # noise floor -- amplitude decays ~600 N/m (cycle 0.5) to ~5-8 N/m by
-    # period 30 as CL saturates, past which the phase estimate is on a
-    # signal indistinguishable from noise and becomes uninformative.
     ph = result["phase"]
     lo_ph, hi_ph = phase_window_periods
     ph_periods = ph["t_center"] / Tn
@@ -231,23 +169,20 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
     ax_phase.axhline(180, color="gray", lw=0.6, ls=":")
     trans = ax_phase.get_yaxis_transform()
     ax_phase.text(0.995, 2, "aerodynamic excitation", transform=trans, ha="right",
-                  va="bottom", fontsize=7, style="italic", color="dimgray")
+                  va="bottom", fontsize=7 * font_scale, style="italic", color="dimgray")
     ax_phase.text(0.995, 92, "zero coherent work", transform=trans, ha="right",
-                  va="bottom", fontsize=7, style="italic", color="dimgray")
+                  va="bottom", fontsize=7 * font_scale, style="italic", color="dimgray")
     ax_phase.text(0.995, 183, "aerodynamic damping", transform=trans, ha="right",
-                  va="bottom", fontsize=7, style="italic", color="dimgray")
+                  va="bottom", fontsize=7 * font_scale, style="italic", color="dimgray")
     ax_phase.set_ylabel(r"absolute phase difference [deg]")
     ax_phase.set_xlim(lo_ph * Tn * result["U"] / result["D"],
                       hi_ph * Tn * result["U"] / result["D"])
     ax_phase.set_ylim(-10, 195)
     ax_phase.set_yticks([0, 45, 90, 135, 180])
-    ax_phase.annotate("(a)", xy=(-0.1, 1.0), xycoords="axes fraction",
-                       fontsize=10, fontweight="bold", va="top")
+    ax_phase.annotate("(a)", xy=(-0.1 * font_scale, 1.0), xycoords="axes fraction",
+                       fontsize=10 * font_scale, fontweight="bold", va="top")
 
-    # (b) band-pass-filtered force/velocity, RMS-normalized (each by its own
-    # RMS over the displayed window) so both sit on ONE dimensionless axis --
-    # the point of this panel is the phase relationship, not the dimensional
-    # magnitudes (already reported via c_exc and the cycle-resolved work).
+
     lo_p, hi_p = bandpass_window_periods
     mask = (t_periods >= lo_p) & (t_periods <= hi_p)
     F_bp_win = result["F_L_bp"][mask]
@@ -255,20 +190,17 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
     F_norm = F_bp_win / np.sqrt(np.mean(F_bp_win**2))
     hdot_norm = hdot_bp_win / np.sqrt(np.mean(hdot_bp_win**2))
     ax_bp.plot(t_star[mask], F_norm, color=MODEL_COLOR, lw=1.0,
-              label=r"$\widetilde{F}_L'$ (band-passed, RMS-normalized)")
+              label=r"$\widetilde{F}_L'$ (band-passed, RMS-normalised)")
     ax_bp.plot(t_star[mask], hdot_norm, color=SECONDARY_COLOR, lw=1.0,
-              ls=(0, (4, 2)), label=r"$\dot h$ (band-passed, RMS-normalized)")
+              ls=(0, (4, 2)), label=r"$\dot h$ (band-passed, RMS-normalised)")
     ax_bp.axhline(0, color="black", lw=0.5)
     ax_bp.set_ylabel("Normalised amplitude [-]")
     ax_bp.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncol=1,
                 frameon=False, borderaxespad=0.0)
-    ax_bp.annotate("(b)", xy=(-0.1, 1.0), xycoords="axes fraction",
-                    fontsize=10, fontweight="bold", va="top")
+    ax_bp.annotate("(b)", xy=(-0.1 * font_scale, 1.0), xycoords="axes fraction",
+                    fontsize=10 * font_scale, fontweight="bold", va="top")
 
-    # (c) cumulative net work W_net(t) = cumsum(W_f) - cumsum(W_d), built
-    # from the per-cycle W_f/W_d (each individually DC-robust -- see module
-    # docstring), so the running sum is too. Includes cycle 0 (the handoff
-    # impulse);
+
     cyc = result["cycle"]
     W_net = np.cumsum(cyc["W_f"] - cyc["W_d"])
 
@@ -290,13 +222,13 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
         xy=(work_time_star[peak_idx], W_net_plot[peak_idx]),
         xytext=(16, -10),
         textcoords="offset points",
-        fontsize=7.5,
+        fontsize=7.5 * font_scale,
         arrowprops={"arrowstyle": "->", "lw": 0.6},
     )
     ax_cyc.text(
-    -0.10, 1.0, "(c)",
+    -0.10 * font_scale, 1.0, "(c)",
     transform=ax_cyc.transAxes,
-    fontsize=10,
+    fontsize=10 * font_scale,
     fontweight="bold",
     va="top",
     clip_on=False,
@@ -326,6 +258,9 @@ def main():
                          "~5-8 N/m over this range as CL saturates, and phase "
                          "estimates beyond it are on a signal at the residual noise "
                          "floor rather than a resolvable oscillation.")
+    p.add_argument("--font_scale", type=float, default=1.0,
+                    help="Font-size multiplier for the figure. Pass "
+                         "1/display_fraction, e.g. 1/0.8 for 0.8\\textwidth.")
     args = p.parse_args()
 
     npz_path = Path(args.npz_path)
@@ -337,12 +272,12 @@ def main():
     stem = out_dir / f"aerodynamic_work_Ur{ur_tag}"
     pdf, png = plot_aerodynamic_work(result, stem,
                                      bandpass_window_periods=tuple(args.bandpass_window_periods),
-                                     phase_window_periods=tuple(args.phase_window_periods))
+                                     phase_window_periods=tuple(args.phase_window_periods),
+                                     font_scale=args.font_scale)
 
     ph = result["phase"]
     Tn = 1.0 / result["fn"]
-    # Identify the flip window: first sliding-window center where the phase
-    # LAG (|phase|, single-valued on [0,180], no branch-cut ambiguity) settles above 150 deg.
+    
     post_flip = ph["phase_lag_deg"] > 150
     flip_t_star = float(ph["t_center"][post_flip][0] / Tn) if post_flip.any() else float("nan")
 

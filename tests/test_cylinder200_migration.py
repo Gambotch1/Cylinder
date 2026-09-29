@@ -171,6 +171,6 @@ class TestCylinder1000Removed:
         # the real rejection happens in main()'s physical-parameter dispatch,
         # exercised indirectly via resolve_physical_params in
         # diagnose_off_manifold (same dispatch structure).
-        from viv_analysis.diagnose_off_manifold import resolve_physical_params
+        from viv_analysis.diagnostic.diagnose_off_manifold import resolve_physical_params
         with pytest.raises(ValueError, match="unsupported cfd_dataset"):
             resolve_physical_params("cylinder1000")

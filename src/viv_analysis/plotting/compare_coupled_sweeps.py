@@ -10,7 +10,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from viv_analysis.plot_style import apply_thesis_style
+from viv_analysis.plotting.plot_style import apply_thesis_style
 apply_thesis_style()
 
 from viv_analysis.utils import PROJECT_ROOT

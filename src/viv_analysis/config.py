@@ -15,13 +15,7 @@ config = {
     "bridge_rho":           1.225,  # air density [kg/m^3]
     "bridge_mass":          24604.0,    # mass per unit span [kg/m]
 
-    "cylinder_D_ref":     1.0,    # Re=200 cylinder diameter [m]
-    "cylinder_dt":        0.02,   # Re=200 timestep [s]
-    "cylinder_t_release": 60.0,   # physical release time [s]
-
-    # Re=200 cylinder (completed dataset) -- the only primary parameters;
-    # everything else (U, mu, release_time, m, k, c) is DERIVED from these,
-    # never duplicated as separate numeric constants elsewhere.
+    # Re=200 cylinder (completed dataset) 
     "cylinder200_D_ref":           0.2,    # diameter [m]
     "cylinder200_rho":             1.0,    # fluid density [kg/m^3]
     "cylinder200_Re":              200.0,  # Reynolds number
@@ -45,7 +39,7 @@ config = {
     "patience":      15,
 
     # ── Seq len and stride (set per dataset at runtime) ────────────────────
-    "seq_len":       None,   # filled by prepare_gru_config()
+    "seq_len":       None,   
     "stride_train":  None,
     "stride_val":    1,
     "use_ur_context": False,
@@ -71,8 +65,7 @@ config = {
     "viv_dataset":   ["cylinder", "cylinder200", "bridge"],
 }
 
-# Canonical primary key + accepted spellings for the completed Re=200
-# dataset. Matching is done against dataset.strip().lower().
+# accepted spellings for the completed Re=200
 CYLINDER200_ALIASES = frozenset({
     "cylinder200", "cylinder_re200", "cylinder_re_200", "re200",
     "cylinder-re-200",
@@ -86,16 +79,7 @@ def prepare_gru_config(dataset: str, cfg: dict) -> dict:
     out = cfg.copy()
     ds  = dataset.strip().lower()
 
-    if ds == "cylinder":
-        out["seq_len"]      = 900
-        out["stride_train"] = 3
-        out["hidden_size"]  = cfg["hidden_size"]
-        out["use_ur_context"] = False
-
-    elif ds in CYLINDER200_ALIASES:
-        # Same dt (0.005s) and multi-Ur/context structure as cylinder1000 --
-        # nothing about the input/output schema changed, only the physics,
-        # so seq_len/stride/architecture are deliberately kept identical.
+    if ds in CYLINDER200_ALIASES:
         out["seq_len"]      = 1000
         out["stride_train"] = 8
         out["hidden_size"]  = cfg["hidden_size"]
@@ -116,11 +100,6 @@ def cylinder200_U(Ur: float) -> float:
     """U(Ur) = Ur * fn * D."""
     return float(Ur) * config["cylinder200_fn"] * config["cylinder200_D_ref"]
 
-
-def cylinder200_mu(Ur: float) -> float:
-    """Dynamic viscosity implied by Re=200 at this Ur: mu = rho*U*D/Re."""
-    U = cylinder200_U(Ur)
-    return config["cylinder200_rho"] * U * config["cylinder200_D_ref"] / config["cylinder200_Re"]
 
 
 def cylinder200_release_time(Ur: float) -> float:

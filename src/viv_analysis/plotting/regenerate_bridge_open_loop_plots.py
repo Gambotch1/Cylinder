@@ -1,20 +1,7 @@
 #!/usr/bin/env python3
 """
-Bridge analog of regenerate_teacher_forcing_plots.py: thesis-quality open-
-loop (teacher-forcing) figures on a bridge model's held-out test cases,
-via the same verified batched-inference path (fast_teacher_forcing,
-checked against the slow per-step teacher_forcing_rollout reference on a
-truncated window before trusting the full run).
-
-Differs from the cylinder200 script only in data loading (load_bridge_df_
-cached -- merge+downsample+kinematics, matching train_gru.py's own bridge
-branch and the canonical 27-case/17-5-5 manifest) and in caption
-convention: condition_label leads with physical wind speed U, Ur in
-parentheses, per the bridge/Hallak-comparison convention (cylinder leads
-with Ur alone since there's no comparable literature convention there).
-
 Usage:
-    python -m src.viv_analysis.regenerate_bridge_open_loop_plots \
+    python -m src.viv_analysis.plotting.regenerate_bridge_open_loop_plots \
         --model_subdir gru_bridge_p0_nd_context_noacc
 """
 from __future__ import annotations
@@ -26,10 +13,10 @@ import torch
 
 from viv_analysis.config import bridge_structural_params, config
 from viv_analysis.preprocess import load_bridge_df_cached
-from viv_analysis.regenerate_teacher_forcing_plots import (
+from viv_analysis.plotting.regenerate_teacher_forcing_plots import (
     _load_model_artifacts, _verify_matches_slow_reference, fast_teacher_forcing,
 )
-from viv_analysis.thesis_plots import (
+from viv_analysis.plotting.thesis_plots import (
     build_metrics_table, plot_open_loop_representative, plot_tf_result_thesis,
 )
 from viv_analysis.train_gru import apply_nd_transform
@@ -47,6 +34,14 @@ def main():
                         "Pass 1/display_fraction for the width these "
                         "figures will actually be included at, e.g. "
                         "1/0.48 for two-up at 0.48\\textwidth.")
+    p.add_argument("--font_scale", type=float, default=1.0,
+                   help="Font-size multiplier for the representative "
+                        "main-text figure (plot_open_loop_representative) "
+                        "ONLY. Pass 1/display_fraction, e.g. 1/0.8 for "
+                        "0.8\\textwidth.")
+    p.add_argument("--linewidth", type=float, default=None,
+                   help="Overrides both CFD/GRU trace linewidths (both "
+                        "figures) to this exact absolute value.")
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -98,7 +93,7 @@ def main():
             result = plot_tf_result_thesis(
                 cl_pred, cl_true, times, case_label=case_name, output_dir=thesis_dir,
                 condition_label=condition_label, physical_params_note=physical_params_note,
-                fn=fn, font_scale=args.appendix_font_scale,
+                U=U, D=D, font_scale=args.appendix_font_scale, linewidth=args.linewidth,
             )
             rmse = float(np.sqrt(np.mean((cl_pred - cl_true) ** 2)))
             mae = float(np.mean(np.abs(cl_pred - cl_true)))
@@ -119,7 +114,7 @@ def main():
             rep["cl_pred"], rep["cl_true"], rep["times"], case_label=f"Ur{rep['ur']:g}",
             output_dir=thesis_dir, condition_label=rep["condition_label"],
             physical_params_note=physical_params_note,
-            fn=fn,
+            U=rep["U"], D=D, font_scale=args.font_scale, linewidth=args.linewidth,
         )
         print(f"  Representative case: {rep['condition_label']} -> {rep_result['pdf_path']}")
 

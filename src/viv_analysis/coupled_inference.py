@@ -40,7 +40,6 @@ plt.rcParams.update({
 })
 
 
-
 def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float,
                     input_cols: tuple[str, ...] = ("disp", "vel", "acc")) -> np.ndarray:
     """Physical kinematics (last axis, columns named by input_cols) -> model
@@ -104,32 +103,6 @@ def finite_admissible_mu(value: str) -> float:
     return v
 
 
-def get_git_dirty_and_patch_hash(cwd: Optional[Path] = None) -> tuple[bool, str]:
-    """Best-effort worktree cleanliness check for receipt provenance.
-
-    Returns (git_dirty, worktree_patch_hash). git_dirty is True if `git
-    status --porcelain` reports ANY change (tracked or untracked).
-    worktree_patch_hash is the sha256 of `git diff HEAD --binary` (tracked
-    changes only -- untracked files are reflected in git_dirty but not
-    hashed here, since a diff can't represent a file git doesn't know about
-    yet). On any git failure, fails safe: (True, "").
-    """
-    try:
-        status = subprocess.run(
-            ["git", "status", "--porcelain"], cwd=cwd or PROJECT_ROOT,
-            capture_output=True, text=True, timeout=15, check=True,
-        ).stdout
-        dirty = len(status.strip()) > 0
-        diff = subprocess.run(
-            ["git", "diff", "HEAD", "--binary"], cwd=cwd or PROJECT_ROOT,
-            capture_output=True, timeout=15, check=True,
-        ).stdout
-        patch_hash = hashlib.sha256(diff).hexdigest() if diff else ""
-        return dirty, patch_hash
-    except Exception:
-        return True, ""
-
-
 def resolve_a_ref(amp: dict, a_ref_m: Optional[float]) -> tuple[float, str]:
     """Resolve a_ref for the v2/v3 closure.
 
@@ -153,19 +126,6 @@ def resolve_mu_source(mu: Optional[float], forcing_mode: str) -> str:
     if forcing_mode == "v3_coherent":
         return "measured_from_target_cfd"
     return "not_applicable"
-
-
-def get_git_commit(cwd: Optional[Path] = None) -> Optional[str]:
-    """Best-effort current commit hash for receipt provenance; None if unavailable."""
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=cwd or PROJECT_ROOT,
-            capture_output=True, text=True, timeout=5, check=True,
-        )
-        return out.stdout.strip()
-    except Exception:
-        return None
 
 
 LEGACY_COORD_SOURCE = "legacy assumption: dimensional"
@@ -933,7 +893,6 @@ def run_coupled_viv(
 
 
 
-
 def main(
     Ur: float = 6.0, # reduced velocity to simulate
     cfd_dataset: str = "cylinder200", # dataset name for loading CFD data
@@ -1146,9 +1105,6 @@ def main(
         print(f"    {_col:4s} range: [{raw_kin[:,_i].min():.5f}, {raw_kin[:,_i].max():.5f}]")
 
 
-
-
-
     model = VIV_GRU(input_size=input_size, hidden_size=hidden_size, 
                     num_layers=num_layers, dropout=0.1).to(device)
     
@@ -1340,18 +1296,28 @@ def main(
             else replay_next
         )
 
-        from viv_analysis.plot_style import (
+        from viv_analysis.plotting.plot_style import (
             CFD_STYLE, MODEL_STYLE, TEXT_WIDTH_IN, apply_thesis_style,
         )
         apply_thesis_style()
-        Tn_replay = 1.0 / fn
-        t_star_replay = (best_replay["time"] - t_handoff) / Tn_replay
+        # Figure is inserted in the thesis at \includegraphics[width=0.8\textwidth].
+        # apply_thesis_style()'s font sizes are absolute points, tuned so a
+        # figure saved at figsize width=TEXT_WIDTH_IN reads correctly when
+        # included at width=\textwidth (LaTeX scale factor 1, no distortion).
+        # Declaring the saved figure's width as 0.8*TEXT_WIDTH_IN here --
+        # matching its actual on-page display width -- keeps that same
+        # scale factor of 1 at this narrower inclusion width, instead of
+        # shrinking the fonts by inflating the saved figure and letting
+        # LaTeX scale it back down.
+        INCLUDE_WIDTH_FRAC = 0.8
+        t_star_replay = best_replay["time"] * U / D
 
-        fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 4.0), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN * INCLUDE_WIDTH_FRAC, 4.0 * INCLUDE_WIDTH_FRAC),
+                               constrained_layout=True)
         ax.plot(t_star_replay, best_replay["h_cfd"] / D, **{**CFD_STYLE, "label": "CFD"})
         ax.plot(t_star_replay, best_replay["h_replay"] / D,
                 **{**MODEL_STYLE, "label": f"Newmark replay ({best_replay['force_timing']})"})
-        ax.set_xlabel(r"$(t-t_{\mathrm{h}})/T_n$")
+        ax.set_xlabel(r"$t^*=tU/D$")
         ax.set_ylabel("$h/D$")
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -1453,7 +1419,6 @@ def main(
     t    = result["time"] + t_handoff
     h    = result["displacement"]
     CL   = result["CL"]
-    FL   = 0.5 * rho * U**2 * B * CL
 
     # ── Save coupled trajectory for harness ───────────────────────────────
     _case_df_sorted = case_df.sort_values("time")
@@ -1479,12 +1444,6 @@ def main(
     a_ref_over_D = float(a_ref) / float(D)
     a_ref_convention = A_REF_CONVENTION
     coordinate_mode = "nondimensional" if nd_inputs else "dimensional"
-    git_commit = get_git_commit()
-    git_dirty, worktree_patch_hash = get_git_dirty_and_patch_hash()
-    if git_dirty:
-        print(f"[provenance] [WARNING] worktree is DIRTY (uncommitted changes present). "
-              f"For reproducible experiments, commit before running coupled inference. "
-              f"worktree_patch_hash={worktree_patch_hash[:12] if worktree_patch_hash else 'n/a'}")
 
     # target_a_ref_diagnostic_* is ALWAYS the value measured from the target
     # CFD case's own steady tail, regardless of a_ref_source -- kept purely
@@ -1506,8 +1465,7 @@ def main(
              target_a_ref_diagnostic_used=False,
              mu_value=float(mu_used or 0.0), mu_source=mu_source,
              coordinate_mode=coordinate_mode, checkpoint=checkpoint,
-             handoff_offset=int(handoff_offset_steps), git_commit=git_commit or "unknown",
-             git_dirty=bool(git_dirty), worktree_patch_hash=worktree_patch_hash or "")
+             handoff_offset=int(handoff_offset_steps))
     print(f"Saved coupled trajectory -> {npz_out}")
 
     # ── JSON receipt (human-readable mirror of the NPZ metadata) ───────────
@@ -1531,9 +1489,6 @@ def main(
         "handoff_offset": int(handoff_offset_steps),
         "handoff_time_s": float(t_handoff),
         "total_time_s": float(total_time),
-        "git_commit": git_commit or "unknown",
-        "git_dirty": bool(git_dirty),
-        "worktree_patch_hash": worktree_patch_hash or "",
         "npz_path": str(npz_out),
     }
     receipt_out = npz_out.with_suffix(".receipt.json")
@@ -1566,16 +1521,6 @@ def main(
     axes[1].set_ylabel("$C_L$")
     axes[1].legend(loc="upper right")
     axes[1].grid(True, alpha=0.3)
- 
-    # axes[2].plot(t, FL, lw=1, color="tab:red")
-    # axes[2].axhline(0, color="gray", lw=0.5, ls=":")
-    # axes[2].set_ylabel("Lift force [N/m]")
-    # axes[2].grid(True, alpha=0.3)
- 
-    # axes[3].plot(t, result["acceleration"], lw=1, color="tab:green")
-    # axes[3].set_ylabel("Acc [m/s²]")
-    # axes[3].set_xlabel("Time [s]")
-    # axes[3].grid(True, alpha=0.3)
 
 
     out_png = results_out_dir / f"coupled_viv_Ur{Ur}_{_exp_tag}_mu{mu_used}.png"

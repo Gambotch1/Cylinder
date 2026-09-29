@@ -1,6 +1,6 @@
 """
 Thesis figures for the time-varying-Ur continuation study (item 9).
-Reuses viv_analysis.plot_style.apply_thesis_style (the shared thesis
+Reuses viv_analysis.plotting.plot_style.apply_thesis_style (the shared thesis
 style) and viv_analysis.self_excitation.amplitude_envelope/dominant_freq
 (the same envelope/frequency utilities production diagnostics already
 use) rather than reimplementing either.
@@ -21,10 +21,18 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from viv_analysis.plot_style import TEXT_WIDTH_IN, apply_thesis_style  # noqa: E402
+from viv_analysis.plotting.plot_style import TEXT_WIDTH_IN, apply_thesis_style  # noqa: E402
 from viv_analysis.self_excitation import amplitude_envelope  # noqa: E402
 
 MIN_ENVELOPE_WINDOWS = 5  # fewer than this is not a curve, just sparse points
+
+
+def t_star_of(t_arr: np.ndarray, ur_arr: np.ndarray, fn: float) -> np.ndarray:
+    """Convective/reduced time t*=tU/D generalized to time-varying Ur(t):
+    U(t)=Ur(t)*fn*D, so t* = integral of U(t)/D dt = fn * integral of
+    Ur(t) dt -- reduces to the familiar t*=tU/D when Ur is constant."""
+    return fn * np.concatenate(([0.0], np.cumsum(
+        0.5 * (ur_arr[1:] + ur_arr[:-1]) * np.diff(t_arr))))
 
 
 def envelope_or_unavailable(h: np.ndarray, D: float, dt: float, fn: float,
@@ -48,41 +56,53 @@ def envelope_or_unavailable(h: np.ndarray, D: float, dt: float, fn: float,
 
 
 def plot_time_varying_panels(result: dict, schedule: dict, D: float, fn: float,
-                              out_path_stem: Path):
-    """Panels: (a) Ur(t) (b) h/D (c) envelope A/D, against t/Tn. Velocity
+                              out_path_stem: Path, font_scale: float = 1.0,
+                              h_linewidth: float = 0.3):
+    """Panels: (a) Ur(t) (b) h/D (c) envelope A/D, against t*=tU/D. Velocity
     and C_L are deliberately omitted here: at full-sweep scale they render
     as dense coloured bands that add page height without supporting a
     conclusion the amplitude/adaptation discussion in this section needs --
-    they remain available per-transition in plot_transition_window."""
-    apply_thesis_style()
+    they remain available per-transition in plot_transition_window.
 
-    Tn = 1.0 / fn
+    font_scale: multiplies axes/tick/legend font sizes by this factor
+        without changing figsize -- same convention as thesis_plots.py's
+        figures (plot_coupled_thesis etc.), for a figure displayed
+        narrower than full \\textwidth. Pass 1/display_fraction.
+    h_linewidth: linewidth of the h/D panel (b) only -- panels (a) and (c)
+        keep their own fixed 0.3.
+    """
+    apply_thesis_style()
+    if font_scale != 1.0:
+        matplotlib.rcParams.update({
+            "axes.labelsize": matplotlib.rcParams["axes.labelsize"] * font_scale,
+            "xtick.labelsize": matplotlib.rcParams["xtick.labelsize"] * font_scale,
+            "ytick.labelsize": matplotlib.rcParams["ytick.labelsize"] * font_scale,
+            "legend.fontsize": matplotlib.rcParams["legend.fontsize"] * font_scale,
+        })
+
     t = result["time"]
-    t_star = t / Tn
     Ur_t = result["Ur"]
     h_star = result["displacement"] / D
     dt = float(np.median(np.diff(t)))
     env_t, env, env_unavailable_reason = envelope_or_unavailable(result["displacement"], D, dt, fn)
 
+    t_star = t_star_of(t, Ur_t, fn)
+    env_t_star = (np.interp(env_t, t, t_star) if env_t is not None else None)
+
     fig, axes = plt.subplots(3, 1, sharex=True, figsize=(TEXT_WIDTH_IN, 5.5))
-    axes[0].plot(t_star, Ur_t, color="black")
+    axes[0].plot(t_star, Ur_t, color="black", lw=0.3)
     axes[0].set_ylabel(r"$U_r(t)$")
-    axes[1].plot(t_star, h_star, color="tab:blue", lw=0.8)
+    axes[1].plot(t_star, h_star, color="tab:blue", lw=h_linewidth)
     axes[1].set_ylabel(r"$h/D$")
-    if env_t is not None:
-        axes[2].plot(env_t / Tn, env, color="tab:red", lw=1.2)
+    if env_t_star is not None:
+        axes[2].plot(env_t_star, env, color="tab:red", lw=0.3)
     else:
         axes[2].text(0.5, 0.5, "envelope unavailable\n(insufficient cycles in window)",
                       ha="center", va="center", transform=axes[2].transAxes,
                       fontsize=8, color="gray")
         print(f"[plot_time_varying_panels] {env_unavailable_reason}")
-    axes[2].set_ylabel(r"$A/D$ (envelope)")
-    axes[2].set_xlabel(r"$t/T_n$")
-
-    transition_times = schedule.get("transition_times", [])
-    for ax in axes:
-        for tt in transition_times:
-            ax.axvline(tt / Tn, color="gray", lw=0.5, alpha=0.25, ls="--")
+    axes[2].set_ylabel(r"$A/D$")
+    axes[2].set_xlabel(r"$t^*=tU/D$")
 
     fig.align_ylabels(axes)
     fig.tight_layout()
@@ -95,7 +115,8 @@ def plot_time_varying_panels(result: dict, schedule: dict, D: float, fn: float,
 def plateau_summary(result: dict, schedule: dict, D: float, fn: float, dt: float,
                      fixed_ur_cfd: dict[float, float] | None,
                      fixed_ur_gru: dict[float, float] | None,
-                     n_cycles: int = 5, stat_tol: float = 0.10) -> "tuple":
+                     n_cycles: int = 5, stat_tol: float = 0.10,
+                     font_scale: float = 1.0) -> "tuple":
     """Compare the final n_cycles of each dwell plateau (from the
     continuous time-varying run) against independent fixed-Ur CFD/GRU
     references. A plateau's value is labelled 'stabilised' only if the
@@ -163,6 +184,13 @@ def plateau_summary(result: dict, schedule: dict, D: float, fn: float, dt: float
     df = pd.DataFrame(rows)
 
     apply_thesis_style()
+    if font_scale != 1.0:
+        matplotlib.rcParams.update({
+            "axes.labelsize": matplotlib.rcParams["axes.labelsize"] * font_scale,
+            "xtick.labelsize": matplotlib.rcParams["xtick.labelsize"] * font_scale,
+            "ytick.labelsize": matplotlib.rcParams["ytick.labelsize"] * font_scale,
+            "legend.fontsize": matplotlib.rcParams["legend.fontsize"] * font_scale,
+        })
     fig, ax = plt.subplots(figsize=(6.0, 4.0))
     unstab = ~df["stabilised"]
     ax.plot(df.loc[df["stabilised"], "Ur"], df.loc[df["stabilised"], "continuous_plateau_A_star"],
@@ -176,8 +204,8 @@ def plateau_summary(result: dict, schedule: dict, D: float, fn: float, dt: float
     if fixed_ur_gru:
         ax.plot(df["Ur"], df["gru_fixed_ur_A_star"], "^--", color="tab:red", label="Independently initialised surrogate")
     ax.set_xlabel("$U_r$")
-    ax.set_ylabel(r"Normalized amplitude, $A^*=A/D$")
-    ax.legend(fontsize=7)
+    ax.set_ylabel(r"$A^*=A/D$")
+    ax.legend(fontsize=7 * font_scale)
     fig.tight_layout()
 
     return df, fig
@@ -327,7 +355,8 @@ def plot_transitions_composite_thesis(result: dict, schedule: dict, D: float, fn
                                        transitions: dict[str, dict],
                                        out_path_stem: Path,
                                        window_before_Tn: float = 5.0, window_after_Tn: float = 15.0,
-                                       fixed_xlim: tuple[float, float] | None = None):
+                                       fixed_xlim: tuple[float, float] | None = None,
+                                       font_scale: float = 1.0):
     """One composite figure covering EVERY transition in `transitions`
     (e.g. LOCKIN_REGION_TRANSITIONS), sized to fit a single portrait
     page -- plot_transition_window's full per-transition layout (Ur(t),
@@ -339,14 +368,38 @@ def plot_transitions_composite_thesis(result: dict, schedule: dict, D: float, fn
     One row per transition (in `transitions`' insertion order), h/D in
     the left column and envelope A/D in the right column, so a reader
     can scan straight down either column to compare the same quantity
-    across transitions. The SAME fixed_xlim is applied to every panel
-    (matching plot_transition_window's own requirement) so window
-    duration and axis limits are identical across all transitions in
-    the composite, not just within one.
+    across transitions.
+
+    x-axis is the convective/reduced time t*=tU/D (generalized for
+    time-varying Ur via t_star_of), relative to each row's OWN transition
+    (t*=0 at that row's transition) -- NOT a shared physical-time axis,
+    since Ur (and hence U) differs across transitions. window_before_Tn/
+    window_after_Tn still pick the underlying data window in raw seconds
+    (physically "N structural periods either side of the transition" is
+    the meaningful selection criterion); fixed_xlim, if given, is now
+    IGNORED for axis limits (each row instead uses its own t*-relative
+    window bounds, which -- for the current default caller, where
+    fixed_xlim is always set to exactly (-window_before_Tn*Tn,
+    window_after_Tn*Tn) -- reproduces the prior "identical limits"
+    behavior in raw-seconds terms; it stops being identical across rows
+    only in t* terms, because U differs).
+
+    font_scale: multiplies axes/tick/legend/title font sizes by this
+        factor without changing figsize -- same convention as
+        plot_time_varying_panels. Pass 1/display_fraction.
     """
     apply_thesis_style()
+    if font_scale != 1.0:
+        matplotlib.rcParams.update({
+            "axes.labelsize": matplotlib.rcParams["axes.labelsize"] * font_scale,
+            "axes.titlesize": matplotlib.rcParams["axes.titlesize"] * font_scale,
+            "xtick.labelsize": matplotlib.rcParams["xtick.labelsize"] * font_scale,
+            "ytick.labelsize": matplotlib.rcParams["ytick.labelsize"] * font_scale,
+            "legend.fontsize": matplotlib.rcParams["legend.fontsize"] * font_scale,
+        })
     Tn = 1.0 / fn
     dt = float(np.median(np.diff(result["time"])))
+    t_star_full = t_star_of(result["time"], result["Ur"], fn)
 
     labels = list(transitions.keys())
     n = len(labels)
@@ -358,38 +411,41 @@ def plot_transitions_composite_thesis(result: dict, schedule: dict, D: float, fn
         tr = transitions[label]
         ur_before, ur_after = tr["ur_before"], tr["ur_after"]
         t_transition = find_transition_time(schedule, ur_before, ur_after)
+        t_star_transition = float(np.interp(t_transition, result["time"], t_star_full))
 
         t0 = t_transition - window_before_Tn * Tn
         t1 = t_transition + window_after_Tn * Tn
         mask = (result["time"] >= t0) & (result["time"] <= t1)
         t_rel = result["time"][mask] - t_transition
+        t_star_rel = t_star_full[mask] - t_star_transition
 
         title = f"{label.replace('_', ' ')}: $U_r={ur_before:g}\\to{ur_after:g}$"
         ax_h, ax_env = axes[row, 0], axes[row, 1]
 
-        ax_h.plot(t_rel, result["displacement"][mask] / D, color="tab:blue", lw=0.7)
+        ax_h.plot(t_star_rel, result["displacement"][mask] / D, color="tab:blue", lw=0.7)
         ax_h.axvline(0.0, color="gray", lw=0.5, ls="--")
         ax_h.set_ylabel(r"$h/D$")
-        ax_h.set_title(title, fontsize=8)
+        ax_h.set_title(title, fontsize=8 * font_scale)
 
         env_t, env, reason = envelope_or_unavailable(result["displacement"][mask], D, dt, fn)
         if env_t is not None:
-            ax_env.plot(env_t + t_rel[0], env, color="tab:red", lw=1.2)
+            env_seconds_rel = env_t + t_rel[0]
+            env_star_rel = np.interp(env_seconds_rel, t_rel, t_star_rel)
+            ax_env.plot(env_star_rel, env, color="tab:red", lw=1.2)
         else:
             ax_env.text(0.5, 0.5, "envelope unavailable\n(insufficient cycles in window)",
                         ha="center", va="center", transform=ax_env.transAxes,
                         fontsize=7, color="gray")
             print(f"[plot_transitions_composite_thesis] {label}: {reason}")
         ax_env.axvline(0.0, color="gray", lw=0.5, ls="--")
-        ax_env.set_ylabel(r"$A/D$ (envelope)")
-        ax_env.set_title(title, fontsize=8)
+        ax_env.set_ylabel(r"$A/D$")
+        ax_env.set_title(title, fontsize=8 * font_scale)
 
-        if fixed_xlim is not None:
-            ax_h.set_xlim(fixed_xlim)
-            ax_env.set_xlim(fixed_xlim)
+        ax_h.set_xlim(t_star_rel[0], t_star_rel[-1])
+        ax_env.set_xlim(t_star_rel[0], t_star_rel[-1])
 
         if row == n - 1:
-            xlabel = f"Time from transition [s]  ($T_n$={Tn:.3g}s)"
+            xlabel = r"$\Delta t^*=(t-t_{\mathrm{transition}})U/D$"
             ax_h.set_xlabel(xlabel)
             ax_env.set_xlabel(xlabel)
 

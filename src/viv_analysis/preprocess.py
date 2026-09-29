@@ -13,28 +13,14 @@ from viv_analysis.config import config, CYLINDER200_ALIASES
 DIR = PROJECT_ROOT
 
 # ── Directory layout ───────────────────────────────────────────────────────────
-# Re=200 cylinder
-CYLINDER_DISP_DIR = DIR / "data" / "disp"
-CYLINDER_CD_DIR   = DIR / "data" / "cd"
-CYLINDER_CL_DIR   = DIR / "data" / "cl"
 
-# Re=200 cylinder (completed dataset) -- 21 Ur cases, matching
-# cl_Ur_X.XX.out / disp_Ur_X.XX.out (+ cd/force/vel) at the top level of
-# each folder. *_old/ and raw/ subfolders are deliberately NOT globbed here.
+# Re=200 cylinder (completed dataset) -- 21 Ur cases
 CYLINDER200_ROOT     = DIR / "data" / "cylinder_Re_200"
 CYLINDER200_DISP_DIR = CYLINDER200_ROOT / "disp"
 CYLINDER200_CD_DIR   = CYLINDER200_ROOT / "cd"
 CYLINDER200_CL_DIR   = CYLINDER200_ROOT / "cl"
 CYLINDER200_VEL_DIR  = CYLINDER200_ROOT / "vel"
 CYLINDER200_FY_DIR   = CYLINDER200_ROOT / "force"
-
-CYLINDER200_EXPECTED_UR = [
-    2.00, 2.50, 3.00, 3.50, 4.00,
-    4.25, 4.50, 4.75, 5.00, 5.25, 5.50,
-    5.75, 6.00, 6.25, 6.50,
-    7.00, 8.00, 9.00, 10.00, 11.00, 12.00,
-]
-
 
 # Bridge
 BRIDGE_DISP_DIR = DIR / "data" / "Bridge" / "disp"
@@ -43,23 +29,6 @@ BRIDGE_CL_DIR   = DIR / "data" / "Bridge" / "cl"
 BRIDGE_VEL_DIR  = DIR / "data" / "Bridge" / "vel"
 BRIDGE_FY_DIR   = DIR / "data" / "Bridge" / "force"
 
-# Raw wind-speed labels (matching the *-<speed>.out filename stem, e.g.
-# "19.5" for disp-19.5.out) to drop entirely from the bridge dataset.
-# 19.5 m/s (Ur=8.2126) is excluded: applying classify_stability to its own
-# raw CFD displacement gives fractional_envelope_change=13.16 (1316% growth
-# in the back half of the 300s window) -- by far the most non-converged
-# case in the dataset (next worst is Ur6.528 at 3.44) and still visibly
-# growing, not leveling off, at the end of the recording. Its own CFD
-# "steady-state" is not actually steady, which made it an unreliable
-# comparison target for every downstream evaluation.
-#
-# This is the ONLY exclusion applied at the data-loading level. Per
-# supervisor guidance, the FINAL bridge closed-loop evaluation (not the
-# architecture/history-length sensitivity study, which retains all 27
-# cases) additionally restricts its own Ur sweep to cases below 19.5 m/s
-# (22 cases) -- that restriction is applied at the evaluation-sweep level
-# (e.g. evaluate_all.py's --ur_list), not here, so it does not change what
-# merge_dataframes/the cache return, and does not affect the sensitivity
 # study or any other existing caller.
 BRIDGE_EXCLUDED_RAW_SPEEDS = {"19.5"}
 
@@ -110,7 +79,6 @@ def read_out_files(filepath: str | Path) -> tuple[pd.DataFrame, str]:
                 os.path.basename(str(filepath)))
 
 
-
 def extract_case_name(filepath: str | Path) -> str:
     """
     Extract a canonical Ur label from a filename.
@@ -137,10 +105,8 @@ def _resolve_data_dirs(dataset: str) -> tuple[Path, Path, Path]:
         return BRIDGE_DISP_DIR, BRIDGE_CM_DIR, BRIDGE_CL_DIR
     if ds in CYLINDER200_ALIASES:
         return CYLINDER200_DISP_DIR, CYLINDER200_CD_DIR, CYLINDER200_CL_DIR
-    if ds == "cylinder":
-        return CYLINDER_DISP_DIR, CYLINDER_CD_DIR, CYLINDER_CL_DIR
     raise ValueError(
-        f"Unknown dataset: '{ds}'. Must be one of: cylinder, cylinder200, bridge."
+        f"Unknown dataset: '{ds}'. Must be one of:cylinder200, bridge."
     )
 
 
@@ -286,89 +252,6 @@ def merge_dataframes(
 
 
 # ── Re=200 cylinder: case pairing, integrity validation, loader ────────────
-
-def discover_cylinder200_cases() -> dict[str, dict[str, Path]]:
-    """
-    Pair cl_Ur_X.XX.out <-> disp_Ur_X.XX.out by reduced velocity and
-    validate that every expected case has both files. Raises ValueError on
-    any unpaired or missing case rather than silently proceeding with a
-    partial set.
-    """
-    cl_files   = {extract_case_name(f): f
-                  for f in sorted(CYLINDER200_CL_DIR.glob("cl_Ur_*.out"))}
-    disp_files = {extract_case_name(f): f
-                  for f in sorted(CYLINDER200_DISP_DIR.glob("disp_Ur_*.out"))}
-
-    cl_only   = set(cl_files) - set(disp_files)
-    disp_only = set(disp_files) - set(cl_files)
-    if cl_only or disp_only:
-        raise ValueError(
-            f"Unpaired cylinder200 case file(s): "
-            f"cl-without-disp={sorted(cl_only)}, disp-without-cl={sorted(disp_only)}"
-        )
-
-    expected = {format_ur_label(u) for u in CYLINDER200_EXPECTED_UR}
-    found    = set(cl_files)
-    missing  = expected - found
-    extra    = found - expected
-    if missing:
-        raise ValueError(f"Missing expected cylinder200 case(s): {sorted(missing)}")
-    if extra:
-        print(f"WARNING: unexpected extra cylinder200 case(s) found "
-              f"(not in the documented 21-case list): {sorted(extra)}")
-
-    return {
-        case: {"cl": cl_files[case], "disp": disp_files[case]}
-        for case in sorted(found, key=parse_ur_label)
-    }
-
-
-def validate_case_integrity(df: pd.DataFrame, value_col: str) -> dict[str, dict]:
-    """
-    Per-case data-quality report: monotonic time, finite values, sample
-    spacing. Purely diagnostic -- never modifies df or interpolates
-    anything; callers decide what to do with the report.
-    """
-    report = {}
-    for case, g in df.groupby("case", sort=True):
-        t = g["time"].to_numpy(dtype="float64")
-        v = g[value_col].to_numpy(dtype="float64")
-        dt = np.diff(t)
-        report[str(case)] = {
-            "n_rows":      int(len(g)),
-            "monotonic":   bool(np.all(dt > 0)) if len(dt) else True,
-            "n_nonfinite": int((~np.isfinite(v)).sum() + (~np.isfinite(t)).sum()),
-            "dt_min":      float(dt.min())    if len(dt) else None,
-            "dt_max":      float(dt.max())    if len(dt) else None,
-            "dt_median":   float(np.median(dt)) if len(dt) else None,
-        }
-    return report
-
-
-def load_cylinder200_df() -> pd.DataFrame:
-    """
-    Discover + validate-pair the 21-case Re=200 dataset, merge disp/cd/cl,
-    and print a per-case integrity report (monotonic time, finite values,
-    dt regularity) without silently interpolating or dropping anything.
-    """
-    pairs = discover_cylinder200_cases()
-    print(f"[cylinder200] {len(pairs)} matched cl/disp case pairs found "
-          f"(expected {len(CYLINDER200_EXPECTED_UR)}).")
-
-    df = merge_dataframes(dataset="cylinder200")
-    if df.empty:
-        raise RuntimeError("merge_dataframes(dataset='cylinder200') returned empty.")
-
-    for value_col in ("disp", "cl"):
-        report = validate_case_integrity(df, value_col)
-        for case, r in report.items():
-            if not r["monotonic"] or r["n_nonfinite"] > 0:
-                print(f"  [cylinder200][WARNING] case={case} value={value_col} "
-                      f"monotonic={r['monotonic']} n_nonfinite={r['n_nonfinite']} "
-                      f"dt=[{r['dt_min']},{r['dt_max']}] median={r['dt_median']}")
-
-    return df
-
 
 def _load_force(dataset: str) -> dict[str, pd.DataFrame]:
     ds = dataset.strip().lower()
@@ -516,16 +399,9 @@ def _fill_missing_kinematics_with_savgol(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def print_summary(df: pd.DataFrame) -> None:
-    print(f"Shape: {df.shape}   Cases: {df['case'].nunique()}")
-    print(df.groupby("case", sort=True).size().to_string())
 
 
 # ── Cached bridge loading ──────────────────────────────────────────────────
-# Bump this whenever compute_kinematics, read_out_files, merge logic, or the
-# raw .out files change. Stale caches are the silent-bug risk here.
-# v2: BRIDGE_EXCLUDED_RAW_SPEEDS added (drops 19.5 m/s / Ur=8.2126) --
-# merge_dataframes' output changed, so the v1 cache must not be reused.
 BRIDGE_CACHE_VERSION = 2
 
 
@@ -581,16 +457,3 @@ def load_bridge_df_cached(
     tmp.rename(cache)  # atomic on the same filesystem
     print(f"[cache] wrote {cache}  ({cache.stat().st_size/1e6:.0f} MB)")
     return raw
-
-
-def main() -> None:
-    df = merge_dataframes()
-    if df.empty:
-        print("Empty dataframe.")
-        return
-    print_summary(df)
-    print(df.head(10))
-
-
-if __name__ == "__main__":
-    main()

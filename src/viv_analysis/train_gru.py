@@ -14,7 +14,7 @@ from viv_analysis.utils import parse_ur_label
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from viv_analysis.plot_style import apply_thesis_style
+from viv_analysis.plotting.plot_style import apply_thesis_style
 apply_thesis_style()
 
 import numpy as np
@@ -48,8 +48,6 @@ def seed_everything(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
 
 def worker_init_fn(worker_id: int) -> None:
@@ -95,18 +93,10 @@ _ND_TRANSFORM_COLUMNS = ("disp", "vel", "acc")
 def apply_nd_transform(df: pd.DataFrame, nd_inputs: bool, D: float, fn: float,
                        input_cols: list[str]) -> pd.DataFrame:
     """
-    Apply nondimensional transform to physical kinematics.
+    Convert physical kinematics to nondimensional form per-case.
 
-    For each case, compute case-dependent U and apply:
-        disp_model = disp / D
-        vel_model = vel / U
-        acc_model = acc / (U^2 / D)
-
-    Column-NAME based (not positional): divisors are looked up by column
-    name, so input_cols may be any supported subset in any order --
-    ["disp","vel","acc"], ["disp"], ["vel"], ["acc"], or a reordered subset
-    like ["acc","disp"] -- and each column always gets the divisor that
-    matches its own name, never the divisor for its position in the list.
+    - Inputs: 'disp','vel','acc' are divided by D, U, U**2/D respectively.
+    - Uses each row's case Ur and dataset fn/D to compute U.
 
     Returns a transformed copy; physical (h, h_dot, h_ddot) and metadata remain.
     """
@@ -277,9 +267,7 @@ def _cylinder_split(cases: list[str], release_t: float) -> tuple:
 
 def _cylinder200_split(cases: list[str]) -> tuple:
     """
-    Split the 21-case Re=200 dataset (~62/19/19 train/val/test), spread
-    across the Ur range. Per-case release_time = 200/Ur (T_star_release/fn
-    per Ur), NOT a single dataset-wide constant -- see cylinder200_release_time.
+    Partition cylinder200 cases into train/val/test and compute per-case release times.
     """
     test  = {"Ur3.5", "Ur5.5", "Ur7", "Ur11"}
     val   = {"Ur4.25", "Ur6.25", "Ur9", "Ur10"}
@@ -296,15 +284,9 @@ def _cylinder200_split(cases: list[str]) -> tuple:
 def _bridge_split(cases: list[str], fn_hz: float,
                   d_ref: float, t_star_release: float) -> tuple:
     """
-    Split bridge cases (60/20/20) with release time from the UDF law
-    t_release = t* * D / U,  U = Ur * fn_hz * D.
-
-    Cases MUST arrive as canonical Ur labels (merge_dataframes called with
-    convert_bridge_to_ur=True). parse_ur_label raises on a raw-speed label —
-    that is the loud guard against the speed-vs-Ur double-convert that would
-    otherwise put every release time ~3.5x off, silently.
+    Split bridge cases into train/val/test (approx. 60/20/20) and compute release times per case.
     """
-    # hard guard: labels must be Ur, not raw speed
+    # ensure case labels are Ur-formatted strings
     for c in cases:
         try:
             parse_ur_label(c)
@@ -330,7 +312,7 @@ def _bridge_split(cases: list[str], fn_hz: float,
     val   = {remaining[i] for i in val_idx}
     train = set(cases) - test - val
 
-    # Release time per case from the UDF law (D = d_ref = 7.42 for the bridge).
+    # compute per-case release time using dataset parameters
     rt = {}
     for case in cases:
         ur = parse_ur_label(case)
@@ -366,18 +348,10 @@ def split_cases(cases: list[str], dataset: str,
 def train_one_epoch(model, loader, optimizer, criterion, device, input_noise_std=0.0,
                     n_kinematic_cols=3, case_weights=None):
     """
-    n_kinematic_cols: number of leading feature columns that are actual
-    kinematics (len(input_cols)) -- NOT a fixed 3. Noise must never reach
-    the trailing Ur-context column (if present): [..., :3] used to assume
-    exactly 3 kinematic columns always preceded it, which silently noised
-    the context feature too whenever input_size was smaller (e.g. a
-    single-input-column model with use_ur_context, input_size=2).
-
-    case_weights: optional {case_name: weight} from compute_case_loss_weights.
-    When given, replaces `criterion` with a per-sample-weighted MSE (looked
-    up per sample from the batch's case names) so training isn't dominated
-    by whichever case has the largest absolute target scale. When None,
-    behavior is unchanged (plain `criterion`).
+    Run one training epoch.
+    - input_noise_std: gaussian noise added to kinematic input columns only.
+    - case_weights: optional per-case loss weights (dict).
+    Returns: average training loss.
     """
     model.train()
     total = 0.0
@@ -428,23 +402,9 @@ def compute_case_loss_weights(
     min_var_frac_of_median: float = 0.01,
 ) -> dict[str, float]:
     """
-    Per-case training-loss weight, inverse-proportional to that case's own
-    target variance (in the SAME standardized space the model is trained
-    in). Without this, a single global y_scaler means a strong-response
-    case (e.g. a lock-in peak) dominates total MSE, and gradient descent
-    all but ignores weak-response cases -- their absolute squared error is
-    tiny even when their RELATIVE error is huge. Weighting by 1/var makes
-    each case's expected contribution to loss depend on relative (not
-    absolute) prediction error, so weak cases get a real training signal.
+    Compute per-case weights inversely proportional to each case's target variance
+    so low-variance cases contribute meaningfully to total loss. Weights are normalized to mean=1.
 
-    min_var_frac_of_median: each case's variance is floored at this
-    fraction of the median variance across cases before inverting, so a
-    near-flat/degenerate case can't blow up into an enormous weight that
-    destabilizes training.
-
-    Weights are normalized to average 1.0 across `cases`, so total loss
-    magnitude (and existing LR/schedule choices) stays comparable to the
-    unweighted case.
     """
     variances = {}
     for case in cases:
@@ -458,36 +418,6 @@ def compute_case_loss_weights(
     mean_w = float(np.mean(list(raw_weights.values()))) if raw_weights else 1.0
     mean_w = mean_w if mean_w > 0 else 1.0
     return {c: w / mean_w for c, w in raw_weights.items()}
-
-
-def per_case_normalize(
-    df: pd.DataFrame, target_col: str
-) -> tuple[pd.DataFrame, dict[str, tuple[float, float]]]:
-    """
-    Normalise target column per case.
-    Returns normalised df and dict of {case: (mean, std)} for inverse transform.
-    """
-    out_df = df.copy()
-    stats: dict[str, tuple[float, float]] = {}
-    for case, idx in out_df.groupby("case").groups.items():
-        vals = out_df.loc[idx, target_col].to_numpy(dtype=np.float32)
-        mu = float(vals.mean())
-        sigma = float(vals.std()) + 1e-8
-        out_df.loc[idx, target_col] = (vals - mu) / sigma
-        stats[str(case)] = (mu, sigma)
-    return out_df, stats
-
-
-def inverse_per_case_scale(
-    values_scaled: np.ndarray,
-    case_names: np.ndarray,
-    stats: dict[str, tuple[float, float]],
-) -> np.ndarray:
-    out = np.empty_like(values_scaled, dtype=np.float32)
-    for i, (val_s, case_name) in enumerate(zip(values_scaled, case_names)):
-        mu, sigma = stats[str(case_name)]
-        out[i] = float(val_s) * sigma + mu
-    return out
 
 
 def teacher_forcing_rollout(
@@ -1169,10 +1099,6 @@ def main() -> None:
         "holdout_ur": args.holdout_ur,
         "exclude_ur": args.exclude_ur,
         "force_train_ur": args.force_train_ur,
-        # output_dir.name is the ACTUAL resolved directory name (includes
-        # _nd/_ctx/_noctx when --exp_subdir was omitted -- see "Determine
-        # artifact directory" above); args.exp_subdir alone was stale
-        # whenever it was None, since it dropped those suffixes.
         "exp_subdir": output_dir.name,
     }
     with open(output_dir / "ur_stats.pkl", "wb") as f:
@@ -1183,7 +1109,7 @@ def main() -> None:
     # inverse-transform, and evaluate() are simply never called on any test
     # row. test_metrics stays None (never computed), not just unreported.
     if test_loader is not None:
-        _, tp, tt, tcases = run_validation(model, test_loader, criterion, device)
+        _, tp, tt = run_validation(model, test_loader, criterion, device)
         test_pred = y_scaler.inverse_transform(tp.reshape(-1, 1)).ravel()
         test_true = y_scaler.inverse_transform(tt.reshape(-1, 1)).ravel()
         test_metrics = evaluate(test_true, test_pred)
@@ -1191,7 +1117,7 @@ def main() -> None:
         test_metrics = None
         print("\nTest:       SKIPPED (--skip_test_eval) -- no test inference performed")
 
-    _, vp, vt, vcases = run_validation(model, val_loader, criterion, device)
+    _, vp, vt = run_validation(model, val_loader, criterion, device)
     val_pred = y_scaler.inverse_transform(vp.reshape(-1, 1)).ravel()
     val_true = y_scaler.inverse_transform(vt.reshape(-1, 1)).ravel()
     val_metrics = evaluate(val_true, val_pred)

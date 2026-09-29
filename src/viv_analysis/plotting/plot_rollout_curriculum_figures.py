@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from viv_analysis.evaluate_all import load_full_cfd_df
-from viv_analysis.plot_style import (
+from viv_analysis.plotting.plot_style import (
     CFD_COLOR, ERROR_COLOR, MODEL_COLOR, TEXT_WIDTH_IN, apply_thesis_style,
 )
 from viv_analysis.utils import PROJECT_ROOT, format_ur_label
@@ -73,26 +73,6 @@ def plot_training_curves() -> tuple[Path, Path]:
     fig.savefig(stem.with_suffix(".png"), dpi=200)
     plt.close(fig)
 
-    best_vals = [p["best_val_loss"] for p in phases]
-    caption = (
-        r"Training and validation loss (scaled $C_L$ MSE, "
-        r"Eq.~\ref{eq:rollout_loss}) across the four period-based curriculum "
-        r"phases, warm-started from the resonance-enriched one-step "
-        r"checkpoint (\texttt{gru\_bridge\_nd\_context\_noacc\_final22\_"
-        r"peaktrain}). Vertical dotted lines mark phase transitions, where "
-        r"the learning rate is halved and training resumes from the "
-        r"preceding phase's best-validation checkpoint. Best validation "
-        rf"loss per phase: {best_vals[0]:.3f} ($0.25\,T_n$), "
-        rf"{best_vals[1]:.3f} ($0.5\,T_n$), {best_vals[2]:.3f} ($1.0\,T_n$), "
-        rf"{best_vals[3]:.3f} ($2.0\,T_n$). Validation loss is noisy within "
-        r"each phase (each epoch draws a fresh random start point per "
-        r"case) but does not diverge as the horizon grows, indicating "
-        r"stable optimisation throughout -- see "
-        r"Sec.~\ref{sec:bridge_rollout_curriculum_result} for why this "
-        r"stable training does not translate into stable closed-loop "
-        r"response."
-    )
-    stem.with_suffix(".caption.txt").write_text(caption + "\n")
     return stem.with_suffix(".pdf"), stem.with_suffix(".png")
 
 
@@ -155,19 +135,6 @@ def plot_closed_loop_comparison(ur_tag: str = "Ur6.7385") -> tuple[Path, Path]:
     fig.savefig(stem.with_suffix(".pdf"))
     fig.savefig(stem.with_suffix(".png"), dpi=200)
     plt.close(fig)
-
-    caption = (
-        rf"Closed-loop response at the lock-in peak ({ur_tag}, $U=16$\,m/s), "
-        r"pre- vs post-curriculum fine-tune, both evaluated with the "
-        r"unmodified closed-loop evaluator under identical settings "
-        r"(\texttt{forcing\_mode=v1\_additive}, \texttt{handoff\_offset=2000}). "
-        r"Both surrogates collapse relative to the CFD reference; the "
-        r"post-curriculum checkpoint's collapse is total (exactly zero "
-        r"predicted amplitude at every one of the 22 in-scope validation "
-        r"cases, not just this one), compared to the pre-curriculum "
-        r"checkpoint's small residual response."
-    )
-    stem.with_suffix(".caption.txt").write_text(caption + "\n")
     return stem.with_suffix(".pdf"), stem.with_suffix(".png")
 
 
@@ -208,26 +175,6 @@ def plot_open_vs_closed_loop_contrast() -> tuple[Path, Path]:
     fig.savefig(stem.with_suffix(".pdf"))
     fig.savefig(stem.with_suffix(".png"), dpi=200)
     plt.close(fig)
-
-    caption = (
-        rf"Open-loop (teacher-forced) $R^2$ on the validation partition, "
-        rf"pre- vs post-curriculum: {peak_r2:.3f} $\to$ {curr_agg_r2:.3f} "
-        r"aggregate (per-case range "
-        rf"{min(per_case[c]['r2'] for c in cases):.3f}--"
-        rf"{max(per_case[c]['r2'] for c in cases):.3f}). Open-loop accuracy "
-        r"degraded substantially during the curriculum fine-tune but did not "
-        r"collapse to a trivial conditional-mean solution (which would read "
-        r"near $R^2\approx 0$) -- contrasted with the SAME post-curriculum "
-        r"checkpoint's closed-loop evaluation "
-        r"(Fig.~\ref{fig:rollout_curriculum_closed_loop}), which collapses "
-        r"to exactly zero predicted amplitude on all 22 in-scope validation "
-        r"cases (0/22 pass). The curriculum therefore caused partial "
-        r"forgetting of open-loop skill, not the two cleaner alternatives "
-        r"(fully preserved open-loop accuracy despite closed-loop "
-        r"instability, or total collapse to a trivial solution) that would "
-        r"each individually give a single-cause explanation."
-    )
-    stem.with_suffix(".caption.txt").write_text(caption + "\n")
     return stem.with_suffix(".pdf"), stem.with_suffix(".png")
 
 

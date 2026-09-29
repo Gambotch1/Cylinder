@@ -2,34 +2,6 @@
 Thesis figures for the rollout-refinement (Model A) fine-tune
 (sec:bridge_rollout_refinement) -- NOT the period-based curriculum
 (sec:bridge_rollout_curriculum, see plot_rollout_curriculum_figures.py).
-
-This is the truncated-BPTT, iteration-staged Model A objective
-(L = L_TF + lambda_roll * L_roll, lambda_roll ramped over 17 updates to a
-final value of 0.08064) applied to the P0 checkpoint
-(results/gru_bridge_p0_nd_context_noacc), run for 6 passes
-(results/gru_bridge_p0_nd_context_noacc/modelA_v2/). Two figures:
-
-  1. Per-pass open-loop (teacher-forced) validation R^2 alongside multi-
-     horizon rollout NRMSE (0.5s / 3.125s / 6.5s / 10s / 20s), showing
-     whether rollout fine-tuning improves extended-horizon rollout error
-     while open-loop skill is preserved.
-  2. Closed-loop comparison, P0 baseline vs the pass-5 checkpoint, across
-     the 6 cases in the pass5cmp sweep (stability outcome label and
-     amplitude relative error) -- mirrors the P0 known closed-loop
-     limitation (0/27 PASS, see memory note) to show whether rollout
-     refinement changes that outcome.
-  3. Representative closed-loop displacement trace at the lock-in peak
-     case (Ur6.7385), CFD reference vs P0 baseline vs pass-5 refined,
-     time-aligned at the true coupling handoff t_h (per-case
-     handoff_time_s from each run's own receipt -- see the
-     stochastic-closure representative-traces fix for why the CFD curve
-     must NOT be re-anchored to its own raw dataset start).
-
-Reads already-saved artifacts only -- no model inference, no retraining:
-  results/gru_bridge_p0_nd_context_noacc/modelA_v2/modelA_v2_history.json
-  results/gru_bridge_p0_nd_context_noacc_pass5cmp_P0/sweep_results.csv
-  results/gru_bridge_p0_nd_context_noacc_pass5cmp_pass5/sweep_results.csv
-  results/gru_bridge_p0_nd_context_noacc_pass5cmp_{P0,pass5}/coupled_bridge_Ur6.7385_*.npz
 """
 from __future__ import annotations
 
@@ -39,10 +11,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from viv_analysis.plot_style import (
+from viv_analysis.plotting.plot_style import (
     CFD_COLOR, ERROR_COLOR, MODEL_COLOR, SECONDARY_COLOR, TEXT_WIDTH_IN,
     apply_thesis_style,
 )
+from viv_analysis.config import config
 from viv_analysis.utils import PROJECT_ROOT
 
 MODELA_DIR = PROJECT_ROOT / "results" / "gru_bridge_p0_nd_context_noacc" / "modelA_v2"
@@ -90,33 +63,6 @@ def plot_training_progression() -> tuple[Path, Path]:
     fig.savefig(stem.with_suffix(".pdf"))
     fig.savefig(stem.with_suffix(".png"), dpi=200)
     plt.close(fig)
-
-    final_r2 = tf_r2[-1]
-    short_h, long_h = HORIZONS[0], HORIZONS[-1]
-    short_start = passes[0]["rollout_summary"][short_h]["disp_nrmse_median"]
-    short_end = passes[-1]["rollout_summary"][short_h]["disp_nrmse_median"]
-    long_start = passes[0]["rollout_summary"][long_h]["disp_nrmse_median"]
-    long_end = passes[-1]["rollout_summary"][long_h]["disp_nrmse_median"]
-    caption = (
-        r"Model A rollout-refinement fine-tune "
-        r"($L=L_{\mathrm{TF}}+\lambda_{\mathrm{roll}}L_{\mathrm{roll}}$, "
-        rf"$\lambda_{{\mathrm{{roll}}}}$ ramped to "
-        rf"{history['config']['lambda_roll_final']:.5f} over "
-        rf"{history['config']['ramp_updates']} updates, truncated-BPTT chunk "
-        rf"{history['config']['chunk']} steps) applied to the P0 checkpoint "
-        r"(\texttt{gru\_bridge\_p0\_nd\_context\_noacc}) for "
-        rf"{history['config']['n_passes']} passes. Left: open-loop "
-        rf"(teacher-forced) validation $R^2$ is preserved throughout "
-        rf"({baseline_r2:.4f} $\to$ {final_r2:.4f}). Right: rollout "
-        r"displacement NRMSE (median over validation cases) at increasing "
-        rf"self-generated horizons; the short horizon ({short_h}) improves "
-        rf"modestly ({short_start:.3f} $\to$ {short_end:.3f}) while the "
-        rf"longest horizon ({long_h}) remains far outside a useful range "
-        rf"({long_start:.3f} $\to$ {long_end:.3f}), consistent with the "
-        r"closed-loop evaluation (Fig.~\ref{fig:rollout_refinement_closed_loop}) "
-        r"showing no case passes after refinement."
-    )
-    stem.with_suffix(".caption.txt").write_text(caption + "\n")
     return stem.with_suffix(".pdf"), stem.with_suffix(".png")
 
 
@@ -156,21 +102,6 @@ def plot_closed_loop_comparison() -> tuple[Path, Path]:
     fig.savefig(stem.with_suffix(".png"), dpi=200)
     plt.close(fig)
 
-    n_pass_p0 = int(p0["P0_pass"].sum())
-    n_pass_p5 = int(p5["pass5_pass"].sum())
-    caption = (
-        r"Closed-loop amplitude relative error, P0 baseline vs the pass-5 "
-        r"Model A rollout-refined checkpoint, across the 6 cases in the "
-        r"pass-5 comparison sweep (bars at $-1.0$ denote an unscored/failed "
-        r"rollout, e.g.\ divergence with no defined $A^*$; stability labels "
-        r"annotated per bar). Rollout refinement does not recover closed-loop "
-        rf"amplitude at any case ({n_pass_p0}/6 P0 passes vs {n_pass_p5}/6 "
-        r"pass-5 passes) and shifts several cases from decay-to-rest toward "
-        r"divergence, consistent with the P0 checkpoint's known closed-loop "
-        r"limitation (0/27 PASS on the full amplitude gate) persisting "
-        r"through this refinement."
-    )
-    stem.with_suffix(".caption.txt").write_text(caption + "\n")
     return stem.with_suffix(".pdf"), stem.with_suffix(".png")
 
 
@@ -184,9 +115,21 @@ def _load_coupled_case(case_dir: Path):
     )
 
 
-def plot_representative_trace() -> tuple[Path, Path]:
+def plot_representative_trace(font_scale: float = 1.0) -> tuple[Path, Path]:
+    """font_scale: multiplies axes/tick/legend font sizes by this factor
+    without changing figsize -- same rcParams-multiplier convention as
+    thesis_plots.py's figures. Pass 1/display_fraction, e.g. 1/0.8 for
+    0.8\\linewidth."""
     apply_thesis_style()
+    import matplotlib as mpl
     import matplotlib.pyplot as plt
+    if font_scale != 1.0:
+        mpl.rcParams.update({
+            "axes.labelsize": mpl.rcParams["axes.labelsize"] * font_scale,
+            "xtick.labelsize": mpl.rcParams["xtick.labelsize"] * font_scale,
+            "ytick.labelsize": mpl.rcParams["ytick.labelsize"] * font_scale,
+            "legend.fontsize": mpl.rcParams["legend.fontsize"] * font_scale,
+        })
 
     p0 = _load_coupled_case(P0_DIR)
     p5 = _load_coupled_case(PASS5_DIR)
@@ -198,50 +141,38 @@ def plot_representative_trace() -> tuple[Path, Path]:
         f"P0 t_handoff={t_h} != pass5 t_handoff={p5['t_handoff']}"
     )
     D = p0["D"]
+    Ur = 6.7385
+    fn = config["bridge_fn_hz"]
+    U = Ur * fn * D
 
     plot_duration = 200.0
     fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 3.6))
 
-    # h_cfd is already sliced from handoff_idx onward (coupled_inference.py),
-    # so it lines up sample-for-sample with the start of t/h -- no separate
-    # re-anchoring against the raw CFD dataset's own start time is needed.
     n_cfd = len(p0["h_cfd"])
     t_cfd_rel = p0["t"][:n_cfd] - t_h
     cfd_mask = t_cfd_rel <= plot_duration
-    ax.plot(t_cfd_rel[cfd_mask], p0["h_cfd"][cfd_mask] / D,
+    ax.plot(t_cfd_rel[cfd_mask] * U / D, p0["h_cfd"][cfd_mask] / D,
             color=CFD_COLOR, lw=0.6, label="CFD reference")
 
     for label, case, color in [("Baseline model", p0, MODEL_COLOR),
                                 ("Rollout-refined model", p5, ERROR_COLOR)]:
         t_rel = case["t"] - case["t_handoff"]
         mask = t_rel <= plot_duration
-        ax.plot(t_rel[mask], case["h"][mask] / D,
+        ax.plot(t_rel[mask] * U / D, case["h"][mask] / D,
                 color=color, lw=0.6, ls=(0, (4, 2)), label=label)
 
     ax.axvline(0.0, color="gray", lw=0.4, ls=":")
     ax.set_ylabel(r"$h/D$")
-    ax.set_xlabel(r"$t-t_{\mathrm{h}}$ [s]")
+    ax.set_xlabel(r"$t^*=(t-t_{\mathrm{h}})U/D$")
     ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncol=3, frameon=False,
-              borderaxespad=0.0, fontsize=7.8)
+              borderaxespad=0.0)
 
     fig.tight_layout()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    stem = OUT_DIR / "rollout_refinement_representative_trace"
+    stem = OUT_DIR / "rollout_refinement_extended_Ur6p7385"
     fig.savefig(stem.with_suffix(".pdf"))
     fig.savefig(stem.with_suffix(".png"), dpi=200)
     plt.close(fig)
-
-    caption = (
-        r"Representative closed-loop displacement trace at the lock-in "
-        r"peak case (Ur6.7385), CFD reference vs P0 baseline vs the "
-        r"pass-5 Model A rollout-refined checkpoint, aligned at the true "
-        r"coupling handoff $t_{\mathrm{h}}$. Both model variants collapse "
-        r"toward a small residual response well below the CFD lock-in "
-        r"amplitude; rollout refinement does not recover it -- see "
-        r"Fig.~\ref{fig:rollout_refinement_closed_loop} for the amplitude "
-        r"and stability-outcome summary across the full 6-case sweep."
-    )
-    stem.with_suffix(".caption.txt").write_text(caption + "\n")
     return stem.with_suffix(".pdf"), stem.with_suffix(".png")
 
 
@@ -250,7 +181,7 @@ def main():
     print(f"Wrote {p1[0]}\nWrote {p1[1]}")
     p2 = plot_closed_loop_comparison()
     print(f"Wrote {p2[0]}\nWrote {p2[1]}")
-    p3 = plot_representative_trace()
+    p3 = plot_representative_trace(font_scale=1 / 0.8)
     print(f"Wrote {p3[0]}\nWrote {p3[1]}")
 
 

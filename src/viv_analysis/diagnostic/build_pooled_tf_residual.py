@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
 """
-Build a POOLED teacher-forced residual for the stochastic-closure
-experiment (sec:bridge_stochastic_closure), calibrated from the bridge
-model's TRAINING cases only -- never from the target validation case
-(Ur=6.7385) itself. Using the target case's own residual would let the
-"probe" tautologically reproduce whatever it's being tested against; a
-pooled, held-out-in-training-only residual is the non-circular version.
-
-For every training case (run_config.json's train_cases -- 16 for
-gru_bridge_nd_context_noacc; cases absent from the current bridge cache,
-e.g. Ur8.2126/U=19.5, excluded upstream for data-quality reasons, are
-skipped, not treated as an error), computes cl_true - cl_tf via the same
-verified batched fast_teacher_forcing path used throughout this project
-(cross-checked against the slow per-step reference), strips the first 5s
-of each case (matching the existing single-case residual convention in
-coupled_inference.py's --make_tf_residual path), and concatenates.
-
-Output is written in the SAME schema coupled_inference.py's --residual_npz
-loader already expects (cl_true, cl_tf, dt) so make_forcing() and the
-existing --noise_mode surrogate/replay/white path need no changes --
-cl_tf is saved as zeros so cl_true - cl_tf recovers the pooled residual
-exactly. The "Ur" field is deliberately set to the TARGET run's Ur
-(6.7385), not any source case's -- this file is scoped to that one
-coupled run, not a per-case diagnostic.
-
 Usage:
-    python -m src.viv_analysis.build_pooled_tf_residual \
+    python -m src.viv_analysis.diagnostic.build_pooled_tf_residual \
         --model_subdir gru_bridge_nd_context_noacc --target_ur 6.7385
 """
 from __future__ import annotations
@@ -37,7 +13,7 @@ import torch
 
 from viv_analysis.config import bridge_structural_params, config
 from viv_analysis.preprocess import load_bridge_df_cached
-from viv_analysis.regenerate_teacher_forcing_plots import (
+from viv_analysis.plotting.regenerate_teacher_forcing_plots import (
     _load_model_artifacts, _verify_matches_slow_reference, fast_teacher_forcing,
 )
 from viv_analysis.train_gru import apply_nd_transform

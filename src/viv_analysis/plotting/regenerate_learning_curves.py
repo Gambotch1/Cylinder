@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
 """
-Regenerate a thesis-quality learning-curve figure from an LSF training
-job's captured stdout log -- per-epoch train/val loss is NOT persisted
-anywhere in results/<model>/ (train_gru.py only holds it in memory to draw
-the original learning_curve.png, then discards it), so retraining would
-otherwise be the only way to reproduce this figure. The original bsub log
-(logs/<job>_<index>.log) already has every "Epoch N/M  train=...  val=..."
-line printed during that same run -- parsing it recovers the exact
-historical values with no retraining and no risk of drifting from what was
-actually selected as gru_best.pt.
-
-Usage:
-    python -m src.viv_analysis.regenerate_learning_curves \
+Regenerate learning-curve figure from an LSF training
+    python -m src.viv_analysis.plotting.regenerate_learning_curves \
         --log logs/gen_train_noacc_cylinder_1.log --model_subdir gru_cylinder200_dim_context_noacc \
         --log logs/gen_train_noacc_cylinder_2.log --model_subdir gru_cylinder200_nd_context_noacc
 """
@@ -21,7 +11,7 @@ import argparse
 import re
 from pathlib import Path
 
-from viv_analysis.thesis_plots import plot_learning_curve_thesis
+from viv_analysis.plotting.thesis_plots import plot_learning_curve_thesis
 from viv_analysis.utils import PROJECT_ROOT
 
 _EPOCH_RE = re.compile(r"Epoch\s+(\d+)/\d+\s+train=([\d.]+)\s+val=([\d.]+)")
@@ -47,6 +37,9 @@ def main():
     p.add_argument("--condition_label", action="append", default=None,
                   help="Optional caption description per model, same order as --log "
                        "(defaults to a generic description built from model_subdir).")
+    p.add_argument("--font_scale", type=float, default=1.0,
+                   help="Font-size multiplier for the figure. Pass "
+                        "1/display_fraction, e.g. 1/0.8 for 0.8\\linewidth.")
     args = p.parse_args()
 
     if len(args.log) != len(args.model_subdir):
@@ -61,6 +54,7 @@ def main():
         r = plot_learning_curve_thesis(
             train_losses, val_losses, output_dir, case_label=model_subdir,
             condition_label=label or f"the {model_subdir} model",
+            font_scale=args.font_scale,
         )
         print(f"{model_subdir}: {len(train_losses)} epochs, best_epoch={r['best_epoch']} -> {r['pdf_path']}")
 

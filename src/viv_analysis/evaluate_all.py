@@ -14,11 +14,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from viv_analysis.plot_style import apply_thesis_style
+from viv_analysis.plotting.plot_style import apply_thesis_style
 apply_thesis_style()
 
 from viv_analysis.closed_loop_metrics import compute_case_metrics
-from viv_analysis.v3_diagnostics import CLOSURE_LABELS
 from viv_analysis.config import (
     bridge_structural_params, config,
     CYLINDER200_ALIASES, cylinder200_structural_params,
@@ -26,8 +25,12 @@ from viv_analysis.config import (
 from viv_analysis.preprocess import compute_kinematics, merge_dataframes
 from viv_analysis.utils import PROJECT_ROOT, format_ur_label, parse_ur_label
 
-# Physical parameters (must match coupled_inference.py) -- derived once from
-# the centralized config, never duplicated as separate numeric constants.
+CLOSURE_LABELS = {
+    "v1_additive": "Raw causal GRU (primary baseline)",
+    "v2_multiplicative": "Exploratory amplitude-gained residual forcing",
+    "v3_coherent": "Exploratory CFD-calibrated amplitude regulator",
+}
+
 CYLINDER200_D = config['cylinder200_D_ref']
 CYLINDER200_STRUCTURAL_PARAMS = cylinder200_structural_params()
 
@@ -131,17 +134,7 @@ def bridge_ur_list_from_model(model_subdir: str) -> list[float]:
 
     Prefers run_config.json; falls back to metrics_gru.json's case_split
     for legacy artifacts (e.g. gru_bridge_noise0.05) that predate
-    run_config.json being written at all.
-
-    Filtered against the currently-cached bridge dataset: a checkpoint's own
-    run_config.json is a historical record of what it was trained on, and is
-    NOT retroactively rewritten when the retained case set changes (e.g. the
-    19.5 m/s / Ur=8.2126 exclusion, BRIDGE_CACHE_VERSION 1->2). Without this
-    filter, a legacy checkpoint whose run_config.json predates an exclusion
-    silently produces one "ERROR: ..." per excluded case (caught by the
-    per-case try/except in the sweep loop below) instead of never attempting
-    it -- harmless in practice but noisy, and depends on --ur_list not
-    having been passed explicitly to mask it."""
+    run_config.json being written at all."""
     model_dir = PROJECT_ROOT / "results" / model_subdir
     run_config_path = model_dir / "run_config.json"
     if run_config_path.exists():

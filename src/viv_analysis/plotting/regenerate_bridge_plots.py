@@ -1,37 +1,10 @@
 #!/usr/bin/env python3
 """
 Regenerate bridge closed-loop (coupled GRU-structural) thesis figures from
-ALREADY-SAVED results (the .npz trajectories + receipt.json from a prior
-`evaluate_all.py --dataset bridge` sweep, and its sweep_results.csv). No
-model inference, no coupled simulation is re-run.
-
-Mirrors regenerate_cylinder_plots.py's structure and output layout
-(results/<coupled_eval_dir>/thesis_figures/), with two bridge-specific
-differences:
-
-  - --coupled_eval_dir is an explicit results/-relative path rather than
-    derived as f"{model_subdir}_coupled_eval" -- bridge sweep output
-    directories in this project don't follow one fixed suffix convention
-    (e.g. the full 27-case sweep is gru_bridge_p0_nd_context_noacc_v1_
-    coupled_eval/, while the in-scope 22-case sweep recommended by the
-    supervisors -- excluding cases from Ur=8.4232/U=20m/s upward -- is
-    gru_bridge_p0_nd_context_noacc_final22_coupled_eval/).
-
-  - The summary amplitude-response curve uses thesis_plots.
-    plot_amplitude_response_status_aware_thesis, not the plain
-    plot_amplitude_response_thesis cylinder uses. reference_quality.
-    classify_reference_status found only 2 of 27 bridge cases to be a
-    clean, stationary limit-cycle response (settled_lco) -- the category
-    the underlying "peak-to-peak over the final 30%" amplitude definition
-    is actually a valid comparison for. Plotting every case identically,
-    as the cylinder figure does, would silently misrepresent the other
-    25. Reference status is recomputed fresh from the current bridge
-    cache each run (cheap, read-only, metadata-only -- see
-    reference_quality.build_reference_status_table), not read from a
-    possibly-stale results/bridge_reference_status.csv.
+ALREADY-SAVED results
 
 Usage:
-    python -m src.viv_analysis.regenerate_bridge_plots \
+    python -m src.viv_analysis.plotting.regenerate_bridge_plots \
         --coupled_eval_dir gru_bridge_p0_nd_context_noacc_final22_coupled_eval \
         --model_column gru_bridge_p0_nd_context_noacc \
         --thesis
@@ -46,13 +19,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from viv_analysis.plot_style import apply_thesis_style
+from viv_analysis.plotting.plot_style import apply_thesis_style
 apply_thesis_style()
 
 from viv_analysis.config import config
 from viv_analysis.evaluate_all import load_full_cfd_df
 from viv_analysis.reference_quality import build_reference_status_table
-from viv_analysis.thesis_plots import (
+from viv_analysis.plotting.thesis_plots import (
     plot_amplitude_response_status_aware_thesis, plot_coupled_thesis, ur_tag,
 )
 from viv_analysis.utils import PROJECT_ROOT, format_ur_label
@@ -99,14 +72,7 @@ def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame,
         if case is None:
             continue
         case_label = ur_tag(case["Ur"])
-        # h_mode="mean_removed": a failed bridge closed-loop trajectory can
-        # settle to an incorrect STATIC deflection (see decay_to_rest cases
-        # throughout this sweep) rather than a small residual LCO around
-        # zero -- plotting raw h/D would conflate that static offset with
-        # oscillation amplitude on the same axis. See plot_coupled_thesis's
-        # own docstring for why this is a display-only choice.
 
-                # GRU/coupled trajectory mask
         model_mask = case["t"] <= 200
 
         # CFD trajectory mask
@@ -146,7 +112,8 @@ def _load_partition_by_ur(model_column: str) -> dict[float, str]:
 
 
 def replot_sweep_summary_thesis(coupled_eval_dir: Path, model_column: str,
-                                dataset_note: str | None) -> dict:
+                                dataset_note: str | None,
+                                font_scale: float = 1.0) -> dict:
     csv_path = coupled_eval_dir / "sweep_results.csv"
     if not csv_path.exists():
         print(f"  [skip] no sweep_results.csv in {coupled_eval_dir}")
@@ -183,16 +150,13 @@ def replot_sweep_summary_thesis(coupled_eval_dir: Path, model_column: str,
     r = plot_amplitude_response_status_aware_thesis(
         df, model_column=model_column, status_column="reference_status",
         partition_column="partition", output_dir=thesis_dir, dataset_note=dataset_note,
+        font_scale=font_scale,
     )
     print(f"  wrote {r['pdf_path'].name}  ({r['n_settled_lco']}/{r['n_total']} settled_lco)")
     return r
 
 
 def select_representative_cases(coupled_eval_dir: Path) -> dict:
-    """Same data-driven low/near-peak/high pick as the cylinder script,
-    reported alongside each case's reference_status so a reader knows
-    immediately whether the chosen main-chapter case supports a strict
-    amplitude comparison or not."""
     csv_path = coupled_eval_dir / "sweep_results.csv"
     if not csv_path.exists():
         return {}

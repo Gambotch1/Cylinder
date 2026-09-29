@@ -21,7 +21,7 @@ Reuses, not reimplements:
     spectral content.
 
 Usage:
-    python -m src.viv_analysis.summarize_stochastic_closure \
+    python -m src.viv_analysis.diagnostic.summarize_stochastic_closure \
         --stochastic_dir gru_bridge_nd_context_noacc_stochastic_closure_coupled_eval \
         --baseline_npz results/gru_bridge_nd_context_noacc_final22_coupled_eval/coupled_bridge_Ur6.7385_gru_bridge_nd_context_noacc_forc-v1_additive_noise-none_nd_scale1_s1_seed0_handoff_2000_muNone.npz
 """
@@ -37,7 +37,7 @@ from scipy.signal import welch
 
 from viv_analysis.closed_loop_metrics import compute_case_metrics, classify_stability
 from viv_analysis.config import config
-from viv_analysis.plot_bridge_aerodynamic_work import compute_aerodynamic_work
+from viv_analysis.plotting.plot_bridge_aerodynamic_work import compute_aerodynamic_work
 from viv_analysis.utils import PROJECT_ROOT
 
 WINDOW_FRAC = 0.5  # matches compute_case_metrics's own default, for consistency

@@ -14,7 +14,6 @@ import re
 import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SRC_ROOT = PROJECT_ROOT / "src"
 
 DEFAULT_TIME_GAP_FACTOR = 20.0  # matches reference_quality.py's discontinuity_jump_factor
 

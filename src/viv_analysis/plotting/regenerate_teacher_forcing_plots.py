@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""
-Regenerate the teacher-forcing hold-out (test-case) open-loop figures for
-each model's held-out test_cases (never seen in training or validation),
-as THESIS-quality output (thesis_plots.plot_tf_result_thesis: fixed zoom
-window, no in-figure title/R^2, PDF+PNG, companion caption text) --
-results/<model>/thesis_figures/open_loop_<case>.{pdf,png,caption.txt}.
 
-train_gru.py's own teacher_forcing_rollout + plot_tf_result (results/<model>/
-ar_Ur*.png) are UNCHANGED and untouched by this script -- that pairing stays
-the training-time diagnostic; this script's job is only to produce the
-separate thesis-formatted figures, faster.
-
-teacher_forcing_rollout's own per-step Python loop (one single-sample GPU
-call per timestep) is correct but slow for cylinder200's ~90k-sample test
-cases. Since teacher forcing feeds TRUE CFD history at every step (no
-recurrence on the model's own output), every window is independent and the
-whole case can be batched through the model instead -- verified below to
-give IDENTICAL predictions to the slow reference on a truncated sample
-before trusting it for the real run.
-"""
 from __future__ import annotations
 
 import pickle
@@ -30,7 +11,7 @@ import torch
 from viv_analysis.config import config, cylinder200_release_time, prepare_gru_config
 from viv_analysis.models.gru import VIV_GRU
 from viv_analysis.preprocess import compute_kinematics, merge_dataframes
-from viv_analysis.thesis_plots import (
+from viv_analysis.plotting.thesis_plots import (
     build_metrics_table, plot_open_loop_representative, plot_tf_result_thesis,
 )
 from viv_analysis.train_gru import (
@@ -42,21 +23,7 @@ from viv_analysis.utils import PROJECT_ROOT, parse_ur_label, segment_by_time_gap
 def fast_teacher_forcing(model, case_df_scaled, input_cols, seq_len, release_t,
                          y_scaler, case_name, device, use_ur_context, ur_stats,
                          batch_size=1024):
-    """Same predictions as train_gru.teacher_forcing_rollout, batched for
-    speed (teacher forcing has no recurrence on the model's own output, so
-    every seq_len-window is independent -- safe to batch) -- PLUS gap-aware
-    windowing that train_gru.teacher_forcing_rollout does not have: a
-    window straddling a discontinuous CFD restart (segment_by_time_gaps;
-    see e.g. bridge Ur=6.9491's genuine 77.5s report-file gap) presents two
-    real-time-separated states as if they were one continuous trajectory,
-    which VIVSequenceDataset already excludes from TRAINING windows but
-    neither teacher_forcing_rollout nor (until this fix) this function
-    excluded from EVALUATION windows -- producing one wildly-wrong
-    out-of-distribution prediction right at the gap, inflating RMSE/R^2
-    (but barely moving MAE, since it's a single-point outlier over ~1e5
-    samples) and drawing a spurious straight interpolation line across the
-    gap in any plot of the raw (times, cl_true) pair.
-    """
+
     ordered = case_df_scaled.sort_values("time").reset_index(drop=True)
     signal = ordered[input_cols].to_numpy(dtype=np.float32)
 
@@ -72,10 +39,6 @@ def fast_teacher_forcing(model, case_df_scaled, input_cols, seq_len, release_t,
     times = ordered["time"].to_numpy(dtype=np.float32)
     release_idx = int(np.searchsorted(times, release_t))
 
-    # Per-segment predictable range: each segment needs seq_len of its OWN
-    # history before its first predictable index; only the segment
-    # containing release_idx (always the first, in practice) is additionally
-    # floored at release_idx+seq_len.
     idx_chunks = []
     for seg_start, seg_end in segment_by_time_gaps(times):
         seg_pred_start = seg_start + seq_len
@@ -126,13 +89,7 @@ def _load_model_artifacts(model_subdir: str, device: str):
 
 
 def _verify_matches_slow_reference(art, case_df_scaled, release_t, device, n_check_steps=3000):
-    """Truncate to a short window straddling the release point and compare
-    fast_teacher_forcing against the original (slow, validated)
-    teacher_forcing_rollout -- must match to float32 precision before the
-    fast path is trusted for the real run. (A prefix from t=0 would miss
-    the release point entirely for large-Ur cases, where release_t is well
-    past the first few thousand samples -- must anchor the slice at
-    release_idx, not at the start of the case.)"""
+
     seq_len = art["seq_len"]
     ordered_full = case_df_scaled.sort_values("time").reset_index(drop=True)
     times_full = ordered_full["time"].to_numpy(dtype=np.float32)
@@ -193,7 +150,12 @@ def main():
                    help="Multiplies both the CFD and GRU trace linewidths "
                         "by this factor (both figures: representative and "
                         "per-case appendix). E.g. 0.7 for visibly thinner "
-                        "lines where the two traces overlap closely.")
+                        "lines where the two traces overlap closely. "
+                        "Ignored if --linewidth is given.")
+    p.add_argument("--linewidth", type=float, default=None,
+                   help="Overrides both the CFD and GRU trace linewidths "
+                        "to this exact absolute value (both figures), "
+                        "instead of scaling each trace's own base width.")
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -204,10 +166,6 @@ def main():
     raw_df = merge_dataframes(dataset=args.dataset)
     raw_df = compute_kinematics(raw_df, dataset=args.dataset)
 
-    # Fixed physical parameters common to every cylinder200 case -- reported
-    # once per model in each figure's caption rather than repeated in every
-    # legend (matches the "Present model: (...)" text the OLD ar_Ur*.png
-    # legend used to carry; that content wasn't dropped, just relocated).
     physical_params_note = r"$Re=200$, $m^*=10$, $\zeta=0.01$" if args.dataset == "cylinder200" else None
 
     for model_subdir in args.model_subdir:
@@ -230,6 +188,7 @@ def main():
                 case_df_scaled["cl"].to_numpy(dtype=np.float32).reshape(-1, 1)).ravel()
 
             ur = parse_ur_label(case_name)
+            U_nd = ur * fn_nd * D_nd
             release_t = cylinder200_release_time(ur)
 
             if not args.skip_verify:
@@ -240,24 +199,21 @@ def main():
                 art["y_scaler"], case_name, device, art["use_ur_context"], art["ur_stats"],
             )
 
-            # cylinder200 chapter convention: lead with Ur (no physical U
-            # emphasis). Bridge callers of plot_tf_result_thesis should pass
-            # condition_label="$U=...\\,\\mathrm{m/s}$ ($U_r=...$)" instead,
-            # per the bridge/Hallak-comparison convention of leading with
-            # physical wind speed.
             condition_label = f"the cylinder200 test case at $U_r={ur:g}$"
             thesis_dir = art["output_dir"] / "thesis_figures"
             result = plot_tf_result_thesis(
                 cl_pred, cl_true, times, case_label=case_name, output_dir=thesis_dir,
                 condition_label=condition_label, physical_params_note=physical_params_note,
+                U=U_nd, D=D_nd,
                 font_scale=args.appendix_font_scale, linewidth_scale=args.linewidth_scale,
+                linewidth=args.linewidth,
             )
             rmse = float(np.sqrt(np.mean((cl_pred - cl_true) ** 2)))
             mae = float(np.mean(np.abs(cl_pred - cl_true)))
             print(f"  {case_name}: R2={result['r2']:.4f}  RMSE={rmse:.4f}  MAE={mae:.4f}  "
                   f"n={len(times)}  -> {result['pdf_path']}")
             case_results.append(dict(
-                case=f"$U_r={ur:g}$", ur=ur, r2=result["r2"], rmse=rmse, mae=mae,
+                case=f"$U_r={ur:g}$", ur=ur, U=U_nd, r2=result["r2"], rmse=rmse, mae=mae,
                 amplitude=float(cl_true.max() - cl_true.min()),
                 cl_pred=cl_pred, cl_true=cl_true, times=times, condition_label=condition_label,
             ))
@@ -265,17 +221,14 @@ def main():
         if not case_results:
             continue
 
-        # Representative case for the main-text 3-panel figure: the test
-        # case with the largest CFD lift-coefficient range (data-driven
-        # pick, same logic as the closed-loop "near-peak" selection --
-        # not the case chosen to look best).
         rep = max(case_results, key=lambda r: r["amplitude"])
         rep_result = plot_open_loop_representative(
             rep["cl_pred"], rep["cl_true"], rep["times"], case_label=f"Ur{rep['ur']:g}",
             output_dir=thesis_dir, condition_label=rep["condition_label"],
             physical_params_note=physical_params_note,
+            U=rep["U"], D=D_nd,
             width_in=args.width_in, font_scale=args.font_scale,
-            linewidth_scale=args.linewidth_scale,
+            linewidth_scale=args.linewidth_scale, linewidth=args.linewidth,
         )
         print(f"  Representative case: {rep['condition_label']} -> {rep_result['pdf_path']}")
 

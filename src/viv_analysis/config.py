@@ -44,25 +44,11 @@ config = {
     "stride_val":    1,
     "use_ur_context": False,
 
-    # ── ELM hyperparameter search ──────────────────────────────────────────
-    "hl_range":      [500, 2500],
-    "hl_step":       100,
-    "lam_range":     [1e-8, 1e-3],
-    "n_trials":      50,
-    "n_jobs":        -1,
-    "n_models":      15,
-    "n_hidden_nodes": 300,
-    "alpha_reg":     1.0,
-    "n_ensemble":    10,
-
     # ── Shared ─────────────────────────────────────────────────────────────
     "seed":          123,
     "target_col":    "cl",
     "input_cols":    ["disp", "vel", "acc"],
     "motion_type":   "heave",
-
-    # ── Supported datasets ─────────────────────────────────────────────────
-    "viv_dataset":   ["cylinder", "cylinder200", "bridge"],
 }
 
 # accepted spellings for the completed Re=200

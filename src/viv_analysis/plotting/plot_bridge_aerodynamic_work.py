@@ -14,7 +14,6 @@ from scipy.integrate import trapezoid
 from scipy.signal import butter, sosfiltfilt
 
 from viv_analysis.config import bridge_structural_params, config
-from viv_analysis.diagnostic.open_loop_energy_diagnostics import phase_difference_rad
 from viv_analysis.plotting.plot_style import (
     MODEL_COLOR, SECONDARY_COLOR, TEXT_WIDTH_IN, apply_thesis_style,
 )
@@ -26,6 +25,27 @@ DEFAULT_NPZ = (
 )
 
 STRUCTURAL_BAND_FRAC = (0.5, 1.5)  # x fn, matches diagnose.py's convention
+
+
+def single_bin_dft_complex(t: np.ndarray, x: np.ndarray, f: float) -> complex:
+    """Complex single-bin DFT coefficient of x at frequency f (Hz); tolerates a non-uniform grid."""
+    x = np.asarray(x, dtype=float)
+    x = x - x.mean()
+    n = len(x)
+    if n == 0:
+        return complex(np.nan, np.nan)
+    kernel = np.exp(-2j * np.pi * f * np.asarray(t, dtype=float))
+    return (2.0 / n) * np.sum(x * kernel)
+
+
+def phase_difference_rad(t: np.ndarray, x1: np.ndarray, x2: np.ndarray, f: float) -> float:
+    """Phase of x1 relative to x2 at frequency f, wrapped to [-pi, pi]."""
+    c1 = single_bin_dft_complex(t, x1, f)
+    c2 = single_bin_dft_complex(t, x2, f)
+    if not (np.isfinite(c1.real) and np.isfinite(c2.real)):
+        return float("nan")
+    diff = np.angle(c1) - np.angle(c2)
+    return float(np.angle(np.exp(1j * diff)))
 
 
 def sliding_phase(t: np.ndarray, F_L: np.ndarray, h_dot: np.ndarray, fn: float,

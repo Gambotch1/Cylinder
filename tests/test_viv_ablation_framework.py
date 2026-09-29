@@ -629,8 +629,8 @@ class TestDatasetResolution:
     def test_legacy_positional_used_when_no_flag(self):
         assert resolve_dataset("bridge", None) == "bridge"
 
-    def test_no_dataset_given_defaults_to_cylinder(self):
-        assert resolve_dataset(None, None) == "cylinder"
+    def test_no_dataset_given_defaults_to_cylinder200(self):
+        assert resolve_dataset(None, None) == "cylinder200"
 
     def test_mismatched_positional_and_flag_raises(self):
         with pytest.raises(ValueError):

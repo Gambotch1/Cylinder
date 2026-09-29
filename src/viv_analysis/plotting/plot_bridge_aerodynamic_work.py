@@ -24,7 +24,7 @@ DEFAULT_NPZ = (
     "noise-none_nd_scale1_s1_seed0_handoff_2000_muNone.npz"
 )
 
-STRUCTURAL_BAND_FRAC = (0.5, 1.5)  # x fn, matches diagnose.py's convention
+STRUCTURAL_BAND_FRAC = (0.5, 1.5)  # x fn, structural band around the natural frequency
 
 
 def single_bin_dft_complex(t: np.ndarray, x: np.ndarray, f: float) -> complex:

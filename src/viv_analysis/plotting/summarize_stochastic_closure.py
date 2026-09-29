@@ -14,14 +14,14 @@ Reuses, not reimplements:
     (the SAME function that produced every other closed_loop_metrics.csv
     in this project, so these numbers are directly comparable).
   - plot_bridge_aerodynamic_work.compute_aerodynamic_work for c_exc/c.
-  - diagnose.py's structural-band convention (0.5*fn-1.5*fn) for the
+  - the structural band convention (0.5*fn-1.5*fn) for the
     near-fn energy fraction, applied here to h (displacement) rather than
     C_L, since the question this probe answers is whether the INJECTED
     forcing restores near-resonant STRUCTURAL response, not just lift
     spectral content.
 
 Usage:
-    python -m src.viv_analysis.diagnostic.summarize_stochastic_closure \
+    python -m viv_analysis.plotting.summarize_stochastic_closure \
         --stochastic_dir gru_bridge_nd_context_noacc_stochastic_closure_coupled_eval \
         --baseline_npz results/gru_bridge_nd_context_noacc_final22_coupled_eval/coupled_bridge_Ur6.7385_gru_bridge_nd_context_noacc_forc-v1_additive_noise-none_nd_scale1_s1_seed0_handoff_2000_muNone.npz
 """
@@ -45,7 +45,7 @@ WINDOW_FRAC = 0.5  # matches compute_case_metrics's own default, for consistency
 
 def near_fn_energy_fraction(h: np.ndarray, dt: float, fn: float, window_frac: float = WINDOW_FRAC) -> float:
     """Fraction of h's (displacement) PSD variance lying in the structural/
-    lock-in band [0.5*fn, 1.5*fn] -- same band convention as diagnose.py,
+    lock-in band [0.5*fn, 1.5*fn] -- same band convention as plot_bridge_aerodynamic_work.py,
     applied to displacement (not C_L) over the same tail window compute_
     case_metrics uses."""
     n = len(h)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Usage:
-    python -m src.viv_analysis.diagnostic.build_pooled_tf_residual \
+    python -m viv_analysis.build_pooled_tf_residual \
         --model_subdir gru_bridge_nd_context_noacc --target_ur 6.7385
 """
 from __future__ import annotations

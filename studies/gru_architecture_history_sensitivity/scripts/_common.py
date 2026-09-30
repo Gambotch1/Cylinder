@@ -1,8 +1,3 @@
-"""
-Shared helpers for the GRU architecture/history-length sensitivity study.
-Imports validated production modules under src/viv_analysis; never copies
-their source. No production file is modified by anything in this module.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -17,11 +12,6 @@ REPO_ROOT = STUDY_ROOT.parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 STUDY_VERSION = "1.0.0"
 
-# Every configuration in this study is trained at exactly these 3 seeds.
-# Shared by collect_results.py (a configuration missing any of these three
-# is "missing runs" and must be rejected before ranking, not silently
-# aggregated over whichever seeds happen to exist) and select_configuration
-# .py (the freeze-time guard against selecting a single fortunate seed).
 REQUIRED_SEEDS = (123, 456, 789)
 
 if str(SRC_ROOT) not in sys.path:
@@ -38,10 +28,6 @@ def git_commit() -> str:
 
 
 def dataset_cache_version(dataset: str) -> str:
-    """Best-effort fingerprint of the on-disk CFD cache this run reads,
-    so a receipt can later be checked against a stale cache. Does not
-    read the full contents, only names/sizes/mtimes -- cheap and stable
-    across identical data."""
     cache_dir = REPO_ROOT / "data" / "cache"
     if not cache_dir.exists():
         return "no_cache_dir"
@@ -72,56 +58,16 @@ def run_output_dir(dataset: str, stage: int, hidden_size: int, num_layers: int,
     tag = f"H{hidden_size}_L{num_layers}_seq{seq_len}_seed{seed}"
     if history_label:
         tag = f"{history_label}_{tag}"
-    # smoke=True redirects entirely out of results/ into smoke/ -- collect_
-    # results.py / select_configuration.py only ever glob under results/, so
-    # a smoke run is invisible to the result collector and selection
-    # manifest by construction, not by convention.
     root = STUDY_ROOT / "smoke" if smoke else STUDY_ROOT / "results"
     return root / dataset / f"stage{stage}" / tag
 
 
 def exp_subdir_arg(output_dir: Path) -> str:
-    """train_gru.py resolves --exp_subdir as ROOT_DIR/'results'/exp_subdir.
-    Passing a relative path (with '..' components) redirects the write
-    target outside results/ into this study's own results/ tree, with zero
-    production-code changes. Safe for train_gru.py because --exp_subdir is
-    ONLY used for directory resolution there -- see model_subdir_alias()
-    below for why coupled_inference.py needs a different approach."""
     results_root = REPO_ROOT / "results"
     return os.path.relpath(output_dir, results_root)
 
 
 def model_subdir_alias(run_dir: Path) -> str:
-    """coupled_inference.py resolves --model_subdir the same way
-    (PROJECT_ROOT/'results'/model_subdir) AND ALSO embeds the same string
-    verbatim into its output NPZ/PNG filenames (_exp_tag). A relative
-    '..'-escaping path is safe for the first use but corrupts the second:
-    the embedded '/' characters get parsed as extra path components by
-    np.savez, and the run crashes with FileNotFoundError because those
-    intermediate "directories" don't exist.
-
-    Route around this with a short-lived, FLAT-named symlink placed
-    directly under the real results/ directory, pointing at run_dir. This
-    writes no data, copies no data, and duplicates nothing -- it is a
-    filesystem alias, not a result -- but it IS an entry under results/,
-    so it is deliberately named with an unmistakable prefix and removed
-    immediately after use (see cleanup_model_subdir_alias). No production
-    code is touched; this is the alternative to the two options that would
-    require it (embedding a --output_label flag in coupled_inference.py,
-    or writing real study output into results/).
-
-    Concurrency safety: the name includes both the run_dir's own config
-    tag (readability/debuggability -- e.g. under `results/` while a job
-    is running, you can tell which config it belongs to) AND a fresh
-    uuid4 token, so no two calls EVER produce the same link_name, even for
-    the identical run_dir, even called from the same process, even called
-    concurrently from two threads. This makes the safety property
-    unconditional rather than "safe because generate_jobs.py happens to
-    map each array index to a distinct run_dir" (true, but a weaker
-    guarantee) -- see test_model_subdir_alias.py's concurrency test, which
-    fires many concurrent calls against the SAME run_dir and asserts every
-    returned name is unique with no cross-thread interference.
-    """
     import uuid
     token = uuid.uuid4().hex[:12]
     link_name = "_gru_arch_hist_study_symlink_" + "_".join(run_dir.parts[-3:]) + f"_{token}"
@@ -138,13 +84,6 @@ def cleanup_model_subdir_alias(link_name: str) -> None:
         link_path.unlink()
 
 
-
-# bridge=300.0: every bridge CFD case tops out at t=300s (several end
-# earlier -- e.g. Ur7.265 at ~128s), confirmed directly against
-# data/cache/bridge_ds20_trim100_v1.parquet. A longer closed-loop duration
-# only runs the surrogate further past the last point any CFD reference
-# exists for, without adding validation value -- wasted compute, not a
-# more rigorous test.
 FULL_DURATION_S = {"cylinder200": 500.0, "bridge": 300.0}
 
 
@@ -152,19 +91,6 @@ def run_coupled_sweep(run_dir: Path, cases: list[str], out_dir: Path,
                        handoff_offset: int = 2000,
                        window_frac: float = 0.5, pass_amp_rel_error_threshold: float = 0.20,
                        timeout_s: int = 1800, total_time_override: float | None = None) -> "tuple":
-    """Full-duration closed-loop sweep over an EXPLICIT case list, reusing
-    coupled_inference.py's own CLI entry point (subprocess, exactly the way
-    evaluate_all.py itself invokes it) rather than calling run_coupled_viv()
-    directly -- coupled_inference.py's main() does substantial setup (CFD
-    loading, warmup-history construction, structural-parameter resolution,
-    handoff bookkeeping) that would otherwise have to be duplicated here.
-
-    Shared by evaluate_closed_loop.py (validation cases, feeds selection)
-    and evaluate_closed_loop_train_diagnostic.py (training cases, never
-    feeds selection) -- the case list's PROVENANCE and what happens to the
-    result afterward is entirely the caller's responsibility; this function
-    itself has no opinion about train vs val vs test.
-    """
     import sys
     import time
 
@@ -180,20 +106,10 @@ def run_coupled_sweep(run_dir: Path, cases: list[str], out_dir: Path,
 
     run_config = load_json(run_dir / "run_config.json")
     dataset = run_config["cfd_dataset"]
-    # total_time_override exists ONLY for run_smoke_test.py, which needs a
-    # short trajectory (seconds, not the full 500s/700s protocol) to check
-    # the closed-loop path mechanically works. evaluate_closed_loop.py and
-    # evaluate_closed_loop_train_diagnostic.py never pass it, so the real
-    # selection-facing protocol duration is untouched.
     total_time = total_time_override if total_time_override is not None else FULL_DURATION_S[dataset]
     D = CYLINDER200_D if dataset == "cylinder200" else BRIDGE_D
 
     Ur_list = sorted({parse_ur_label(c) for c in cases})
-    # See model_subdir_alias()'s docstring: coupled_inference.py embeds
-    # --model_subdir verbatim into its output filenames, so the relative
-    # '..'-escaping path used elsewhere in this study (safe for directory
-    # resolution) would corrupt those filenames. A flat symlink alias
-    # avoids that without any production-code change.
     model_subdir = model_subdir_alias(run_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -213,24 +129,6 @@ def run_coupled_sweep(run_dir: Path, cases: list[str], out_dir: Path,
                 "--Ur", str(Ur),
                 "--total_time", str(total_time),
                 "--handoff_offset", str(handoff_offset),
-                # .resolve() is load-bearing: coupled_inference.py's own
-                # --output_dir resolution is `PROJECT_ROOT/"results"/output_dir`
-                # for any NON-absolute path (it assumes a short name directly
-                # under results/, e.g. a one-off diagnostic subdir). out_dir
-                # here is a full study-relative path that already CONTAINS
-                # "results/" as a middle component (studies/.../results/{dataset}
-                # /stage{N}/{config}/closed_loop_eval) -- passed as-is, every
-                # npz/png this sweep writes lands doubly-nested under
-                # results/studies/.../results/... instead of the real directory,
-                # and build_status_aware_report (which looks in the real,
-                # intended out_dir) silently finds nothing there. Confirmed for
-                # real: 18/18 bridge Stage 1 closed-loop runs had every npz
-                # misplaced this way even though _compute_gate/compute_case_
-                # metrics succeeded in the SAME loop iteration (it reads back
-                # the same wrong-but-self-consistent path coupled_inference.py
-                # just printed). An absolute path here hits coupled_inference.py's
-                # `Path(output_dir).is_absolute()` branch instead, which uses it
-                # verbatim -- no re-nesting regardless of what the caller passed.
                 "--output_dir", str(out_dir.resolve()),
             ]
             cmd.append("--nd_inputs" if run_config["nd_inputs"] else "--dim_inputs")
@@ -260,14 +158,6 @@ def run_coupled_sweep(run_dir: Path, cases: list[str], out_dir: Path,
                 _compute_gate(npz_path, window_frac, pass_amp_rel_error_threshold)
                 if npz_path is not None else None
             )
-            # _compute_gate deliberately narrows compute_case_metrics' full
-            # row down to just {stability_label, A_star_rel_error, pass}
-            # for the pass/fail gate. Frequency error (f_osc_rel_error) is
-            # in that same row but discarded there -- called again here
-            # (cheap: FFT/envelope on an already-short array, not worth
-            # threading a second return value through _compute_gate just
-            # to avoid) so BOTH cylinder and bridge summaries can rank on
-            # it, not just amplitude.
             try:
                 freq_results[Ur] = (
                     compute_case_metrics(npz_path, window_frac=window_frac)
@@ -297,23 +187,7 @@ def run_coupled_sweep(run_dir: Path, cases: list[str], out_dir: Path,
     return sweep_df, timings, label
 
 
-# ── Test evaluation: prevention, not redaction ─────────────────────────────
-#
-# Every sensitivity-study training run passes --skip_test_eval to
-# train_gru.py (see the production diff in src/viv_analysis/train_gru.py):
-# the test dataframe/loader is never built, test inference never runs, and
-# metrics_gru.json's test_metrics is None (not omitted -- never computed) and
-# tf_results is {} (test cases never entered that loop). There is therefore
-# nothing to redact and no _test_locked/ directory anywhere in this study --
-# no test prediction exists for ANY run until scripts/unlock_test_evaluation.py
-# is run against an already-frozen selection manifest, at which point test
-# metrics are computed for the first time, for the 3 selected seed runs only.
-
-
 def assert_frozen_and_get_selected_run_dirs(selection_manifest: Path) -> list[str]:
-    """Raises unless `selection_manifest` exists, is frozen, and names
-    exactly the 3 seed-specific run dirs (123/456/789) for one selected
-    configuration. Returns those run dirs (order matches SEEDS)."""
     if not selection_manifest.exists():
         raise SystemExit(
             f"Test evaluation requires an existing frozen selection manifest; "
@@ -335,10 +209,6 @@ def assert_frozen_and_get_selected_run_dirs(selection_manifest: Path) -> list[st
     return run_dirs
 
 
-# ── Canonical validation/test partition sizes (from the Stage 0 audit) ─────
-# Cross-checked against run_config.json's own val_cases/test_cases length at
-# evaluation time, so a future change to production split logic is caught
-# rather than silently evaluated against the wrong case count.
 CANONICAL_VAL_CASE_COUNT = {"cylinder200": 4, "bridge": 5}
 CANONICAL_TEST_CASE_COUNT = {"cylinder200": 4, "bridge": 5}
 
@@ -355,15 +225,6 @@ def release_time_for(dataset: str, case: str, cfg: dict) -> float:
 
 
 def compute_open_loop_metrics(run_dir: Path, cases: list[str], case_kind: str) -> dict:
-    """Open-loop (teacher-forced) evaluation of one trained run against an
-    explicit case list, reusing the production teacher_forcing_rollout()
-    function and the run's own saved checkpoint/scalers/run_config.
-    `case_kind` is "val" or "test" -- purely a label for the output keys.
-
-    Shared by evaluate_open_loop.py (case_kind="val", unrestricted) and
-    unlock_test_evaluation.py (case_kind="test", gated by a frozen
-    selection manifest -- see assert_frozen_and_get_selected_run_dirs).
-    """
     import pickle
 
     import numpy as np
@@ -416,9 +277,6 @@ def compute_open_loop_metrics(run_dir: Path, cases: list[str], case_kind: str) -
 
     eval_df_s = apply_scalers_to_df(eval_df, x_scaler, y_scaler, input_cols, "cl")
 
-    # hidden_size/num_layers are NOT part of train_gru.py's own run_config.json
-    # schema (production code never varies them) -- study_receipt.json is the
-    # source of truth for the architecture actually trained in this run_dir.
     receipt = load_json(run_dir / "study_receipt.json")
     hidden_size = receipt["hidden_size"]
     num_layers = receipt["num_layers"]

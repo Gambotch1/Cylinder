@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-Thesis-quality figure functions -- deliberately separate from the training-
-diagnostic plotting in train_gru.py (plot_tf_result) and coupled_inference.py
-so that changing thesis formatting can never change what a training run
-itself prints/saves.
-
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,7 +22,7 @@ def break_at_gaps(t: np.ndarray, *ys: np.ndarray):
     segs = segment_by_time_gaps(t)
     if len(segs) <= 1:
         return (t, *ys)
-    break_idxs = [seg_end for seg_start, seg_end in segs[:-1]]  # insert before these
+    break_idxs = [seg_end for seg_start, seg_end in segs[:-1]]
     t_out = np.insert(t.astype(float), break_idxs, np.nan)
     ys_out = tuple(np.insert(np.asarray(y).astype(float), break_idxs, np.nan) for y in ys)
     return (t_out, *ys_out)
@@ -190,7 +183,6 @@ def plot_coupled_thesis(
     font_scale: float = 1.0,
     linewidth: float = 0.6,
 ) -> dict:
-    
     apply_thesis_style()
     if font_scale != 1.0:
         mpl.rcParams.update({
@@ -393,7 +385,7 @@ def plot_amplitude_response_status_aware_thesis(
     df = df.sort_values(ur_column).reset_index(drop=True)
     excluded_mask = df[status_column].isin(REFERENCE_STATUS_EXCLUDED)
     scored = df[~excluded_mask]
-    is_settled = scored[status_column] == "settled_lco"  # kept for the n_settled count only
+    is_settled = scored[status_column] == "settled_lco"
 
     fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 3.9), constrained_layout=True)
 
@@ -453,7 +445,6 @@ def plot_learning_curve_thesis(
     out_name: str = "learning_curve",
     font_scale: float = 1.0,
 ) -> dict:
-
     apply_thesis_style()
     if font_scale != 1.0:
         mpl.rcParams.update({
@@ -520,7 +511,6 @@ def plot_open_loop_representative(
     linewidth_scale: float = 1.0,
     linewidth: float | None = None,
 ) -> dict:
-
     apply_thesis_style()
     if font_scale != 1.0:
         mpl.rcParams.update({
@@ -545,7 +535,7 @@ def plot_open_loop_representative(
     cl_pred = np.asarray(cl_pred)
     cl_true = np.asarray(cl_true)
     residual = cl_pred - cl_true
-    zoom_mask = t <= zoom_duration  # selection stays in raw seconds regardless of display units
+    zoom_mask = t <= zoom_duration
 
     if U is not None and D is not None:
         t_disp, xlabel = t * U / D, r"$t^*=(t-t_0)U/D$"
@@ -614,7 +604,6 @@ def plot_open_loop_representative(
 
 def build_metrics_table(rows: list[dict], output_dir: Path, out_name: str = "test_case_metrics",
                         caption: str | None = None) -> dict:
-
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 

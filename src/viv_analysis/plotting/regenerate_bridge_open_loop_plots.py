@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-Usage:
-    python -m src.viv_analysis.plotting.regenerate_bridge_open_loop_plots \
-        --model_subdir gru_bridge_p0_nd_context_noacc
-"""
 from __future__ import annotations
 
 import argparse

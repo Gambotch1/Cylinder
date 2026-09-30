@@ -1,35 +1,3 @@
-"""
-Generates the thesis appendix "Architecture and input-history sensitivity"
-directly from this study's own reports/manifests -- no numbers are
-hand-transcribed, so re-running this after bridge Stage 2 finishes (or after
-any rerun) regenerates the appendix with the current data.
-
-Reads (must already exist -- run collect_results.py / select_configuration.py
-first for each (dataset, stage) if missing or stale):
-  reports/pareto_{dataset}_stage1.csv          (Stage 1 architecture ranking)
-  reports/aggregated_{dataset}_stage2.csv      (Stage 2 history-length results)
-  reports/pareto_cylinder200_stage2.csv        (Stage 2 ranking -- cylinder only,
-                                                 see NOTE below for why bridge
-                                                 has no Stage 2 pareto file)
-  reports/per_run_{dataset}_stage{1,2}.csv     (per-seed evidence)
-  manifests/selection_manifest_{dataset}_stage1.json
-  manifests/study_manifest.json                (case partitions)
-
-NOTE on bridge Stage 2 ranking: select_configuration.py's build_pareto_table
-computes retention deltas against a hardcoded H=64,L=2 "global baseline"
-architecture. Cylinder's Stage 1 winner happens to BE H64/L2, so this works
-for cylinder Stage 2. Bridge's Stage 1 winner is H128/L2, and bridge Stage 2
-never trains an H64/L2 config at all -- so build_pareto_table raises
-SystemExit for bridge stage 2 (confirmed directly, not assumed). This
-generator sorts the bridge Stage 2 table itself using the SAME priority
-tiers _closed_loop_rank_cols declares (rms-ratio deviation from 1.0, then
-f_osc error), rather than waiting on a tool fix, and labels it "informal
-ranking" rather than "hierarchical_rank" for honesty about the provenance.
-
-Outputs:
-  reports/appendix_architecture_history_sensitivity.tex
-  reports/appendix_case_partitions.tex
-"""
 from __future__ import annotations
 
 import json
@@ -72,8 +40,6 @@ def load(dataset: str, stage: int, kind: str) -> pd.DataFrame:
         df["history_label"] = df["history_label"].astype(object).where(df["history_label"].notna(), None)
     return df
 
-
-# ---------------------------------------------------------------- Stage 1 --
 
 def architecture_table(dataset: str, label: str) -> str:
     pareto = load(dataset, 1, "pareto")
@@ -144,8 +110,6 @@ def architecture_table(dataset: str, label: str) -> str:
     lines.append(r"\end{table}")
     return "\n".join(lines)
 
-
-# ---------------------------------------------------------------- Stage 2 --
 
 def history_table(dataset: str, label: str, complete: bool) -> str:
     agg = load(dataset, 2, "aggregated")
@@ -237,8 +201,6 @@ def history_table(dataset: str, label: str, complete: bool) -> str:
     return "\n".join(lines)
 
 
-# ------------------------------------------------------------ per-seed evidence --
-
 def per_seed_longtable(dataset: str, stage: int, label: str) -> str:
     pr = load(dataset, stage, "per_run")
     if pr.empty:
@@ -293,8 +255,6 @@ def per_seed_longtable(dataset: str, stage: int, label: str) -> str:
     lines.append(r"}")
     return "\n".join(lines)
 
-
-# ------------------------------------------------------------- validation-only --
 
 def validation_only_note() -> str:
     sel_c = json.loads((MANIFESTS / "selection_manifest_cylinder200_stage1.json").read_text())

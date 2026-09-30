@@ -1,8 +1,3 @@
-"""
-Thesis figures for the rollout-refinement (Model A) fine-tune
-(sec:bridge_rollout_refinement) -- NOT the period-based curriculum
-(sec:bridge_rollout_curriculum, see plot_rollout_curriculum_figures.py).
-"""
 from __future__ import annotations
 
 import json
@@ -116,10 +111,6 @@ def _load_coupled_case(case_dir: Path):
 
 
 def plot_representative_trace(font_scale: float = 1.0) -> tuple[Path, Path]:
-    """font_scale: multiplies axes/tick/legend font sizes by this factor
-    without changing figsize -- same rcParams-multiplier convention as
-    thesis_plots.py's figures. Pass 1/display_fraction, e.g. 1/0.8 for
-    0.8\\linewidth."""
     apply_thesis_style()
     import matplotlib as mpl
     import matplotlib.pyplot as plt

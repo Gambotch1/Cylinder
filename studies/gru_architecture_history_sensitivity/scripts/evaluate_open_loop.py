@@ -1,16 +1,3 @@
-"""
-Open-loop (teacher-forced) VALIDATION-ONLY evaluation for one trained
-sensitivity-study run.
-
-Hard-asserts the evaluated case list equals the run's own canonical
-validation list EXACTLY -- not a subset, not train UNION val, and its count
-matches the Stage-0-audited canonical count for the dataset (4 for
-cylinder200, 5 for bridge). Never touches the test partition: run_config.json
-records skip_test_eval=True (train_sensitivity.py always passes
---skip_test_eval) and metrics_gru.json's test_metrics/tf_results are already
-None/{} at the source -- there is nothing test-related for this script to
-avoid, by construction.
-"""
 from __future__ import annotations
 
 import argparse
@@ -47,11 +34,6 @@ def main() -> dict:
     assert not (set(val_cases) & set(run_config["test_cases"])), \
         "val/test overlap in run_config -- refusing to evaluate"
 
-    # Cross-check against the Stage 0 audit's own frozen record of the
-    # canonical validation set (recomputed independently, from real cached
-    # CFD data, in scripts/audit_pipeline.py) -- catches a future change to
-    # production split logic that happens to preserve the case COUNT but
-    # silently changes WHICH cases are in it.
     audit = load_json(STUDY_ROOT / "manifests" / "stage0_audit.json")
     canonical_val_cases = set(audit[dataset]["val_cases"])
     assert set(val_cases) == canonical_val_cases, (

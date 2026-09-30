@@ -1,11 +1,3 @@
-"""Check 11: closed-loop evaluation reuses the existing Newmark
-implementation and current handoff protocol. Both evaluate_closed_loop.py
-(validation cases, feeds selection) and
-evaluate_closed_loop_train_diagnostic.py (training cases, excluded from
-selection) delegate to the shared _common.run_coupled_sweep, which is the
-one and only place that shells out to coupled_inference.py's own CLI --
-neither script, nor the shared function, ever defines/imports its own
-integrator or calls run_coupled_viv directly."""
 import ast
 import inspect
 
@@ -39,9 +31,6 @@ def test_run_coupled_sweep_only_source_of_dynamics_is_the_coupled_inference_subp
 
 
 def test_neither_evaluate_script_calls_run_coupled_viv_or_defines_its_own_sweep():
-    """Both the selection-facing and diagnostic-facing scripts must reuse
-    _common.run_coupled_sweep rather than reimplementing the subprocess
-    loop or calling run_coupled_viv themselves."""
     for module in (evaluate_closed_loop, evaluate_closed_loop_train_diagnostic):
         src = inspect.getsource(module)
         assert "run_coupled_sweep" in src, f"{module.__name__} must call _common.run_coupled_sweep"

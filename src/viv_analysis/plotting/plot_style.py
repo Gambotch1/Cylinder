@@ -1,7 +1,3 @@
-# src/viv_analysis/plot_style.py
-"""Shared matplotlib style for thesis-consistent figures.
-"""
-
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
@@ -26,9 +22,7 @@ CFD_STYLE = {
 
 MODEL_STYLE = {
     "color": MODEL_COLOR,
-    "linestyle": (0, (4, 2)),  # explicit long-dash pattern -- more visibly
-                               # distinct from CFD_STYLE's solid line than
-                               # matplotlib's default "--" at this linewidth
+    "linestyle": (0, (4, 2)),
     "linewidth": 1.05,
     "label": "GRU prediction",
     "zorder": 3,

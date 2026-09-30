@@ -1,19 +1,3 @@
-"""
-Thesis figures for the stochastic residual closure experiment
-(sec:bridge_stochastic_closure): additive noise injected into the GRU's
-predicted C_L during closed-loop rollout, at the lock-in peak case
-(Ur6.7385, U=16 m/s), model=gru_bridge_nd_context_noacc (the original
-production checkpoint -- distinct from the peaktrain/curriculum lineage).
-Three noise modes are compared against the deterministic (noise-none)
-baseline and the CFD reference: `surrogate` (residual sampled from a
-surrogate error model, 5 seeds), `white` (i.i.d. Gaussian noise, 5 seeds),
-and `replay` (a single fixed residual trace).
-
-Reads already-saved artifacts only -- no model inference:
-  results/gru_bridge_nd_context_noacc_stochastic_closure_coupled_eval/
-      stochastic_closure_summary.csv
-      *.npz / *.receipt.json
-"""
 from __future__ import annotations
 
 import json
@@ -169,9 +153,6 @@ def plot_representative_traces() -> tuple[Path, Path]:
     ax.plot(t_cfd_rel[cfd_mask] * U / D, (cfd["CFD_h"][cfd_mask] - np.mean(cfd["CFD_h"][cfd_mask])) / D,
             color=CFD_COLOR, lw=1.0, label="CFD reference")
 
-    # Local override, this figure only -- MODE_LABEL is shared with
-    # plot_amplitude_error_by_mode's x-tick labels, which must keep
-    # reading "Surrogate noise".
     legend_label = dict(MODE_LABEL, surrogate="Frequency-matched\nresidual")
 
     for mode in ["none", "surrogate", "white"]:

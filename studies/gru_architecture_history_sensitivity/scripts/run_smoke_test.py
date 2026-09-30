@@ -1,21 +1,3 @@
-"""
-End-to-end smoke test for one dataset. Temporary validation only -- every
-artifact goes under studies/gru_architecture_history_sensitivity/smoke/,
-never results/, and is invisible to collect_results.py, select_configuration.py,
-the frozen selection manifest, and (therefore) any thesis table.
-
-Config: H=32, L=1, seed=123, epochs=1, one canonical validation case for
-open-loop evaluation, and one short (20s) closed-loop trajectory for the
-SAME case. Not a Stage 1/2 run -- no other seeds, no full validation sweep,
-no full-duration protocol.
-
-Runs train_sensitivity.py's real main() in-process (--smoke, --epochs 1),
-then _common.compute_open_loop_metrics and _common.run_coupled_sweep
-directly (the same underlying functions evaluate_open_loop.py /
-evaluate_closed_loop.py call, just without their production-scope hard
-assertions on the FULL canonical case list -- a smoke test is explicitly
-scoped to one case and must not be blocked by those checks).
-"""
 from __future__ import annotations
 
 import argparse
@@ -31,20 +13,13 @@ from _common import (
 SMOKE_HIDDEN_SIZE = 32
 SMOKE_NUM_LAYERS = 1
 SMOKE_SEED = 123
-SMOKE_HANDOFF_OFFSET_STEPS = 2000  # matches evaluate_closed_loop.py's default
-SMOKE_CLOSED_LOOP_MARGIN_S = 20.0  # actual closed-loop duration AFTER handoff
+SMOKE_HANDOFF_OFFSET_STEPS = 2000
+SMOKE_CLOSED_LOOP_MARGIN_S = 20.0
 SEQ_LEN_BASELINE = {"cylinder200": 1000, "bridge": 2500}
 DT_S = {"cylinder200": 0.005, "bridge": 0.002}
 
 
 def _safe_smoke_total_time(dataset: str, case: str, seq_len: int) -> float:
-    """coupled_inference.py's --total_time is the ABSOLUTE simulation
-    end-time (from the case's own t=0), not a duration measured from
-    handoff -- passing a short duration that lands before handoff raises
-    ValueError. This computes total_time = release_time + warmup(seq_len) +
-    handoff_offset + a short margin, so the smoke run is genuinely short
-    (only SMOKE_CLOSED_LOOP_MARGIN_S of real closed-loop simulation) while
-    staying valid for whichever case is chosen."""
     from viv_analysis.config import config as viv_config, prepare_gru_config
 
     cfg = prepare_gru_config(dataset, viv_config).copy()
@@ -73,18 +48,9 @@ def main() -> dict:
     if run_dir.exists() and args.overwrite:
         shutil.rmtree(run_dir)
 
-    # This study's OWN results/ tree (studies/.../results/, read by
-    # collect_results.py) -- --smoke guarantees run_output_dir() resolves
-    # under smoke/ instead, so a non-recursive top-level snapshot is enough
-    # to confirm nothing new landed here. (The separate, much larger
-    # top-level repo results/ directory holding production checkpoints is
-    # a different concern, already protected structurally: --exp_subdir's
-    # '..' escape means train_gru.py's own mkdir call never resolves inside
-    # it in the first place -- see _common.exp_subdir_arg.)
     results_dir_before = set(p.name for p in (STUDY_ROOT / "results").iterdir()) \
         if (STUDY_ROOT / "results").exists() else set()
 
-    # ── 1. Train (H=32, L=1, seed=123, epochs=1, --smoke) ───────────────────
     train_argv = [
         "train_sensitivity.py",
         "--dataset", dataset, "--hidden_size", str(SMOKE_HIDDEN_SIZE),
@@ -101,7 +67,6 @@ def main() -> dict:
     finally:
         sys.argv = old_argv
 
-    # ── Checks: run_config / receipt-level ───────────────────────────────────
     run_config = load_json(run_dir / "run_config.json")
     receipt = load_json(run_dir / "study_receipt.json")
 
@@ -133,7 +98,6 @@ def main() -> dict:
         and hasattr(x_scaler, "mean_")
     )
 
-    # ── 2. Open-loop validation on exactly ONE canonical validation case ────
     single_val_case = sorted(run_config["val_cases"])[0]
     ol_result = compute_open_loop_metrics(run_dir, [single_val_case], case_kind="val")
     write_json(run_dir / "smoke_open_loop.json", ol_result)
@@ -142,11 +106,6 @@ def main() -> dict:
         and single_val_case in ol_result["per_case_val_metrics"]
     )
 
-    # ── 3. Short closed-loop trajectory for the SAME case ───────────────────
-    # total_time is coupled_inference.py's ABSOLUTE sim end-time (from the
-    # case's own t=0), not a duration measured from handoff -- computed
-    # per-case so this is genuinely short (SMOKE_CLOSED_LOOP_MARGIN_S of
-    # real closed-loop time) without landing before handoff and erroring.
     smoke_total_time = _safe_smoke_total_time(dataset, single_val_case, seq_len)
     cl_out_dir = run_dir / "smoke_closed_loop"
     sweep_df, timings, label = run_coupled_sweep(
@@ -164,7 +123,6 @@ def main() -> dict:
             "h_cfd" in d and "cl_cfd" in d and "h" in d and "cl" in d
         )
 
-    # ── 4. Uniqueness / non-overwrite checks ─────────────────────────────────
     checks["receipt_and_paths_unique"] = (
         str(run_dir).startswith(str(STUDY_ROOT / "smoke"))
         and not str(run_dir).startswith(str(STUDY_ROOT / "results"))

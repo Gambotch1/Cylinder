@@ -1,7 +1,3 @@
-"""Check 9: the fresh H=64,L=2 configuration reproduces the production
-architecture -- same parameter count/shapes as an existing production
-checkpoint, given the study's own fixed input_size convention (2 kinematic
-cols + 1 Ur-context col = 3)."""
 from pathlib import Path
 
 import torch

@@ -1,19 +1,3 @@
-"""
-Stage 0 audit for the GRU architecture/history-length sensitivity study.
-
-Read-only. Imports the validated production modules under src/viv_analysis
-and reports the *actual* values currently in effect for training
-hyperparameters, dataset partitions, timesteps, and evaluation conventions.
-Does not infer anything from the thesis draft or from memory -- every value
-below is read directly from config.py / train_gru.py / evaluate_all.py /
-reference_quality.py at import time, and the two dataset partitions are
-recomputed from the real (cached) CFD data through the same
-merge_dataframes -> compute_kinematics -> split_cases path train_gru.py
-itself uses.
-
-Writes:
-  studies/gru_architecture_history_sensitivity/manifests/stage0_audit.json
-"""
 from __future__ import annotations
 
 import json
@@ -34,10 +18,6 @@ from viv_analysis.train_gru import (  # noqa: E402
 from viv_analysis.preprocess import merge_dataframes, downsample, compute_kinematics  # noqa: E402
 from viv_analysis.models.gru import VIV_GRU  # noqa: E402
 
-# Fixed input_size for this study's formulation: [h*, hdot*, Ur] = 2
-# kinematic channels + 1 Ur-context channel. Purely architectural -- no
-# data loading required, computed directly from the production VIV_GRU
-# constructor, not waited on until a training job happens to produce it.
 STUDY_INPUT_SIZE = 3
 
 
@@ -104,7 +84,6 @@ def main() -> dict:
     cyl = audit_dataset("cylinder200")
     bridge = audit_dataset("bridge")
 
-    # ── Hard assertions (Stage 0 partition contract) ───────────────────────
     assert cyl["n_train"] == 13, f"cylinder200 train count {cyl['n_train']} != 13"
     assert cyl["n_val"] == 4, f"cylinder200 val count {cyl['n_val']} != 4"
     assert cyl["n_test"] == 4, f"cylinder200 test count {cyl['n_test']} != 4"

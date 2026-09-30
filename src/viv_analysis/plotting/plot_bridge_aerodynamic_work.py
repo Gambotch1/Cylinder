@@ -1,8 +1,3 @@
-"""
-Thesis figure for sec:bridge_aerodynamic_work -- aerodynamic work performed
-by the surrogate during CLOSED-LOOP (coupled) inference, at Ur=6.7385
-(U=16 m/s, the bridge deck's critical velocity).
-"""
 from __future__ import annotations
 
 import argparse
@@ -24,11 +19,10 @@ DEFAULT_NPZ = (
     "noise-none_nd_scale1_s1_seed0_handoff_2000_muNone.npz"
 )
 
-STRUCTURAL_BAND_FRAC = (0.5, 1.5)  # x fn, structural band around the natural frequency
+STRUCTURAL_BAND_FRAC = (0.5, 1.5)
 
 
 def single_bin_dft_complex(t: np.ndarray, x: np.ndarray, f: float) -> complex:
-    """Complex single-bin DFT coefficient of x at frequency f (Hz); tolerates a non-uniform grid."""
     x = np.asarray(x, dtype=float)
     x = x - x.mean()
     n = len(x)
@@ -39,7 +33,6 @@ def single_bin_dft_complex(t: np.ndarray, x: np.ndarray, f: float) -> complex:
 
 
 def phase_difference_rad(t: np.ndarray, x1: np.ndarray, x2: np.ndarray, f: float) -> float:
-    """Phase of x1 relative to x2 at frequency f, wrapped to [-pi, pi]."""
     c1 = single_bin_dft_complex(t, x1, f)
     c2 = single_bin_dft_complex(t, x2, f)
     if not (np.isfinite(c1.real) and np.isfinite(c2.real)):
@@ -50,9 +43,6 @@ def phase_difference_rad(t: np.ndarray, x1: np.ndarray, x2: np.ndarray, f: float
 
 def sliding_phase(t: np.ndarray, F_L: np.ndarray, h_dot: np.ndarray, fn: float,
                    window_periods: float = 2.0, stride_periods: float = 1.0) -> dict:
-    """phase(F_L rel. h_dot) at f_n over successive windows (each mean-
-    removed LOCALLY by phase_difference_rad, never over the full record).
-    Returns arrays keyed by window CENTER time (relative to t[0])."""
     Tn = 1.0 / fn
     win_s, stride_s = window_periods * Tn, stride_periods * Tn
     t_rel = t - t[0]
@@ -75,9 +65,6 @@ def sliding_phase(t: np.ndarray, F_L: np.ndarray, h_dot: np.ndarray, fn: float,
 
 def cycle_resolved_work(t: np.ndarray, F_L: np.ndarray, h_dot: np.ndarray, c: float,
                         fn: float) -> dict:
-    """W_f, W_d integrated over each individual structural period, using
-    the RAW (non-detrended) signals -- see module docstring for why this
-    is DC-robust without needing any mean-removal choice."""
     Tn = 1.0 / fn
     t_rel = t - t[0]
     n_cycles = int(t_rel[-1] / Tn)
@@ -123,12 +110,10 @@ def compute_aerodynamic_work(npz_path: Path) -> dict:
     U = Ur * fn * D
     dt = float(np.median(np.diff(t)))
 
-    F_L = 0.5 * rho * U**2 * B * cl  # raw, full record -- NOT mean-removed
+    F_L = 0.5 * rho * U**2 * B * cl
 
-    # -- (1) sliding-window cross-spectral phase --
     phase = sliding_phase(t, F_L, h_dot, fn)
 
-    # -- (2) zero-phase band-pass around fn -- DC-free by construction --
     fs = 1.0 / dt
     lo, hi = STRUCTURAL_BAND_FRAC[0] * fn, STRUCTURAL_BAND_FRAC[1] * fn
     sos = butter(4, [lo, hi], btype="band", fs=fs, output="sos")
@@ -137,7 +122,6 @@ def compute_aerodynamic_work(npz_path: Path) -> dict:
     c_exc = float(np.mean(F_L_bp * h_dot_bp) / np.mean(h_dot_bp**2))
     c_exc_over_c = c_exc / c
 
-    # -- (3) cycle-resolved work, raw signals --
     cyc = cycle_resolved_work(t, F_L, h_dot, c, fn)
 
     return {
@@ -153,10 +137,6 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
                           bandpass_window_periods: tuple[float, float] = (0.0, 10.0),
                           phase_window_periods: tuple[float, float] = (0.0, 30.0),
                           font_scale: float = 1.0):
-    """font_scale: multiplies axes/tick/legend/title font sizes by this
-    factor without changing figsize -- same rcParams-multiplier convention
-    as thesis_plots.py's figures. Pass 1/display_fraction, e.g. 1/0.8 for
-    0.8\\textwidth."""
     apply_thesis_style()
     import matplotlib as mpl
     import matplotlib.pyplot as plt
@@ -224,8 +204,6 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
     cyc = result["cycle"]
     W_net = np.cumsum(cyc["W_f"] - cyc["W_d"])
 
-    # Cumulative work is zero at handoff. Each subsequent value belongs at
-    # the end of the corresponding complete structural period.
     work_time_star = np.concatenate(([0.0], cyc["t_end"] * result["U"] / result["D"]))
     W_net_plot = np.concatenate(([0.0], W_net))
 
@@ -297,7 +275,7 @@ def main():
 
     ph = result["phase"]
     Tn = 1.0 / result["fn"]
-    
+
     post_flip = ph["phase_lag_deg"] > 150
     flip_t_star = float(ph["t_center"][post_flip][0] / Tn) if post_flip.any() else float("nan")
 

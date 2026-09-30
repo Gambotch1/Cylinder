@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-Regenerate cylinder200 closed-loop (coupled GRU-structural) figures from
-ALREADY-SAVED results
-
-Usage:
-    python -m src.viv_analysis.plotting.regenerate_cylinder_plots \
-        --model_subdir gru_cylinder200_dim_context 
-        --model_subdir gru_cylinder200_nd_context_noacc \
-        --model_column gru_cylinder200_nd_context_noacc \
-        --thesis
-"""
 from __future__ import annotations
 
 import argparse
@@ -134,7 +123,6 @@ def replot_sweep_summary(coupled_eval_dir: Path, dataset: str = "cylinder200") -
     return out_png
 
 
-
 def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame, dataset: str,
                              dataset_note: str | None,
                              appendix_font_scale: float = 1.0,
@@ -148,10 +136,8 @@ def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame, datas
         if case is None:
             continue
         case_label = ur_tag(case["Ur"])
-        # GRU/coupled trajectory mask
         model_mask = case["t"] <= 200
 
-        # CFD trajectory mask
         cfd_mask = case["CFD_t"] <= 200
         r = plot_coupled_thesis(
             case["t"][model_mask], case["h"][model_mask], case["CL"][model_mask], case["D"],

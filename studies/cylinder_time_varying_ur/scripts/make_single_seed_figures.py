@@ -1,27 +1,3 @@
-"""
-Thesis figures for the single-seed production time-varying-Ur sweep (see
-run_time_varying_sweep.py --single_seed_production). Runs the SAME
-per-result functions in plot_time_varying_ur.py that the eventual 3-seed
-production run will also use (plot_time_varying_panels, plateau_summary,
-plot_transition_window) -- none of those take a seed dimension at all, so
-nothing about them changes for single-seed input.
-
-Deliberately does NOT call plot_multiseed_panels: that function's median
-envelope + IQR band requires >=2 seeds to mean anything. Computed from a
-single seed, np.percentile collapses q25=q75=the one value, so the IQR
-band would render with zero width -- reading as "tight seed agreement"
-when in fact there is no seed-agreement information at all. Skipping it
-here (rather than calling it with a 1-seed dict) avoids ever producing
-that misleading figure.
-
-Once the architecture/history-length sensitivity study's Stage 2 freezes
-and the real 3-seed sweep runs (run_time_varying_sweep.py without
---single_seed_production/--smoke), a separate driver should call
-plot_multiseed_panels for the aggregated main-chapter transition figures;
-this script's single-seed output is not a substitute for that, and is
-labelled accordingly (see OUTPUT_NOTE below and every receipt's own
-single_seed_production=true field).
-"""
 from __future__ import annotations
 
 import json
@@ -69,10 +45,6 @@ def _load_receipt(schedule: str) -> dict:
 
 
 def _load_fixed_ur_references() -> tuple[dict, dict]:
-    """{Ur: A_star} from the independent fixed-Ur coupled-eval sweep --
-    cfd_A_star (CFD reference) and surrogate_A_star (the same GRU
-    checkpoint run at each Ur independently, i.e. NOT from this
-    time-varying run) -- for plateau_summary's cross-check."""
     if not FIXED_UR_CSV.exists():
         print(f"[warn] {FIXED_UR_CSV} not found -- plateau_summary will "
               f"have no fixed-Ur reference overlay.")
@@ -114,10 +86,6 @@ def main():
             )
             print(f"  wrote {pdf.name}  ({tr['ur_before']:g}->{tr['ur_after']:g})")
 
-        # One-page composite of all 3 main-chapter transitions (h/D +
-        # envelope only, Ur(t) stated in each panel's title) -- for
-        # placing three-up on a single portrait page, where the full
-        # per-transition figures above are too tall.
         pdf, png = plot_transitions_composite_thesis(
             result, schedule, D, fn, LOCKIN_REGION_TRANSITIONS,
             out_path_stem=out_dir / "transitions_composite",

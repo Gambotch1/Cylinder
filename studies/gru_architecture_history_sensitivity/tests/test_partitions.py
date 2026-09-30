@@ -1,7 +1,3 @@
-"""Checks 1-4: bridge 17/5/5, Ur=8.2126 absent, cylinder 13/4/4, no
-acceleration column reaches the GRU. Loads real cached CFD data (via
-audit_pipeline.audit_dataset), so these are the slow tests in this suite --
-run once per session, not in a tight loop."""
 import pytest
 from audit_pipeline import audit_dataset
 
@@ -46,9 +42,6 @@ def test_no_acceleration_column_in_study_input_cols():
 
 
 def test_no_acceleration_reaches_gru_model_input_size():
-    """input_size fed to VIV_GRU must equal len(input_cols)+context, and
-    input_cols here never includes 'acc' -- so the model literally cannot
-    receive an acceleration feature."""
     from viv_analysis.models.gru import VIV_GRU
     input_cols = ["disp", "vel"]
     use_ur_context = True

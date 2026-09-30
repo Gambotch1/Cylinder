@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-Regenerate learning-curve figure from an LSF training
-    python -m src.viv_analysis.plotting.regenerate_learning_curves \
-        --log logs/gen_train_noacc_cylinder_1.log --model_subdir gru_cylinder200_dim_context_noacc \
-        --log logs/gen_train_noacc_cylinder_2.log --model_subdir gru_cylinder200_nd_context_noacc
-"""
 from __future__ import annotations
 
 import argparse

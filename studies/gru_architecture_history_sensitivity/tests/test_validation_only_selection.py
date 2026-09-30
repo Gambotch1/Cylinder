@@ -1,11 +1,3 @@
-"""
-Checks tied directly to the corrections in this revision:
-- evaluate_open_loop.py / evaluate_closed_loop.py refuse to evaluate
-  anything other than the exact canonical validation partition.
-- evaluate_closed_loop_train_diagnostic.py refuses val/test cases.
-- select_configuration.py's frozen manifest only ever names a complete
-  3-seed configuration, with the correct Stage 1 vs Stage 2 schema.
-"""
 import json
 
 import pytest
@@ -46,8 +38,6 @@ def test_evaluate_open_loop_rejects_non_canonical_validation_set(tmp_path, monke
     _write_stage0_audit(tmp_path / "manifests", cylinder_val=["Ur4.25", "Ur6.25", "Ur9", "Ur10"])
 
     run_dir = tmp_path / "results" / "cylinder200" / "stage1" / "H64_L2_seq1000_seed123"
-    # A wrong val set: same COUNT (4) as canonical, but different cases --
-    # must be caught even though the naive count check alone would pass.
     _write_run_config(run_dir, val=["Ur2", "Ur3", "Ur4", "Ur5"])
 
     monkeypatch.setattr(evaluate_open_loop, "parse_args",
@@ -67,8 +57,6 @@ def test_evaluate_open_loop_accepts_canonical_validation_set(tmp_path, monkeypat
     monkeypatch.setattr(evaluate_open_loop, "parse_args",
                          lambda: type("A", (), {"run_dir": str(run_dir)})())
 
-    # Assertions themselves must pass (we stop before the real (heavy) CFD
-    # load/model call by monkeypatching compute_open_loop_metrics).
     monkeypatch.setattr(evaluate_open_loop, "compute_open_loop_metrics",
                          lambda run_dir, cases, case_kind: {
                              f"{case_kind}_cases": sorted(cases),
@@ -82,9 +70,6 @@ def test_evaluate_open_loop_accepts_canonical_validation_set(tmp_path, monkeypat
 
 def test_train_diagnostic_rejects_val_case_leak(tmp_path, monkeypatch):
     run_dir = tmp_path / "results" / "cylinder200" / "stage1" / "H64_L2_seq1000_seed123"
-    # Deliberately corrupt: a "train" case list that actually contains a
-    # val case -- the diagnostic script must catch this via its own
-    # explicit overlap assertion, not rely on run_config being trustworthy.
     _write_run_config(run_dir, train=["Ur2", "Ur4.25"], val=["Ur4.25", "Ur6.25", "Ur9", "Ur10"])
     monkeypatch.setattr(diag, "parse_args",
                          lambda: type("A", (), {"run_dir": str(run_dir), "ur": None})())
@@ -99,12 +84,10 @@ def test_train_diagnostic_ur_override_must_be_a_training_case(tmp_path, monkeypa
     monkeypatch.setattr(diag, "parse_args",
                          lambda: type("A", (), {"run_dir": str(run_dir), "ur": 4.8433})())
     with pytest.raises(SystemExit):
-        diag.main()  # 4.8433 is a VAL case here, not in train_cases
+        diag.main()
 
 
 def test_selection_manifest_stage1_schema_omits_seq_len(tmp_path, monkeypatch):
-    """Stage 1 selects (dataset, hidden_size, num_layers) only -- seq_len/
-    duration must not appear in the frozen selected_configuration."""
     import select_configuration as sc
     monkeypatch.setattr(sc, "STUDY_ROOT", tmp_path)
 
@@ -134,10 +117,6 @@ def test_selection_manifest_stage1_schema_omits_seq_len(tmp_path, monkeypatch):
     assert set(manifest["selected_configuration"].keys()) == {"hidden_size", "num_layers"}
     assert len(manifest["selected_run_dirs"]) == 3
     assert manifest["seeds"] == [123, 456, 789]
-    # selection_complete is reserved for stage 2 -- a frozen Stage 1
-    # manifest unblocks Stage 2 job generation but is not itself the
-    # final architecture/history-length choice (downstream consumers like
-    # the time-varying-Ur study must not treat it as such).
     assert manifest["frozen"] is True
     assert manifest["selection_complete"] is False
 

@@ -1,7 +1,3 @@
-"""
-Ur(t) schedule builders for the time-varying reduced-velocity continuation
-study. Pure array/metadata construction -- no physics, no model calls.
-"""
 from __future__ import annotations
 
 import numpy as np
@@ -15,8 +11,6 @@ CYLINDER_UR_LIST = [
 
 
 def build_ascending_schedule(Ur_list: list[float], dwell_s: float, dt: float) -> dict:
-    """Instantaneous transitions: each Ur held constant for exactly
-    dwell_steps = round(dwell_s/dt) steps, concatenated in order."""
     dwell_steps = int(round(dwell_s / dt))
     if abs(dwell_steps * dt - dwell_s) > 1e-9:
         raise ValueError(f"dwell_s={dwell_s} is not an exact multiple of dt={dt}")
@@ -41,12 +35,6 @@ def build_ascending_schedule(Ur_list: list[float], dwell_s: float, dt: float) ->
 
 def build_ascending_cosine_schedule(Ur_list: list[float], dwell_s: float,
                                      transition_s: float, dt: float) -> dict:
-    """Each Ur held for dwell_s, transitions between consecutive Ur values
-    ramped smoothly (C1, zero-derivative endpoints) over transition_s
-    (nominally one Tn = 1/fn) instead of an instantaneous jump. dwell_s is
-    the HOLD duration at each plateau; the transition itself adds
-    transition_steps on top, so total schedule duration is
-    len(Ur_list)*dwell_steps + (len(Ur_list)-1)*transition_steps."""
     dwell_steps = int(round(dwell_s / dt))
     transition_steps = int(round(transition_s / dt))
     if abs(dwell_steps * dt - dwell_s) > 1e-9:
@@ -76,11 +64,6 @@ def build_ascending_cosine_schedule(Ur_list: list[float], dwell_s: float,
         "dwell_steps": dwell_steps,
         "transition_s": transition_s,
         "transition_steps": transition_steps,
-        # Explicit, machine-readable record of the convention (not just a
-        # docstring note): transition time is ADDED ON TOP of dwell_s at
-        # each plateau, never carved out of it. Every dwell segment is the
-        # full requested dwell_s; total duration = len(Ur_list)*dwell_s +
-        # (len(Ur_list)-1)*transition_s.
         "transition_duration_convention": "added_to_dwell",
         "dt": dt,
         "n_steps": len(Ur_schedule),
@@ -94,10 +77,6 @@ def build_ascending_cosine_schedule(Ur_list: list[float], dwell_s: float,
 def build_triangular_schedule(Ur_list: list[float], dwell_s: float, dt: float,
                                transition: str = "instantaneous",
                                transition_s: float | None = None) -> dict:
-    """Ascending Ur_list then descending back down, WITHOUT repeating the
-    peak value and WITHOUT resetting state at the reversal (2 -> 12 -> 2,
-    continuous). transition selects 'instantaneous' or 'cosine' segment
-    joins, matching build_ascending_schedule / build_ascending_cosine_schedule."""
     full_list = list(Ur_list) + list(reversed(Ur_list[:-1]))
     if transition == "instantaneous":
         sched = build_ascending_schedule(full_list, dwell_s, dt)

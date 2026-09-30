@@ -1,12 +1,3 @@
-"""
-Smoke test for the time-varying-Ur continuation study (item 7).
-
-Ur = [2.0, 2.5], dwell = 2*Tn = 10s per condition. Runs BOTH an
-instantaneous transition and a one-Tn (5s) cosine transition, using the
-REAL nd_context_noacc checkpoint and a REAL CFD warm-up at Ur=2.0 (exactly
-once). Reports the required diagnostics and stops -- does not run the
-full 21-condition schedule.
-"""
 from __future__ import annotations
 
 import sys
@@ -23,8 +14,8 @@ from time_varying_coupled import run_coupled_viv_time_varying_ur  # noqa: E402
 from viv_analysis.config import config, cylinder200_structural_params  # noqa: E402
 
 SMOKE_UR_LIST = [2.0, 2.5]
-SMOKE_DWELL_S = 10.0  # 2*Tn
-SMOKE_TRANSITION_S = 5.0  # 1*Tn
+SMOKE_DWELL_S = 10.0
+SMOKE_TRANSITION_S = 5.0
 
 
 def _run(schedule: dict, artifacts, warmup, sp, dt, D, fn, rho, device):
@@ -47,12 +38,6 @@ def report_for(label: str, out: dict, schedule: dict, out_const: dict,
     tr = schedule["transition_step_indices"][0]
     dwell_steps = schedule["dwell_steps"]
 
-    # These are ADJACENT-STEP CHANGES, not discontinuities -- h and h_dot
-    # are continuous integrator states (see test_h_and_hdot_continuous_
-    # across_transition); a step-to-step change of this order is present
-    # at every timestep, transition or not. Only U/force (and, through
-    # the equation of motion, h_ddot) actually jump at an instantaneous
-    # transition.
     h_step_change = float(np.max(np.abs(np.diff(out["displacement"])[max(0, tr - 3):tr + 3])))
     hdot_step_change = float(np.max(np.abs(np.diff(out["velocity"])[max(0, tr - 3):tr + 3])))
 
@@ -62,11 +47,6 @@ def report_for(label: str, out: dict, schedule: dict, out_const: dict,
     const_regression_err_cl = float(np.max(np.abs(
         out["CL"][:n_compare] - out_const["CL"][:n_compare])))
 
-    # Re-run two short segments ending exactly AT the transition (last
-    # executed step i=tr-1, still old Ur) and just past it (last executed
-    # step i=tr, first new-Ur step) to inspect the model-input window
-    # immediately either side -- out["final_history"] alone reflects the
-    # END of the whole run, not the transition, so it's not usable here.
     sched_before = dict(schedule, Ur_schedule=schedule["Ur_schedule"][:tr], n_steps=tr)
     sched_after = dict(schedule, Ur_schedule=schedule["Ur_schedule"][:tr + 1], n_steps=tr + 1)
     out_before = _run(sched_before, artifacts, warmup, sp, dt, D, fn, rho, device)

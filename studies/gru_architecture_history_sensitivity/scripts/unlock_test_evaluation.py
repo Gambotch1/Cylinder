@@ -1,19 +1,3 @@
-"""
-The ONLY script in this study that ever touches the test partition.
-
-Every training run in this study is produced with --skip_test_eval, so no
-test prediction exists anywhere until this script is run, and it refuses to
-run at all unless a frozen selection manifest already names a configuration
--- not a single run -- via exactly 3 seed-specific run_dirs (123/456/789).
-
-Computes open-loop test metrics for the first time, for each of the 3
-selected seed runs independently, using the shared
-_common.compute_open_loop_metrics() path (the SAME production
-teacher_forcing_rollout() call evaluate_open_loop.py uses for validation,
-just pointed at run_config['test_cases'] instead). Reports each seed
-separately plus the median and IQR across the 3 -- it does not select or
-highlight the best-performing seed as "the" result.
-"""
 from __future__ import annotations
 
 import argparse

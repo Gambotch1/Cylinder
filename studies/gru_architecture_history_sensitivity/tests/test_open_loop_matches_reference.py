@@ -1,11 +1,3 @@
-"""Check 10: batched open-loop inference matches the validated reference
-implementation. teacher_forcing_rollout (used by evaluate_open_loop.py)
-calls model(x) fresh (h0=None) on each trailing window with no carried
-recurrent state -- by construction this must equal a batched forward pass
-over the same windows (what VIVSequenceDataset + a plain model(x) call
-would produce). This test builds a tiny random model and confirms the two
-paths agree at every step, using a synthetic single-case dataframe (no
-CFD data, no I/O)."""
 import numpy as np
 import pandas as pd
 import torch
@@ -29,7 +21,7 @@ def test_teacher_forcing_rollout_matches_batched_windowed_forward():
     df = pd.DataFrame({"case": ["Ur5.0"] * n, "time": times,
                         "disp": signal[:, 0], "vel": signal[:, 1], "cl": cl})
 
-    y_scaler = StandardScaler().fit(cl.reshape(-1, 1))  # no-op-ish inverse for the check
+    y_scaler = StandardScaler().fit(cl.reshape(-1, 1))
 
     cl_pred, _, times_out = teacher_forcing_rollout(
         model, df, ["disp", "vel"], seq_len, release_t=-1e9,
@@ -37,8 +29,6 @@ def test_teacher_forcing_rollout_matches_batched_windowed_forward():
         use_ur_context=False, ur_stats=None,
     )
 
-    # Reference: manual batched forward pass over every trailing window,
-    # independent of teacher_forcing_rollout's own loop.
     starts = range(seq_len, n)
     windows = np.stack([signal[i - seq_len:i] for i in starts])
     with torch.no_grad():

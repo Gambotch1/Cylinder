@@ -1,21 +1,3 @@
-"""
-Full-duration closed-loop VALIDATION-ONLY evaluation for one trained
-sensitivity-study run. This is the sweep that feeds Stage 1/2 selection
-(collect_results.py / select_configuration.py).
-
-Hard-asserts the swept case list equals the run's own canonical validation
-list EXACTLY (count matches the Stage-0-audited canonical count, and the
-set matches the audit's own frozen validation-case record) -- never
-train_cases, never train UNION val, never test_cases. Training-case
-diagnostics (including the bridge Ur=6.7385 mechanistic control) live in
-the separate, explicitly-labelled evaluate_closed_loop_train_diagnostic.py,
-which writes to a different output directory that collect_results.py never
-reads.
-
-Reuses coupled_inference.py's own CLI (via _common.run_coupled_sweep) --
-see that function's docstring for why direct run_coupled_viv() calls would
-require duplicating production setup code.
-"""
 from __future__ import annotations
 
 import argparse
@@ -87,12 +69,6 @@ def main() -> dict:
         "mean_inference_time_s": float(np.nanmean(list(timings.values()))) if timings else None,
     }
 
-    # Frequency error is always computable (FFT-based dominant frequency
-    # doesn't require amplitude convergence), so it's aggregated the same
-    # way for both datasets, ahead of the dataset-specific amplitude
-    # scoring below. This is the 4th, lowest-priority tier of the
-    # closed-loop ranking hierarchy: stable count > median amp error >
-    # worst/p90 amp error > frequency error.
     freq_errs = sweep_df[f"{label}_f_osc_rel_error"].dropna()
     summary["validation_median_abs_f_osc_rel_error"] = (
         float(freq_errs.abs().median()) if len(freq_errs) else None)
@@ -121,12 +97,6 @@ def main() -> dict:
             validation_n=len(report),
             validation_unscored=int(report.get("unscored", pd.Series(dtype=bool)).sum())
                 if "unscored" in report else None,
-            # "Stable" is only a meaningful label for settled_lco reference
-            # cases (the amplitude-gate framework non_lco cases don't
-            # support -- see reference_quality.build_status_aware_report).
-            # Do not conflate this with cylinder's validation_stable_count,
-            # which is a fraction of ALL validation cases; this is a
-            # fraction of the settled_lco SUBSET only.
             validation_n_settled_lco=int(is_settled.sum()),
             validation_stable_count_among_settled_lco=(
                 int(settled["pass_"].sum()) if "pass_" in settled else None),

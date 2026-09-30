@@ -1,15 +1,3 @@
-"""
-Thesis figures for the differentiable curriculum rollout fine-tune
-(sec:bridge_rollout_curriculum): the training-loss trajectory across the
-4 period-based phases, and a closed-loop response comparison (CFD vs the
-pre-curriculum warm-start vs the post-curriculum checkpoint) at the
-lock-in peak.
-
-Reads already-saved artifacts only -- no model inference, no retraining:
-  results/gru_bridge_rollout_curriculum/train_history.json
-  results/gru_bridge_nd_context_noacc_final22_peaktrain_coupled_eval/*.npz
-  results/gru_bridge_rollout_curriculum_coupled_eval/*.npz
-"""
 from __future__ import annotations
 
 import json
@@ -139,10 +127,6 @@ def plot_closed_loop_comparison(ur_tag: str = "Ur6.7385") -> tuple[Path, Path]:
 
 
 def plot_open_vs_closed_loop_contrast() -> tuple[Path, Path]:
-    """Bar chart: open-loop (teacher-forced) R^2 before vs after the
-    curriculum rollout fine-tune, per validation case plus aggregate --
-    contrasted in the caption with the closed-loop result (exact-zero
-    amplitude, 0/22 pass) for the SAME post-curriculum checkpoint."""
     apply_thesis_style()
     import matplotlib.pyplot as plt
 

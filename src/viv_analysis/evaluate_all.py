@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-Sweep over model checkpoints and Ur values.
-Compare coupled GRU-struct models vs CFD steady-state amplitudes.
-"""
 import argparse
 import json
 import re
@@ -33,7 +29,6 @@ BRIDGE_STRUCTURAL_PARAMS = bridge_structural_params()
 
 
 def extract_steady_state_amplitude(stdout: str) -> float | None:
-    """Parse 'Steady-state A/D = X.XXXX' from coupled_inference output."""
     match = re.search(r"Steady-state A/D = ([\d.]+)", stdout)
     if match:
         return float(match.group(1))
@@ -41,8 +36,6 @@ def extract_steady_state_amplitude(stdout: str) -> float | None:
 
 
 def extract_npz_path(stdout: str) -> str | None:
-    """Parse the saved trajectory path from coupled_inference's
-    'Saved coupled trajectory -> <path>' line."""
     match = re.search(r"Saved coupled trajectory -> (\S+)", stdout)
     if match:
         return match.group(1)
@@ -50,17 +43,6 @@ def extract_npz_path(stdout: str) -> str | None:
 
 
 def _compute_gate(npz_path: str, window_frac: float, pass_amp_rel_error_threshold: float) -> dict:
-    """Stability + CFD-amplitude gate for one coupled_*.npz, via
-    closed_loop_metrics.compute_case_metrics. A flat/stationary envelope
-    (classify_stability's 'stationary_lco') is necessary but NOT sufficient
-    for 'Pass' -- it can still be a flat, bounded limit cycle at the wrong
-    amplitude, so A_star_rel_error vs CFD must also be within threshold.
-
-    Returns {"stability_label", "A_star_rel_error", "pass"}; on any failure
-    (e.g. no cl_cfd in the npz, too few cycles to classify) returns
-    "pass": False rather than raising, so one bad case doesn't kill the
-    sweep.
-    """
     try:
         row = compute_case_metrics(npz_path, window_frac=window_frac)
     except Exception as e:
@@ -79,12 +61,6 @@ def _compute_gate(npz_path: str, window_frac: float, pass_amp_rel_error_threshol
 
 
 def load_full_cfd_df(dataset: str) -> pd.DataFrame:
-    """
-    Load + preprocess (merge, kinematics) the CFD dataset ONCE, for reuse
-    across every Ur in the sweep. For bridge this goes through the on-disk
-    parquet cache (built once, ~1h; instant thereafter) instead of
-    re-parsing the raw ~9GB of .out files per call.
-    """
     if dataset == "bridge":
         from viv_analysis.preprocess import load_bridge_df_cached
         return load_bridge_df_cached(
@@ -104,18 +80,12 @@ def load_full_cfd_df(dataset: str) -> pd.DataFrame:
 
 
 def cfd_steady_state_amplitude(full_cfd_df: pd.DataFrame, Ur: float, D: float) -> float | None:
-    """
-    Extract CFD steady-state amplitude (A/D) for a given Ur from an
-    already-loaded CFD dataframe (see load_full_cfd_df). Uses last 30% of
-    CFD trajectory after release.
-    """
     case_label = format_ur_label(Ur)
     case_df = full_cfd_df[full_cfd_df["case"] == case_label]
     if case_df.empty:
         print(f"  WARNING: No CFD case found for Ur={Ur}")
         return None
 
-    # Get last 30% of trajectory (well into steady-state)
     ss_start = int(0.7 * len(case_df))
     cfd_disp = case_df["disp"].iloc[ss_start:].to_numpy()
     cfd_ad = (cfd_disp.max() - cfd_disp.min()) / (2 * D)
@@ -124,11 +94,6 @@ def cfd_steady_state_amplitude(full_cfd_df: pd.DataFrame, Ur: float, D: float) -
 
 
 def bridge_ur_list_from_model(model_subdir: str) -> list[float]:
-    """All Ur cases the bridge model's train+val+test split was drawn from.
-
-    Prefers run_config.json; falls back to metrics_gru.json's case_split
-    for legacy artifacts (e.g. gru_bridge_noise0.05) that predate
-    run_config.json being written at all."""
     model_dir = PROJECT_ROOT / "results" / model_subdir
     run_config_path = model_dir / "run_config.json"
     if run_config_path.exists():
@@ -157,8 +122,6 @@ def bridge_ur_list_from_model(model_subdir: str) -> list[float]:
 
 
 def cylinder200_ur_list_from_model(model_subdir: str) -> list[float]:
-    """All Ur cases the cylinder200 model's train+val+test split was drawn
-    from (normally all 21, since the split has no holdout)."""
     run_config_path = PROJECT_ROOT / "results" / model_subdir / "run_config.json"
     with open(run_config_path) as f:
         rc = json.load(f)
@@ -208,9 +171,6 @@ def main():
             raise SystemExit("--model_subdir is required for --dataset bridge")
         cfd_dataset = "bridge"
         D = BRIDGE_D
-        # Every bridge CFD case tops out at t=300s (several earlier), so a
-        # longer default just runs the surrogate past the last point any
-        # CFD reference exists for.
         default_total_time = 300.0
         fn_hz = config["bridge_fn_hz"]
         configs = [(args.model_subdir, "gru_best.pt", args.label or args.model_subdir)]
@@ -228,10 +188,6 @@ def main():
                    else cylinder200_ur_list_from_model(args.model_subdir))
 
     total_time = args.total_time if args.total_time is not None else default_total_time
-    # t* = t*U/D with U(Ur) = Ur*fn*D  =>  t[s] = t_star_end / (Ur * fn_hz).
-    # Computed per-Ur below (inside the sweep loop) when --t_star_end is set,
-    # since U -- and therefore the physical seconds equivalent to a fixed
-    # t* -- varies with Ur.
     per_ur_total_time = (
         {Ur: args.t_star_end / (Ur * fn_hz) for Ur in Ur_list}
         if args.t_star_end is not None else None
@@ -252,9 +208,6 @@ def main():
     print(f"output_dir={output_dir}")
     print("=" * 80)
 
-    # Pre-compute CFD amplitudes -- load the CFD dataset ONCE and slice it
-    # per Ur, instead of re-parsing/re-differentiating the whole dataset
-    # (all cases) on every iteration.
     print("\nLoading CFD dataset for the precompute step...")
     full_cfd_df = load_full_cfd_df(cfd_dataset)
     if full_cfd_df.empty:
@@ -269,9 +222,8 @@ def main():
         if cfd_amplitudes[Ur] is not None:
             print(f"  Ur={Ur}: CFD A/D = {cfd_amplitudes[Ur]:.4f}")
 
-    # Run coupled simulations
     results = {}
-    gate_results = {}  # (label, Ur) -> {"stability_label", "A_star_rel_error", "pass"} or None
+    gate_results = {}
     total_runs = len(configs) * len(Ur_list)
     run_count = 0
 
@@ -301,7 +253,7 @@ def main():
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=1200,  # 20 min timeout per run
+                    timeout=1200,
                 )
 
                 if out.returncode != 0:
@@ -359,7 +311,6 @@ def main():
                 print(f"ERROR: {e}")
                 results[(label, Ur)] = None
 
-    # Print summary table
     print("\n" + "=" * 80)
     print("RESULTS SUMMARY")
     print("=" * 80)
@@ -377,7 +328,6 @@ def main():
 
         print(f"{Ur:<10.4f} {cfd_str:<10} " + " ".join(f"{v:<10}" for v in row_vals))
 
-    # Compute error vs CFD for each model
     print("\n" + "=" * 80)
     print("ERROR vs CFD (absolute)")
     print("=" * 80)
@@ -400,7 +350,6 @@ def main():
 
         print(f"{Ur:<10.4f} " + " ".join(f"{v:<10}" for v in row_vals))
 
-    # Overall statistics
     print("\n" + "=" * 80)
     print("SUMMARY STATISTICS")
     print("=" * 80)
@@ -420,10 +369,6 @@ def main():
         else:
             print(f"{lbl:12s}  No valid results")
 
-    # Stability + amplitude gate summary -- a flat/stationary envelope alone
-    # is NOT "converged": it can be a stable limit cycle at the wrong
-    # amplitude. Pass requires stationary_lco AND A_star_rel_error within
-    # --pass_amp_rel_error_threshold.
     print("\n" + "=" * 80)
     print(f"STABILITY + AMPLITUDE GATE (threshold={args.pass_amp_rel_error_threshold:.0%})")
     print("=" * 80)
@@ -442,10 +387,8 @@ def main():
         print(f"{lbl:12s}  Pass: {n_pass}/{n_total}  Fail: {n_fail}/{n_total}  "
               f"Missing/error: {n_missing}/{n_total}")
 
-    # Save results as CSV
     output_csv = output_dir / "sweep_results.csv"
 
-    # Build dataframe
     rows = []
     for Ur in Ur_list:
         row_dict = {"Ur": Ur, "CFD": cfd_amplitudes.get(Ur)}
@@ -461,7 +404,6 @@ def main():
     df.to_csv(output_csv, index=False)
     print(f"\nResults saved to {output_csv}")
 
-    # Summary plot: closed-loop A/D vs Ur, model(s) vs CFD
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(df["Ur"], df["CFD"], "o-", color="black", label="CFD")
     for _, _, lbl in configs:

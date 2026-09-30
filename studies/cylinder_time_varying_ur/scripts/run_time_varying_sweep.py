@@ -1,14 +1,3 @@
-"""
-Driver for the cylinder time-varying-Ur continuation study. Loads the
-production nd_context_noacc checkpoint (nondimensional h*, hdot*, Ur
-context; no acceleration), performs the CFD warm-up EXACTLY ONCE at
-Ur=2.0 (reusing warmup_history verbatim), builds the requested Ur(t)
-schedule, and runs it through run_coupled_viv_time_varying_ur.
-
-Writes outputs under studies/cylinder_time_varying_ur/results/ and a
-receipt under studies/cylinder_time_varying_ur/receipts/ -- never touches
-the repo's existing fixed-Ur results/ directories.
-"""
 from __future__ import annotations
 
 import argparse
@@ -42,33 +31,14 @@ from viv_analysis.models.gru import VIV_GRU  # noqa: E402
 from time_varying_coupled import run_coupled_viv_time_varying_ur, CYLINDER200_RE  # noqa: E402
 import schedules  # noqa: E402
 
-MODEL_SUBDIR = "gru_cylinder200_nd_context_noacc"  # --smoke / development default only
+MODEL_SUBDIR = "gru_cylinder200_nd_context_noacc"
 WARMUP_UR = 2.00
 
 OTHER_STUDY_ROOT = REPO_ROOT / "studies" / "gru_architecture_history_sensitivity"
-# Filename is per-dataset in the sensitivity study (selection_manifest_
-# {dataset}_stage{N}.json, not a shared/unqualified name -- cylinder200
-# and bridge freeze independently, and a shared filename would let
-# freezing one silently overwrite the other's selection). This study only
-# ever consumes cylinder200's.
 STAGE2_SELECTION_MANIFEST = OTHER_STUDY_ROOT / "manifests" / "selection_manifest_cylinder200_stage2.json"
 
 
 def assert_stage2_selection_frozen() -> list[str]:
-    """Preflight gate for full (non-smoke) time-varying-Ur sweeps.
-
-    Full sweeps require a frozen, COMPLETE Stage 2 selection manifest from
-    the architecture/history-length sensitivity study
-    (selection_complete=true is only ever set for that study's Stage 2 --
-    see select_configuration.py). Without this, a full 21-condition sweep
-    would run against an architecture/history-length choice that could
-    still be superseded, exposing held-out validation conditions across
-    the whole Ur range before model selection is actually finished. The
-    --smoke mode is exempt (see main()) since it never sources a
-    production configuration -- it always uses MODEL_SUBDIR directly.
-
-    Returns the 3 seed-specific run_dirs from that manifest.
-    """
     if not STAGE2_SELECTION_MANIFEST.exists():
         raise SystemExit(
             f"Full time-varying sweeps require a frozen final Stage 2 "
@@ -107,23 +77,6 @@ def _git_commit() -> str:
 
 
 def load_model_and_artifacts(device: str, artifact_dir: Path | None = None):
-    """artifact_dir defaults to results/MODEL_SUBDIR (the --smoke /
-    development checkpoint). For a full production sweep, the caller
-    passes one of the 3 seed-specific run_dirs returned by
-    assert_stage2_selection_frozen() instead.
-
-    Both kinds of directory have a run_config.json (written by the same
-    production train_gru.py either way -- the sensitivity study's
-    train_sensitivity.py calls train_gru.main() itself, it doesn't
-    reimplement it), so nd_inputs/use_ur_context/seq_len/input_cols are
-    read from there uniformly. hidden_size/num_layers are the one thing
-    NOT in run_config.json for either kind of directory: production
-    results/gru_* directories record them in metrics_gru.json's
-    gru_config (the architecture never varies there); the sensitivity
-    study's train_sensitivity.py records them in its own study_receipt.json
-    instead (its architecture DOES vary run to run). Whichever file
-    exists is used.
-    """
     artifact_dir = artifact_dir or (REPO_ROOT / "results" / MODEL_SUBDIR)
 
     with open(artifact_dir / "x_scaler.pkl", "rb") as f:
@@ -182,8 +135,6 @@ def load_model_and_artifacts(device: str, artifact_dir: Path | None = None):
 
 def warmup_once(artifacts: dict, dt: float, D: float, fn: float,
                  handoff_offset_steps: int = 2000) -> dict:
-    """CFD warm-up at Ur=WARMUP_UR ONLY -- called exactly once per sweep,
-    regardless of how many Ur values the schedule later visits."""
     rho = config["cylinder200_rho"]
     t_star_release = config["cylinder200_t_star_release"]
     U_warmup = WARMUP_UR * fn * D
@@ -384,12 +335,6 @@ def main():
         save_result(result, receipt, tag)
         return
 
-    # Full sweep: gated on a frozen, COMPLETE Stage 2 selection from the
-    # architecture/history-length sensitivity study, and run for all 3
-    # seeds independently -- never a single favorable seed. Aggregating
-    # the 3 seed results into median/IQR is a separate, later analysis
-    # step (once real 3-seed data exists); each seed's raw result/receipt
-    # is saved individually here.
     run_dirs = assert_stage2_selection_frozen()
     print(f"Frozen, complete Stage 2 selection confirmed. Running all 3 "
           f"seeds independently: {run_dirs}")

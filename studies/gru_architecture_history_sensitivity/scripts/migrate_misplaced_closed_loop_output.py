@@ -1,21 +1,3 @@
-"""
-One-off migration: moves closed-loop npz/receipt.json/png files back from
-the WRONG double-nested location a bug in run_coupled_sweep's --output_dir
-resolution sent them to (results/studies/gru_architecture_history_sensitivity
-/results/{dataset}/stage{N}/{config}/closed_loop_eval/) to the REAL,
-intended location (studies/gru_architecture_history_sensitivity/results/
-{dataset}/stage{N}/{config}/closed_loop_eval/, i.e. REPO_ROOT/<that path
-with the extra results/studies/gru_architecture_history_sensitivity prefix
-stripped>). See _common.py's run_coupled_sweep --output_dir comment for
-the root cause (now fixed there; this script only recovers already-computed
-data, it re-runs no simulation).
-
-Every file is MOVED (never copied, never deleted outright) into the real
-directory, merging with whatever summary.json/csv already lives there.
-Refuses to overwrite a same-named file that already exists at the
-destination (flags it instead) rather than silently clobbering something.
-Dry-run by default; pass --apply to actually move files.
-"""
 from __future__ import annotations
 
 import argparse
@@ -58,8 +40,6 @@ def main():
 
     print(f"\n{n_moved} file(s) {'moved' if args.apply else 'would be moved'}, {n_conflict} conflict(s).")
     if args.apply and n_conflict == 0:
-        # Clean up the now-empty wrong-nested tree entirely (never touches
-        # anything outside WRONG_ROOT).
         import shutil
         shutil.rmtree(REPO_ROOT / "results" / "studies")
         print(f"Removed the now-empty {REPO_ROOT / 'results' / 'studies'}")

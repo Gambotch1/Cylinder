@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""
-Reference-quality classification for bridge CFD cases.
-
-Distinct from (but informed by) closed_loop_metrics.classify_stability:
-that function's Hilbert-envelope slope alone cannot distinguish "genuinely
-non-stationary" from "broadband/beating but statistically stable" -- a
-single slope-based label is exactly what this module is built to avoid
-relying on alone (see classify_reference_status: settled_lco additionally
-requires blockwise RMS AND frequency stability, and
-statistically_stationary_les exists specifically to catch cases whose
-slope-based label looks non-stationary but whose block statistics are not
-actually evolving).
-
-reference_status is metadata ONLY -- never passed to the GRU as an input
-feature. It exists to make evaluation defensible per-case, not to change
-model inputs.
-"""
 from __future__ import annotations
 
 import numpy as np
@@ -87,20 +70,10 @@ def _dominant_freq(t: np.ndarray, x: np.ndarray) -> float:
 
 def _numerically_suspect_reason(t: np.ndarray, h: np.ndarray, v: np.ndarray,
                                 cl: np.ndarray) -> str | None:
-    """Direct-evidence-only check: non-finite values, a genuine gap in the
-    TIME axis itself (a discontinuous restart -- data dropped between an
-    autosave and its resume), or a single-step disp jump far outside the
-    case's own typical step-to-step change. NOT a judgment call about
-    signal shape -- every branch here is a concrete, checkable fact about
-    the raw record, not an inference from amplitude/frequency behavior."""
     for name, arr in (("disp", h), ("vel", v), ("cl", cl)):
         if not np.all(np.isfinite(arr)):
             return f"non-finite values present in {name}"
 
-    # Shares its gap definition with utils.segment_by_time_gaps (same
-    # discontinuity_jump_factor / DEFAULT_TIME_GAP_FACTOR=20.0) -- the
-    # sequence-window segmentation in models/gru.py's VIVSequenceDataset
-    # and this suspect-reason check agree on exactly what counts as a gap.
     factor = REFERENCE_QUALITY_CRITERIA["discontinuity_jump_factor"]
     segments = segment_by_time_gaps(t, gap_factor=factor)
     if len(segments) > 1:
@@ -129,11 +102,6 @@ def _numerically_suspect_reason(t: np.ndarray, h: np.ndarray, v: np.ndarray,
 
 
 def classify_reference_status(row: dict) -> tuple[str, str]:
-    """Returns (status, reason). Priority order: numerically_suspect (direct
-    evidence) -> insufficient_duration (too little data to judge anything) ->
-    settled_lco (slope AND block-stability agree) -> statistically_stationary_les
-    (block-stable even if the slope label alone would say otherwise) ->
-    transient_or_slowly_evolving (residual)."""
     crit = REFERENCE_QUALITY_CRITERIA
 
     if row.get("numerically_suspect_reason"):
@@ -173,9 +141,6 @@ def classify_reference_status(row: dict) -> tuple[str, str]:
 
 
 def build_reference_status_table() -> pd.DataFrame:
-    """Recomputes per-case diagnostics from the CURRENT (post-exclusion)
-    bridge cache and classifies every retained case. Nothing here is fit
-    from or feeds into GRU training -- read-only, metadata-only."""
     D = config["bridge_D_ref"]
     fn = config["bridge_fn_hz"]
     zeta = config["bridge_zeta"]
@@ -240,21 +205,7 @@ def build_reference_status_table() -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("Ur").reset_index(drop=True)
 
 
-# ── Status-aware evaluation reporting ────────────────────────────────────
-# A single aggregate LCO pass-rate conflates categories that don't share a
-# well-defined "steady amplitude" to score against in the first place.
-# settled_lco keeps the existing closed_loop_metrics gate (it's the only
-# category that gate's assumptions actually hold for); the two "stable but
-# not a clean LCO" categories get a block-RMS/cumulative-energy comparison
-# instead of a steady-amplitude pass/fail; insufficient_duration and
-# numerically_suspect are reported as explicitly unscored, not silently
-# excluded or forced through the LCO gate.
-
 def compute_non_lco_summary(npz_path: str, rms_agreement_band: tuple[float, float] = (0.7, 1.43)) -> dict:
-    """Blockwise RMS ratio (surrogate/CFD) and cumulative-energy ratio over
-    the common surrogate/CFD overlap window -- for statistically_stationary_
-    les and transient_or_slowly_evolving cases, where a steady-amplitude
-    pass/fail assumes something these categories don't guarantee."""
     d = np.load(npz_path, allow_pickle=True)
     if "h_cfd" not in d.files or "cl_cfd" not in d.files:
         return {"scoring_method": "non_lco_block_energy", "unscored": True,
@@ -299,10 +250,6 @@ def compute_non_lco_summary(npz_path: str, rms_agreement_band: tuple[float, floa
 def build_status_aware_report(sweep_dir: str, model_label: str,
                               reference_status_csv: str = "results/bridge_reference_status.csv"
                               ) -> pd.DataFrame:
-    """Joins a sweep's per-case gate results (from evaluate_all.py's
-    sweep_results.csv, already computed with closed_loop_metrics) against
-    reference_status, and routes each case to the scoring appropriate for
-    its category instead of one aggregate LCO pass rate."""
     from pathlib import Path
 
     ref = pd.read_csv(reference_status_csv).set_index("Ur")
@@ -336,7 +283,7 @@ def build_status_aware_report(sweep_dir: str, model_label: str,
                           unscored_reason=f"no npz found for Ur={ur} in {sweep_dir}")
             else:
                 row.update(**compute_non_lco_summary(str(npz_glob[0])))
-        else:  # insufficient_duration, numerically_suspect
+        else:
             row.update(scoring_method="none", unscored=True,
                       unscored_reason=ref.loc[ur, "reference_status_reason"])
         rows.append(row)

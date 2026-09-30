@@ -23,7 +23,6 @@ from viv_analysis.utils import PROJECT_ROOT, parse_ur_label, segment_by_time_gap
 def fast_teacher_forcing(model, case_df_scaled, input_cols, seq_len, release_t,
                          y_scaler, case_name, device, use_ur_context, ur_stats,
                          batch_size=1024):
-
     ordered = case_df_scaled.sort_values("time").reset_index(drop=True)
     signal = ordered[input_cols].to_numpy(dtype=np.float32)
 
@@ -89,7 +88,6 @@ def _load_model_artifacts(model_subdir: str, device: str):
 
 
 def _verify_matches_slow_reference(art, case_df_scaled, release_t, device, n_check_steps=3000):
-
     seq_len = art["seq_len"]
     ordered_full = case_df_scaled.sort_values("time").reset_index(drop=True)
     times_full = ordered_full["time"].to_numpy(dtype=np.float32)
@@ -175,7 +173,7 @@ def main():
         if art["nd_inputs"]:
             df = apply_nd_transform(df, nd_inputs=True, D=D_nd, fn=fn_nd, input_cols=art["input_cols"])
 
-        case_results = []  # for the representative-case pick + summary table
+        case_results = []
         for case_name in art["test_cases"]:
             case_df = df[df["case"] == case_name].copy()
             if case_df.empty:

@@ -1,5 +1,3 @@
-# src/evaluate.py
-
 import numpy as np
 from typing import Callable
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -14,13 +12,6 @@ def Teacher_Forcing_rollout(
     lookback:      int,
     release_time_s: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Model-agnostic teacher-forcing rollout.
-
-    predict_fn : callable(x_scaled_2d) → float in scaled space
-    All kinematic inputs (disp, vel, acc) use true CFD values.
-    If 'cl' is in input_cols it uses the model's own previous prediction.
-    """
     ordered = case_df.sort_values("time").reset_index(drop=True)
     times   = ordered["time"].to_numpy()
     disp    = ordered["disp"].to_numpy()
@@ -46,7 +37,7 @@ def Teacher_Forcing_rollout(
                 cols.append(np.array(cl_pred_history[i - lookback : i]))
             else:
                 cols.append(col_arrays[col][i - lookback : i])
-        window = np.column_stack(cols)           # (lookback, n_features)
+        window = np.column_stack(cols)
         x      = x_scaler.transform(window.reshape(1, -1))
         cl_s   = predict_fn(x)
         cl     = float(y_scaler.inverse_transform([[cl_s]])[0][0])

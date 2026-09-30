@@ -1,48 +1,3 @@
-"""
-Predeclared selection rule (validation-only). Never reads test-partition
-results -- none exist to read, since every training run in this study is
-produced with --skip_test_eval. Test evaluation happens, for the first
-time, only in scripts/unlock_test_evaluation.py, gated behind the frozen
-manifest this script writes.
-
-Selects at CONFIGURATION level, never a single run/seed:
-  Stage 1 selects (dataset, hidden_size, num_layers).
-  Stage 2 selects (dataset, hidden_size, num_layers, sequence_samples,
-  physical_duration_s).
-The frozen manifest lists all 3 seed-specific run_dirs (123/456/789)
-belonging to the selected configuration -- selecting a favorable individual
-seed/checkpoint is never possible through this script.
-
-Hierarchy (frozen before the validation arrays were run, not tunable here
-without approval):
-  1. Treat (hidden_size, num_layers[, seq_len]) as the configuration and
-     the 3 seeds (123/456/789) as repetitions, never as 18 (or 36)
-     independent candidates.
-  2. Reject configurations with missing runs (any of the 3 required seeds
-     absent), NaNs, or numerical failure -- see REQUIRED_SEEDS in _common
-     .py and collect_results.py's all_valid.
-  3. Give closed-loop performance priority, in this exact order:
-       a. number of stable validation responses (maximize);
-       b. median absolute amplitude error (minimize);
-       c. worst-case amplitude error (minimize);
-       d. frequency error (minimize).
-     See _closed_loop_rank_cols for the exact columns and the bridge-
-     specific "stable among settled_lco" reading.
-  4. Use open-loop R2/NRMSE as a required fidelity check (the
-     passes_retention_threshold gate below), not the main ranking
-     criterion. Short/intermediate rollout metrics are noted as
-     unavailable (this study's closed-loop protocol is full-duration-only
-     by design) rather than silently omitted.
-  5. Aggregate each configuration across all 3 seeds using median and IQR
-     (done in collect_results.py's aggregate(), not here).
-  6. Tie-break on effectively-equivalent configurations: smaller, then
-     faster. Never choose one fortunate seed or the lowest single
-     validation error -- there is no per-seed selection path in this
-     script at all, only per-configuration medians.
-
-Produces a Pareto table (every metric kept separate) and a hierarchical
-ranking. Does NOT collapse metrics into a weighted scalar.
-"""
 from __future__ import annotations
 
 import argparse
@@ -57,45 +12,6 @@ BASELINE_H, BASELINE_L = 64, 2
 
 
 def _closed_loop_rank_cols(dataset: str, agg: pd.DataFrame) -> list[tuple[str, bool]]:
-    """(column, ascending) pairs in predeclared priority order, frozen
-    BEFORE the validation arrays were run:
-      1. number of stable validation responses (maximize)
-      2. median absolute amplitude error (minimize)
-      3. worst-case amplitude error (minimize)
-      4. frequency error (minimize)
-    "Worst-case or 90th-percentile" was specified as one tier, not two:
-    worst-case is used here since these validation sets are tiny (4
-    cylinder / <=5 settled-bridge cases), where a 90th percentile is not a
-    materially different statistic from the max -- p90 is still computed
-    and kept in the Pareto table for inspection, just not as a separate
-    ordinal tier.
-
-    Bridge has no single "stable" label spanning ALL validation cases --
-    the amplitude-gate framework in reference_quality.build_status_aware_
-    report only scores settled_lco cases. "Number of stable validation
-    responses" is therefore read, for bridge, as the stable count among
-    the settled_lco subset (validation_stable_count_among_settled_lco),
-    not a fraction of all validation cases.
-
-    In practice, for THIS study's fixed 5-case bridge validation
-    partition, EVERY case classifies as statistically_stationary_les --
-    zero are settled_lco for any of the 18 Stage 1 configs (confirmed
-    directly: validation_n_settled_lco=0 across the board after fixing
-    the closed-loop npz misplacement bug and rescoring). The 3
-    settled-lco columns above are therefore uniformly NaN for bridge
-    right now, contributing no discrimination at all (sort_values with
-    na_position="last" just ties every row and falls through) --
-    silently, not as an error, which would otherwise let bridge selection
-    degrade to "smallest model wins" with zero real closed-loop signal
-    used. _bridge_non_lco_rms_ratio_deviation_median (added to `agg` by
-    build_pareto_table, from validation_mean_rms_ratio_among_non_lco --
-    surrogate/CFD blockwise RMS ratio, ideally exactly 1.0) is inserted as
-    a 4th tier ahead of frequency error specifically so bridge selection
-    still uses real closed-loop evidence under this partition. Left AFTER
-    the settled-lco columns (not replacing them) so a future validation
-    set that does contain settled_lco cases still gets first priority
-    from the originally-specified amplitude tiers.
-    """
     if dataset == "cylinder200":
         pairs = [
             ("closed_loop_validation_stable_count_median", False),
@@ -127,11 +43,6 @@ def build_pareto_table(dataset: str, agg: pd.DataFrame) -> pd.DataFrame:
     df["delta_r2_val_vs_baseline"] = df["open_loop_val_r2_median"] - baseline_r2
     df["passes_retention_threshold"] = df["delta_r2_val_vs_baseline"] >= RETENTION_THRESHOLD
 
-    # See _closed_loop_rank_cols's bridge docstring: derived once here (not
-    # inside collect_results.py's generic per-column aggregation, since it's
-    # specifically a distance-from-1.0, not a plain median/IQR of a raw
-    # metric) so bridge selection still has a real closed-loop tier when
-    # the settled-lco columns are uniformly empty for this partition.
     rms_col = "closed_loop_validation_mean_rms_ratio_among_non_lco_median"
     if dataset == "bridge" and rms_col in df.columns:
         df["_bridge_non_lco_rms_ratio_deviation_median"] = (df[rms_col] - 1.0).abs()
@@ -166,20 +77,12 @@ def build_pareto_table(dataset: str, agg: pd.DataFrame) -> pd.DataFrame:
         "short-horizon improvement alone is not sufficient evidence."
     )
 
-    # Tie-break on "effectively equivalent" configurations: prefer smaller,
-    # then faster. Both are minimized.
     tie_break_pairs = [
         (c, True) for c in
         ["trainable_parameter_count_median", "closed_loop_mean_inference_time_s_median"]
         if c in df.columns
     ]
 
-    # passes_retention_threshold is the open-loop fidelity GATE (point 4:
-    # required check, not the main ranking criterion) -- sorted first only
-    # so a configuration that fails it never outranks one that passes,
-    # never used as a tiebreaker among passing configurations. Every tier
-    # after it is the closed-loop hierarchy from _closed_loop_rank_cols,
-    # in order, then the smaller/faster tie-break last.
     sort_pairs = [("passes_retention_threshold", False)] + rank_pairs + tie_break_pairs
     sort_pairs = [(c, asc) for c, asc in sort_pairs if c in df.columns]
     sort_cols = [c for c, _ in sort_pairs]
@@ -250,11 +153,6 @@ def main():
                 tag = f"{top['history_label']}_{tag}"
             run_dirs.append(str(base / tag))
 
-        # Stage 1 selects (dataset, hidden_size, num_layers); Stage 2 selects
-        # (dataset, hidden_size, num_layers, sequence_samples,
-        # physical_duration_s) -- seq_len/duration are NOT part of the Stage 1
-        # selection tuple (every Stage 1 point shares the same baseline
-        # seq_len by construction), so they are deliberately omitted there.
         selected_configuration = {
             "hidden_size": int(top["hidden_size"]),
             "num_layers": int(top["num_layers"]),
@@ -264,16 +162,6 @@ def main():
             selected_configuration["physical_duration_s"] = float(top["sequence_duration_s_median"])
             selected_configuration["history_label"] = top.get("history_label")
 
-        # selection_complete is distinct from frozen: frozen means THIS
-        # stage's ranking was reviewed and approved; selection_complete is
-        # only ever true for stage 2, since that is the final stage --
-        # a frozen Stage 1 manifest unblocks Stage 2 job generation, but
-        # does not mean the architecture/history-length choice is final
-        # (Stage 2 could still change the picture). Downstream consumers
-        # outside this study (e.g. the time-varying-Ur continuation study)
-        # gate on selection_complete==True specifically, not on frozen
-        # alone, so they never run against a configuration that could
-        # still be superseded.
         manifest_path = STUDY_ROOT / "manifests" / f"selection_manifest_{args.dataset}_stage{args.stage}.json"
         manifest = {
             "frozen": True,

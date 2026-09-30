@@ -1,8 +1,3 @@
-"""
-Thesis figures for the time-varying-Ur continuation study (item 9).
-Reuses viv_analysis.plotting.plot_style.apply_thesis_style (the shared thesis
-style) and defines its own sliding-window amplitude envelope.
-"""
 from __future__ import annotations
 
 import sys
@@ -20,19 +15,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from viv_analysis.plotting.plot_style import TEXT_WIDTH_IN, apply_thesis_style  # noqa: E402
-MIN_ENVELOPE_WINDOWS = 5  # fewer than this is not a curve, just sparse points
+MIN_ENVELOPE_WINDOWS = 5
 
 
 def t_star_of(t_arr: np.ndarray, ur_arr: np.ndarray, fn: float) -> np.ndarray:
-    """Convective/reduced time t*=tU/D generalized to time-varying Ur(t):
-    U(t)=Ur(t)*fn*D, so t* = integral of U(t)/D dt = fn * integral of
-    Ur(t) dt -- reduces to the familiar t*=tU/D when Ur is constant."""
     return fn * np.concatenate(([0.0], np.cumsum(
         0.5 * (ur_arr[1:] + ur_arr[:-1]) * np.diff(t_arr))))
 
 
 def amplitude_envelope(h, D, dt, fn, win_cycles=3.0, step_frac=0.5):
-    """Sliding-window A/D envelope (sqrt(2)*RMS/D ~ sinusoid amplitude)."""
     h = np.asarray(h, float)
     win = max(int(win_cycles / fn / dt), 8)
     step = max(int(step_frac * win), 1)
@@ -47,11 +38,6 @@ def amplitude_envelope(h, D, dt, fn, win_cycles=3.0, step_frac=0.5):
 def envelope_or_unavailable(h: np.ndarray, D: float, dt: float, fn: float,
                              win_cycles: float = 3.0, step_frac: float = 0.5,
                              min_windows: int = MIN_ENVELOPE_WINDOWS):
-    """Wraps amplitude_envelope with a minimum-coverage gate: returns
-    (None, None, reason) instead of a 1-2-point 'curve' whenever the
-    signal doesn't span enough windows for the result to mean anything.
-    A too-short analysis window doesn't get plotted as an (misleadingly
-    early) estimate -- it is reported as unavailable."""
     env_t, env = amplitude_envelope(h, D, dt, fn, win_cycles=win_cycles, step_frac=step_frac)
     if len(env_t) >= min_windows:
         return env_t, env, None
@@ -67,19 +53,6 @@ def envelope_or_unavailable(h: np.ndarray, D: float, dt: float, fn: float,
 def plot_time_varying_panels(result: dict, schedule: dict, D: float, fn: float,
                               out_path_stem: Path, font_scale: float = 1.0,
                               h_linewidth: float = 0.3):
-    """Panels: (a) Ur(t) (b) h/D (c) envelope A/D, against t*=tU/D. Velocity
-    and C_L are deliberately omitted here: at full-sweep scale they render
-    as dense coloured bands that add page height without supporting a
-    conclusion the amplitude/adaptation discussion in this section needs --
-    they remain available per-transition in plot_transition_window.
-
-    font_scale: multiplies axes/tick/legend font sizes by this factor
-        without changing figsize -- same convention as thesis_plots.py's
-        figures (plot_coupled_thesis etc.), for a figure displayed
-        narrower than full \\textwidth. Pass 1/display_fraction.
-    h_linewidth: linewidth of the h/D panel (b) only -- panels (a) and (c)
-        keep their own fixed 0.3.
-    """
     apply_thesis_style()
     if font_scale != 1.0:
         matplotlib.rcParams.update({
@@ -126,18 +99,6 @@ def plateau_summary(result: dict, schedule: dict, D: float, fn: float, dt: float
                      fixed_ur_gru: dict[float, float] | None,
                      n_cycles: int = 5, stat_tol: float = 0.10,
                      font_scale: float = 1.0) -> "tuple":
-    """Compare the final n_cycles of each dwell plateau (from the
-    continuous time-varying run) against independent fixed-Ur CFD/GRU
-    references. A plateau's value is labelled 'stabilised' only if the
-    PER-CYCLE amplitude's coefficient of variation over the final
-    n_cycles is below stat_tol -- otherwise it is reported as a (possibly
-    non-converged) plateau value, never as a steady-state amplitude. This
-    is deliberately NOT the raw signal's own coefficient of variation
-    (std(tail)/mean(abs(tail))): that ratio is a near-constant property
-    of any sinusoidal waveform shape (~1.1 regardless of amplitude
-    convergence), so it can never usefully distinguish a converged
-    plateau from a growing/decaying one.
-    """
     import pandas as pd
 
     Ur_list = schedule["Ur_list"]
@@ -155,19 +116,6 @@ def plateau_summary(result: dict, schedule: dict, D: float, fn: float, dt: float
         tail = seg_h[-n_cycles * cycle_steps:] if sufficient_data else seg_h
         a_star = np.sqrt(2.0) * np.std(tail) / D
 
-        # Envelope stability, NOT raw-signal stability: std(tail)/mean(abs
-        # (tail)) is a waveform-shape constant (~1.1 for essentially any
-        # sinusoidal oscillation, converged or not -- verified directly
-        # against this study's own first real run, where every single Ur,
-        # including the cleanest, most obviously converged plateaus around
-        # Ur=4.75-5.0, came out cv~1.1) and can never fall below a sane
-        # stat_tol regardless of whether the amplitude has actually
-        # plateaued. The physically meaningful question is instead "how
-        # much does the PER-CYCLE amplitude vary across these n_cycles" --
-        # computed directly here (a plateau's cycle_steps-aligned segments
-        # are already exactly what "per cycle" means for a constant-Ur
-        # dwell, so this doesn't need amplitude_envelope's windowed
-        # Hilbert estimate).
         n_full_cycles = max(1, len(tail) // cycle_steps)
         per_cycle_a_star = np.array([
             np.sqrt(2.0) * np.std(tail[c * cycle_steps:(c + 1) * cycle_steps]) / D
@@ -175,9 +123,6 @@ def plateau_summary(result: dict, schedule: dict, D: float, fn: float, dt: float
         ])
         cv = (float(np.std(per_cycle_a_star) / (np.mean(per_cycle_a_star) + 1e-30))
               if n_full_cycles >= 2 else float("nan"))
-        # "stabilised" requires BOTH a low coefficient of variation AND
-        # enough cycles for that cv to be a meaningful statement -- a
-        # short tail can show low cv by chance, not because it converged.
         stabilised = bool(cv < stat_tol and sufficient_data)
         rows.append({
             "Ur": ur,
@@ -220,32 +165,6 @@ def plateau_summary(result: dict, schedule: dict, D: float, fn: float, dt: float
     return df, fig
 
 
-# ── Lock-in-region transitions for the thesis figures ───────────────────────
-#
-# Confirmed against the real fixed-Ur CFD amplitude curve
-# (results/gru_cylinder200_nd_context_noacc_coupled_eval/closed_loop_metrics.csv,
-# column cfd_A_star), not chosen arbitrarily:
-#   Ur:      2.00   2.50   3.00   3.50   4.00   4.25   4.50   4.75   5.00
-#   cfd_A*: .0041  .0076  .0138  .0264  .0714  .2034  .3785  .4745  .4509
-#   Ur:      5.25   5.50   5.75   6.00   6.25   6.50   7.00   8.00   9.00 ...
-#   cfd_A*: .4061  .3773  .3430  .3004  .0672  .0564  .0459  .0370  .0329 ...
-#
-# Main 3-figure set:
-# onset (3.50->4.00): amplitude is still flat/tiny at 3.50 (0.026) and only
-#   just beginning to climb at 4.00 (0.071, 2.7x) -- captures the toe of the
-#   rise, not the steeper climb that follows (4.00->4.25 is a 2.9x jump).
-#   Labelled "onset of response growth", not "pre-lock-in" -- the latter
-#   would misleadingly imply this window's endpoint is still pre-lock-in
-#   when 7.00->8.00 (below) is kept as a separate post-lock-in figure.
-# lockin (5.25->5.50): solidly inside the high-response plateau (0.406 ->
-#   0.377, a mild ~7% decline) -- established lock-in, not its termination.
-# departure_from_lockin (6.00->6.25): the dramatic 4.5x collapse (0.300 ->
-#   0.067) -- lock-in termination itself, more informative than the already-
-#   settled decaying tail as the third main figure.
-#
-# Appendix figure: post_lockin_appendix (7.00->8.00), the settled decaying
-# tail well past the 6.00->6.25 collapse (0.046 -> 0.037, a mild further
-# decline) -- kept for reference but not part of the main 3-figure set.
 LOCKIN_REGION_TRANSITIONS = {
     "onset": {"ur_before": 3.50, "ur_after": 4.00},
     "lockin": {"ur_before": 5.25, "ur_after": 5.50},
@@ -255,28 +174,6 @@ POST_LOCKIN_APPENDIX_TRANSITION = {"ur_before": 7.00, "ur_after": 8.00}
 
 
 def find_transition_time(schedule: dict, ur_before: float, ur_after: float) -> float:
-    """Locate the (ur_before -> ur_after) transition's reference time from
-    the schedule's OWN metadata (Ur_list/transition_step_indices/dt),
-    rather than scanning the raw per-step Ur(t) array for an
-    adjacent-sample jump. The latter only exists for an instantaneous
-    schedule -- a cosine-ramped transition (build_ascending_cosine_
-    schedule / build_triangular_schedule(transition='cosine')) spans
-    transition_steps samples, so there is no single adjacent pair where
-    Ur jumps straight from ur_before to ur_after.
-
-    Reference time is defined as the first moment Ur REACHES ur_after
-    (the end of a ramp, not its start): transition_step_indices[i] is
-    already the index of the first post-transition sample for an
-    instantaneous schedule (see build_ascending_schedule), so adding
-    transition_steps generalizes that same convention to ramped
-    schedules -- for an instantaneous schedule transition_steps is 0 (no
-    ramp field at all), so this is a strict generalization, not a
-    redefinition, of the original behavior. This also keeps
-    window_after_Tn's meaning ("N cycles of settling time once the
-    system has actually reached ur_after") comparable across every
-    schedule kind, instead of a cosine schedule's window silently
-    including part of the ramp itself.
-    """
     Ur_list = schedule["Ur_list"]
     transition_step_indices = schedule["transition_step_indices"]
     transition_steps = schedule.get("transition_steps", 0)
@@ -296,13 +193,6 @@ def plot_transition_window(result: dict, schedule: dict, D: float, fn: float,
                             window_before_Tn: float = 5.0, window_after_Tn: float = 15.0,
                             include_velocity: bool = False,
                             fixed_xlim: tuple[float, float] | None = None):
-    """3 (optionally 4) aligned panels -- Ur(t) [marking the transition],
-    h/D, [hdot/(fn*D)], envelope A/D -- windowed to
-    [transition_time - window_before_Tn/fn, transition_time + window_after_Tn/fn].
-    Pass the SAME fixed_xlim (relative seconds from the transition) across
-    the pre-/lock-in/post-lock-in figures to keep identical axis limits and
-    window durations, as required.
-    """
     apply_thesis_style()
     Tn = 1.0 / fn
     dt = float(np.median(np.diff(result["time"])))
@@ -366,37 +256,6 @@ def plot_transitions_composite_thesis(result: dict, schedule: dict, D: float, fn
                                        window_before_Tn: float = 5.0, window_after_Tn: float = 15.0,
                                        fixed_xlim: tuple[float, float] | None = None,
                                        font_scale: float = 1.0):
-    """One composite figure covering EVERY transition in `transitions`
-    (e.g. LOCKIN_REGION_TRANSITIONS), sized to fit a single portrait
-    page -- plot_transition_window's full per-transition layout (Ur(t),
-    h/D, envelope) is too tall to place three of them on one page. Drops
-    the Ur(t) panel and velocity entirely; only h/D and its envelope are
-    shown, and the swept Ur(t) schedule is stated in each panel's own
-    title instead of a dedicated panel/annotation.
-
-    One row per transition (in `transitions`' insertion order), h/D in
-    the left column and envelope A/D in the right column, so a reader
-    can scan straight down either column to compare the same quantity
-    across transitions.
-
-    x-axis is the convective/reduced time t*=tU/D (generalized for
-    time-varying Ur via t_star_of), relative to each row's OWN transition
-    (t*=0 at that row's transition) -- NOT a shared physical-time axis,
-    since Ur (and hence U) differs across transitions. window_before_Tn/
-    window_after_Tn still pick the underlying data window in raw seconds
-    (physically "N structural periods either side of the transition" is
-    the meaningful selection criterion); fixed_xlim, if given, is now
-    IGNORED for axis limits (each row instead uses its own t*-relative
-    window bounds, which -- for the current default caller, where
-    fixed_xlim is always set to exactly (-window_before_Tn*Tn,
-    window_after_Tn*Tn) -- reproduces the prior "identical limits"
-    behavior in raw-seconds terms; it stops being identical across rows
-    only in t* terms, because U differs).
-
-    font_scale: multiplies axes/tick/legend/title font sizes by this
-        factor without changing figsize -- same convention as
-        plot_time_varying_panels. Pass 1/display_fraction.
-    """
     apply_thesis_style()
     if font_scale != 1.0:
         matplotlib.rcParams.update({
@@ -464,31 +323,11 @@ def plot_transitions_composite_thesis(result: dict, schedule: dict, D: float, fn
     return out_path_stem.with_suffix(".pdf"), out_path_stem.with_suffix(".png")
 
 
-# ── Multi-seed aggregation ───────────────────────────────────────────────────
-#
-# Never take the pointwise median of raw h(t)/hdot(t)/CL(t) across seeds:
-# small phase differences between seeds mean a pointwise median samples
-# each seed at a slightly different point in its own cycle, and the result
-# is an artificially attenuated (partially cancelled) waveform, not a
-# meaningful "typical" trajectory. Aggregate instead via:
-#   - the per-seed envelope (already phase-free) -> pointwise median/IQR
-#     of THAT;
-#   - scalar summary metrics (RMS amplitude, frequency, energy) -> direct
-#     median/IQR, since they carry no phase to begin with;
-#   - exactly one PREDECLARED representative seed for the raw oscillatory
-#     time histories, fixed here (123) before any results exist -- never
-#     chosen after looking at which seed "looks best." The other seeds may
-#     be overlaid faintly for context.
-
 REPRESENTATIVE_SEED = 123
 
 
 def aggregate_envelope_across_seeds(displacement_by_seed: dict[int, np.ndarray],
                                      D: float, dt: float, fn: float) -> dict:
-    """displacement_by_seed[seed] = h(t) array. All seeds must have run the
-    SAME schedule/dt (true by construction for run_time_varying_sweep.py's
-    per-seed loop), so their envelopes share a time grid and a pointwise
-    median/IQR across seeds is well-defined without any interpolation."""
     seeds = sorted(displacement_by_seed.keys())
     env_list, common_env_t = [], None
     for s in seeds:
@@ -503,7 +342,7 @@ def aggregate_envelope_across_seeds(displacement_by_seed: dict[int, np.ndarray],
                 "all run the same schedule/dt?")
         env_list.append(env)
 
-    env_stack = np.stack(env_list, axis=0)  # (n_seeds, n_windows)
+    env_stack = np.stack(env_list, axis=0)
     q25, q75 = np.percentile(env_stack, [25, 75], axis=0)
     return {
         "seeds": seeds,
@@ -515,9 +354,6 @@ def aggregate_envelope_across_seeds(displacement_by_seed: dict[int, np.ndarray],
 
 
 def aggregate_scalar_metrics_across_seeds(metrics_by_seed: dict[int, dict]) -> dict:
-    """metrics_by_seed[seed] = {"A_star": ..., "f_osc": ..., "energy": ...}
-    (or similar) -- scalars carry no phase, so direct median/IQR across
-    seeds is safe and does not have the raw-waveform pitfall above."""
     seeds = sorted(metrics_by_seed.keys())
     keys = set(metrics_by_seed[seeds[0]].keys())
     for s in seeds[1:]:
@@ -536,8 +372,6 @@ def plot_multiseed_panels(results_by_seed: dict[int, dict], schedule: dict,
                            D: float, fn: float, out_path_stem: Path,
                            representative_seed: int = REPRESENTATIVE_SEED,
                            transition_labels: list[float] | None = None):
-    """Ur(t) + h/D (representative seed solid, other seeds faint) + median
-    envelope A/D with IQR band -- never a pointwise-median raw waveform."""
     apply_thesis_style()
     seeds = sorted(results_by_seed.keys())
     if representative_seed not in seeds:

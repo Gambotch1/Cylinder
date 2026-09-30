@@ -1,8 +1,3 @@
-"""Check 12: result collection does not mix datasets, seeds, or stages.
-Builds synthetic study_receipt.json files under two datasets/stages and
-confirms collect_results.collect() only ever returns rows for the exact
-(dataset, stage) requested, and aggregate() never merges rows across
-distinct seeds into a single seed value (only into the seeds list)."""
 import json
 
 from collect_results import aggregate, collect
@@ -37,7 +32,7 @@ def test_collect_only_returns_requested_dataset_and_stage(tmp_path, monkeypatch)
     df = collect("cylinder200", 1)
     assert set(df["dataset"]) == {"cylinder200"}
     assert set(df["stage"]) == {1}
-    assert len(df) == 2  # the two cylinder200/stage1 seeds only
+    assert len(df) == 2
 
     df_bridge = collect("bridge", 1)
     assert len(df_bridge) == 1
@@ -58,7 +53,7 @@ def test_aggregate_keeps_seeds_as_a_list_not_averaged_away(tmp_path, monkeypatch
 
     df = collect("cylinder200", 1)
     agg = aggregate(df)
-    assert len(agg) == 1  # one config row, not one row per seed
+    assert len(agg) == 1
     row = agg.iloc[0]
     assert sorted(row["seeds"]) == [123, 456, 789]
     assert row["n_seeds"] == 3
@@ -66,21 +61,11 @@ def test_aggregate_keeps_seeds_as_a_list_not_averaged_away(tmp_path, monkeypatch
 
 
 def test_aggregate_rejects_configuration_missing_a_required_seed(tmp_path, monkeypatch):
-    """A configuration where 1 of the 3 required seeds (123/456/789) never
-    produced a study_receipt.json (e.g. training OOM'd) must be marked
-    all_valid=False, never silently ranked on whichever 2 seeds happen to
-    exist -- this is "reject configurations with missing runs" from the
-    predeclared selection rule, distinct from the existing per-row NaN/
-    non-finite check."""
     import collect_results
     monkeypatch.setattr(collect_results, "STUDY_ROOT", tmp_path)
 
-    # Only seeds 123 and 456 completed for this config; 789 is missing
-    # entirely (no directory at all, exactly like the real bridge Stage 1
-    # CUDA OOM failures).
     _write_receipt(tmp_path / "results", "cylinder200", 1, 64, 2, 1000, 123, r2=0.99)
     _write_receipt(tmp_path / "results", "cylinder200", 1, 64, 2, 1000, 456, r2=0.98)
-    # A separate, fully-complete config for contrast.
     _write_receipt(tmp_path / "results", "cylinder200", 1, 32, 1, 1000, 123, r2=0.90)
     _write_receipt(tmp_path / "results", "cylinder200", 1, 32, 1, 1000, 456, r2=0.91)
     _write_receipt(tmp_path / "results", "cylinder200", 1, 32, 1, 1000, 789, r2=0.92)

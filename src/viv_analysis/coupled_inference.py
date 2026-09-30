@@ -20,12 +20,11 @@ from viv_analysis.utils import PROJECT_ROOT, format_ur_label, present_model_labe
 from viv_analysis.config import config, CYLINDER200_ALIASES, cylinder200_structural_params
 
 
-# ── Thesis figure style ─────────────────────────────────────────────
 plt.rcParams.update({
     "font.family": "serif",
-    "font.serif": ["STIXGeneral"],       # ships with matplotlib; Times look-alike
+    "font.serif": ["STIXGeneral"],
     "mathtext.fontset": "stix",
-    "font.size": 10.5,                   # figure printed at 1:1 → match document
+    "font.size": 10.5,
     "axes.labelsize": 10.5,
     "legend.fontsize": 9,
     "xtick.labelsize": 9,
@@ -38,12 +37,6 @@ plt.rcParams.update({
 
 def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float,
                     input_cols: tuple[str, ...] = ("disp", "vel", "acc")) -> np.ndarray:
-    """Physical kinematics (last axis, columns named by input_cols) -> model
-    input coords. Identity unless nd_inputs; else each column is divided by
-    ITS OWN NAME's divisor (disp->D, vel->U, acc->U^2/D) -- not by position
-    -- so a restricted/reordered input_cols (e.g. ["vel"] for a
-    velocity-only model) still gets the correct divisor per column instead
-    of silently broadcasting the wrong one."""
     if not nd_inputs:
         return kin
     if D <= 0 or U <= 0:
@@ -57,11 +50,6 @@ def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float,
 
 
 def positive_finite_float(value: str) -> float:
-    """argparse `type=` validator: strictly positive, finite float.
-
-    Used by --replay_duration_s so a bad value (0, negative, inf, nan,
-    non-numeric) fails fast with a clear message.
-    """
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -74,15 +62,6 @@ def positive_finite_float(value: str) -> float:
 
 
 def get_git_dirty_and_patch_hash(cwd: Optional[Path] = None) -> tuple[bool, str]:
-    """Best-effort worktree cleanliness check for receipt provenance.
-
-    Returns (git_dirty, worktree_patch_hash). git_dirty is True if `git
-    status --porcelain` reports ANY change (tracked or untracked).
-    worktree_patch_hash is the sha256 of `git diff HEAD --binary` (tracked
-    changes only -- untracked files are reflected in git_dirty but not
-    hashed here, since a diff can't represent a file git doesn't know about
-    yet). On any git failure, fails safe: (True, "").
-    """
     try:
         status = subprocess.run(
             ["git", "status", "--porcelain"], cwd=cwd or PROJECT_ROOT,
@@ -100,7 +79,6 @@ def get_git_dirty_and_patch_hash(cwd: Optional[Path] = None) -> tuple[bool, str]
 
 
 def get_git_commit(cwd: Optional[Path] = None) -> Optional[str]:
-    """Best-effort current commit hash for receipt provenance; None if unavailable."""
     try:
         out = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -116,30 +94,9 @@ LEGACY_COORD_SOURCE = "legacy assumption: dimensional"
 
 
 def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None) -> bool:
-    """
-    Load artifact coordinate mode metadata and resolve against CLI.
-
-    A MISSING nd_inputs key (run_config.json absent/unreadable/lacking the
-    key, and likewise for ur_stats.pkl) is distinct from an explicitly
-    recorded False: only an actually-present key counts as "recorded". A
-    missing key falls through to the next source, and ultimately to the
-    legacy-dimensional default -- WITHOUT claiming that default was
-    recorded by the artifact (metadata_source is reported as
-    LEGACY_COORD_SOURCE, never "ur_stats.pkl"/"run_config.json", when
-    nothing was actually recorded).
-
-    Returns the resolved nd_inputs boolean.
-    Raises ValueError if:
-      - CLI and an EXPLICITLY recorded artifact mode disagree, or
-      - --nd_inputs is requested against a legacy artifact with NO recorded
-        coordinate mode at all (the legacy-dimensional default cannot be
-        trusted to match a nondimensional request, so this refuses rather
-        than silently accepting the mismatch).
-    """
     artifact_nd_inputs = None
     metadata_source = None
 
-    # Try run_config.json first
     run_config_path = artifact_dir / "run_config.json"
     if run_config_path.exists():
         try:
@@ -152,8 +109,6 @@ def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None
         except Exception as e:
             print(f"[warn] Could not read run_config.json: {e}")
 
-    # Fall back to ur_stats.pkl -- only if run_config.json didn't yield an
-    # explicitly recorded value (missing file, unreadable, or lacking the key).
     if artifact_nd_inputs is None:
         ur_stats_path = artifact_dir / "ur_stats.pkl"
         if ur_stats_path.exists():
@@ -168,8 +123,6 @@ def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None
                 print(f"[warn] Could not read ur_stats.pkl: {e}")
 
     if artifact_nd_inputs is None:
-        # Coordinate mode was never recorded by this artifact at all --
-        # neither file exists/is readable, or neither has an nd_inputs key.
         metadata_source = LEGACY_COORD_SOURCE
         print(f"[warn] [coord] No recorded coordinate mode in {artifact_dir} "
               f"(no run_config.json, and ur_stats.pkl has no nd_inputs key). "
@@ -187,7 +140,6 @@ def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None
             )
         return False
 
-    # Coordinate mode WAS explicitly recorded by the artifact.
     if cli_nd_inputs is None:
         print(f"[coord] Using coordinate mode from artifact ({metadata_source}): "
               f"{'nondimensional' if artifact_nd_inputs else 'dimensional'}")
@@ -206,13 +158,6 @@ def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None
 
 
 def normalize_cfd_dataset(dataset: str) -> str:
-    """Canonicalize a dataset name/alias for compatibility comparisons.
-
-    Maps every known cylinder200 spelling to "cylinder200" and "bridge" to
-    itself. Unknown strings pass through lowercased/stripped --
-    comparing an unknown string against a canonical one simply won't match,
-    which is the correct "different dataset" outcome rather than a crash.
-    """
     ds = dataset.strip().lower()
     if ds == "bridge":
         return "bridge"
@@ -222,23 +167,6 @@ def normalize_cfd_dataset(dataset: str) -> str:
 
 
 def check_artifact_dataset_compatibility(artifact_dir: Path, requested_cfd_dataset: str) -> None:
-    """
-    Cross-check the model artifact's own recorded training dataset against
-    the CFD dataset requested for this inference run (which drives the
-    physical constants D/fn/B/m/c/k -- see main()). Without this check,
-    nothing prevents e.g. requesting cylinder200 constants against a
-    bridge-trained checkpoint.
-
-    Recorded dataset is read from run_config.json["cfd_dataset"] (preferred)
-    or ur_stats.pkl["cfd_dataset"] (fallback). Dataset identity is NEVER
-    inferred from the artifact directory name -- only from these two
-    explicit metadata fields.
-
-    Raises ValueError on a confirmed mismatch. A legacy artifact recording
-    no dataset at all is allowed through with a warning (compatibility
-    could not be verified), matching the coordinate-mode fallback's
-    backward-compatible behavior.
-    """
     recorded_dataset = None
     metadata_source = None
 
@@ -293,19 +221,14 @@ def check_artifact_dataset_compatibility(artifact_dir: Path, requested_cfd_datas
 
 
 def Newmark_beta( F, h, h_dot, h_ddot, dt, m, c, k, beta=0.25, gamma=0.5):
-    """
-    Newmark-beta
-    """
-    # coefficients
     a1 = m / (beta * dt**2) + gamma * c / (beta * dt)
     a2 = m / (beta * dt) + (gamma / beta - 1.0) * c
     a3 = (0.5 / beta - 1.0) * m + dt * (gamma / (2.0 * beta) - 1.0) * c
     kbar = k + a1
-    
-    # Next time step
+
     pbar = F + a1 * h + a2 * h_dot + a3 * h_ddot
     h_new = pbar / kbar
-    
+
     h_dot_new = (gamma / (beta * dt)) * (h_new - h) + (1.0 - gamma / beta) * h_dot \
                 + dt * (1.0 - gamma / (2.0 * beta)) * h_ddot
     h_ddot_new = (1.0 / (beta * dt**2)) * (h_new - h) - (1.0 / (beta * dt)) * h_dot \
@@ -333,8 +256,6 @@ def warmup_history(
 
     release_idx = int(np.searchsorted(times, release_t))
 
-    # Standard handoff: release + seq_len.
-    # Optional offset lets you test deeper warm-starts.
     handoff_idx = release_idx + seq_len + int(handoff_offset_steps)
 
     if handoff_idx >= len(ordered):
@@ -395,12 +316,6 @@ def diagnostic_true_force_newmark_replay(
     dt=None,
     force_timing: str = "current",
 ):
-    """
-    Replay the structure using true CFD CL/force instead of GRU-predicted CL.
-
-    If this fails, the issue is Newmark/sign/force-scaling/timing,
-    not the GRU.
-    """
     ordered = case_df.sort_values("time").reset_index(drop=True)
 
     if handoff_idx + n_steps + 1 >= len(ordered):
@@ -450,7 +365,6 @@ def diagnostic_true_force_newmark_replay(
         if not np.isfinite([h[j+1], v[j+1], a[j+1]]).all():
             raise FloatingPointError(f"Non-finite Newmark replay at step={j}")
 
-    # Compare h[1:] with CFD at handoff_idx+1 ... handoff_idx+n_steps
     cfd_h_cmp = cfd_h[handoff_idx + 1 : handoff_idx + n_steps + 1]
     cfd_v_cmp = cfd_v[handoff_idx + 1 : handoff_idx + n_steps + 1]
     cfd_a_cmp = cfd_a[handoff_idx + 1 : handoff_idx + n_steps + 1]
@@ -492,50 +406,38 @@ def run_coupled_viv(
     input_cols:   list[str],
     initial_history: np.ndarray,
     initial_state: dict,
-    # Structural parameters
-    m:            float,   # mass per unit span [kg/m]
-    c:            float,   # damping coefficient [N·s/m]
-    k:            float,   # stiffness [N/m]
-    # Flow parameters
-    rho:          float,   # fluid density [kg/m³]
-    U:            float,   # freestream velocity [m/s]
-    D:            float,   # reference depth [m]
-    n_steps:      int,     # total timesteps to simulate
-    B:          float = None,   # reference span [m]
-    dt:           float = None,   # timestep [s]
+    m:            float,
+    c:            float,
+    k:            float,
+    rho:          float,
+    U:            float,
+    D:            float,
+    n_steps:      int,
+    B:          float = None,
+    dt:           float = None,
     use_ur_context: bool = False,
     ur_value:     float = 0.0,
     ur_stats:     tuple   = (0.0, 1.0),
     device:       str = "cpu",
     nd_inputs:    bool = False,
-    e_forcing:    np.ndarray = None,  # additive residual forcing on CL, shape (n_steps,)
-    track_hidden: bool = False,  # opt-in only; default False -> zero change to existing call sites
+    e_forcing:    np.ndarray = None,
+    track_hidden: bool = False,
 ) -> dict:
-    """
-    Fully coupled GRU-structural VIV simulation.
-    
-    No CFD required. The GRU predicts CL from kinematics,
-    which drives the structural equation of motion,
-    which produces new kinematics for the next GRU prediction.
-    
-    This is the 2-way FSI loop described in the thesis.
-    """
     model.eval()
     B = D if B is None else B
     if dt is None:
         raise ValueError("dt must be provided for run_coupled_viv")
 
-    # State vectors
-    h      = np.zeros(n_steps + 1, dtype=np.float32)  # displacement
-    h_dot  = np.zeros(n_steps + 1, dtype=np.float32)  # velocity
-    h_ddot = np.zeros(n_steps + 1, dtype=np.float32) # acceleration
-    CL     = np.zeros(n_steps + 1, dtype=np.float32)  # lift coefficient
+    h      = np.zeros(n_steps + 1, dtype=np.float32)
+    h_dot  = np.zeros(n_steps + 1, dtype=np.float32)
+    h_ddot = np.zeros(n_steps + 1, dtype=np.float32)
+    CL     = np.zeros(n_steps + 1, dtype=np.float32)
 
 
     h[0]      = initial_state["h"]
     h_dot[0]  = initial_state["h_dot"]
     h_ddot[0] = initial_state["h_ddot"]
-    history   = initial_history.copy()  
+    history   = initial_history.copy()
 
     expected_features = len(input_cols) + (1 if use_ur_context else 0)
     if history.ndim != 2 or history.shape[1] != expected_features:
@@ -557,22 +459,14 @@ def run_coupled_viv(
             )
         _e = _e[:n_steps]
 
-    # Use CFD warm-start history, then update it with coupled predictions.
     ur_mean, ur_std = ur_stats
     ur_std_safe = float(ur_std) if abs(float(ur_std)) > 0 else 1.0
     ur_scaled = (ur_value - float(ur_mean)) / ur_std_safe
 
-    # Precompute scaling math once: StandardScaler.transform/inverse_transform
-    # do input validation on every call, which is real overhead at n_steps~1e5.
-    # (x - mean) / scale and (z * scale + mean) are exactly what sklearn does
-    # internally, just without the per-call validation cost.
     x_mean = x_scaler.mean_.astype(np.float32)
     x_scale = x_scaler.scale_.astype(np.float32)
     y_mean = float(y_scaler.mean_[0])
     y_scale = float(y_scaler.scale_[0])
-    # Name-keyed (not positional) so a restricted input_cols (e.g. ["vel"]
-    # for a velocity-only model) still divides each column by its own
-    # correct divisor rather than the wrong one at that array position.
     _nd_divisor_by_name = {"disp": D, "vel": U, "acc": (U * U) / D} if nd_inputs else None
     _state_names = ("disp", "vel", "acc")
 
@@ -583,7 +477,6 @@ def run_coupled_viv(
 
     with torch.inference_mode():
         for i in range(n_steps):
-
             x = torch.from_numpy(history).unsqueeze(0).to(device)
             cl_scaled, hn = model(x)
             if track_hidden:
@@ -595,7 +488,6 @@ def run_coupled_viv(
             CL_det_arr[i] = cl_det
             CL[i] = cl
 
-            # ── Step 2: compute aerodynamic force ─────────────────────
             F_aero = 0.5 * rho * U**2 * B * cl
 
             h[i+1], h_dot[i+1], h_ddot[i+1] = Newmark_beta(
@@ -608,10 +500,6 @@ def run_coupled_viv(
                 c=c,
                 k=k,
             )
-            # ── Step 4: update kinematic history window ────────────────────
-            # Push h[i] (the state that *drove* this step) so that at the next
-            # iteration the window ends at i, matching the training convention:
-            #   predict CL[i+1] from kinematics [..., h[i]].
             _state_by_name = dict(zip(_state_names, (h[i], h_dot[i], h_ddot[i])))
             new_kinematics_raw = np.array(
                 [_state_by_name[c] for c in input_cols], dtype=np.float32)
@@ -664,17 +552,16 @@ def run_coupled_viv(
         "max_abs_scaled_kinematics": float(max_abs_z_seen),
         "n_ood_warnings": int(n_ood_warnings),
         "hidden_norm": np.array(hidden_norms, dtype=np.float64) if track_hidden else None,
-        "hidden_state": np.stack(hidden_vecs, axis=0) if track_hidden else None,  # (n_steps, hidden_size)
+        "hidden_state": np.stack(hidden_vecs, axis=0) if track_hidden else None,
         "max_abs_z_trace": np.array(zmax_trace, dtype=np.float64) if track_hidden else None,
     }
 
 
-
 def main(
-    Ur: float = 6.0, # reduced velocity to simulate
-    cfd_dataset: str = "cylinder200", # dataset name for loading CFD data
-    model_dataset: str = "cylinder200", # dataset name for loading model artifacts
-    total_time: float = 300.0, # total simulation time in seconds
+    Ur: float = 6.0,
+    cfd_dataset: str = "cylinder200",
+    model_dataset: str = "cylinder200",
+    total_time: float = 300.0,
     checkpoint: str = "gru_best.pt",
     model_subdir: Optional[str] = None,
     handoff_offset_steps: int = 2000,
@@ -688,15 +575,9 @@ def main(
     replay_duration_s: Optional[float] = None,
     output_dir: Optional[str] = None,
     ):
-
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    # Where this run's own outputs (npz/png/receipt) get written. Absolute
-    # paths are used verbatim; relative ones are resolved under results/.
-    # Distinct from artifact_dir below, which is always under results/ and
-    # is where the (already-trained) model checkpoint is READ from.
     if output_dir is None:
         results_out_dir = PROJECT_ROOT / "results"
     elif Path(output_dir).is_absolute():
@@ -710,9 +591,8 @@ def main(
     else:
         artifact_dir = PROJECT_ROOT / "results" / f"gru_{model_dataset}"
         artifact_dir_base = PROJECT_ROOT / "results" / f"gru_{cfd_dataset}"
-    
 
-    # ── Load model + scalers + ur_stats ───────────────────────────────────
+
     with open(artifact_dir / "x_scaler.pkl", "rb") as f:
         x_scaler = pickle.load(f)
     with open(artifact_dir / "y_scaler.pkl", "rb") as f:
@@ -724,33 +604,26 @@ def main(
         with open(artifact_dir_base / "ur_stats.pkl", "rb") as f:
             ur_info = pickle.load(f)
 
-    # ── Resolve coordinate mode (CLI vs artifact) ──────────────────────────
-    # Determine CLI choice: None if not specified, True for --nd_inputs, False for --dim_inputs
     cli_coord_choice = None
     if args.nd_inputs:
         cli_coord_choice = True
     elif args.dim_inputs:
         cli_coord_choice = False
-    
-    # Load artifact metadata and resolve
+
     nd_inputs = load_artifact_coordinate_mode(artifact_dir, cli_coord_choice)
 
-    # ── Verify the artifact was trained on the dataset we're about to use
-    # for physical constants (D/fn/B/m/c/k) and CFD warm-start data ────────
     check_artifact_dataset_compatibility(artifact_dir, cfd_dataset)
 
 
-    # ── Ur statistics from training cases ─────────────────────────────────
     use_ur_context = bool(ur_info["use_ur_context"])
     ur_mean   = float(ur_info["mean"])
     ur_std    = float(ur_info["std"]) + 1e-8
-    print(f"Loaded scalers and UR stats: use_ur_context={use_ur_context}"  
+    print(f"Loaded scalers and UR stats: use_ur_context={use_ur_context}"
           f"mean={ur_mean:.4f}, std={ur_std:.4f}")
     print(f"y_scaler: mean={float(y_scaler.mean_[0]):.6f}  "
           f"scale={float(y_scaler.scale_[0]):.6f}")
 
 
-    # ── Physical parameters — must match UDF exactly ───────────────────────
     ds = cfd_dataset.strip().lower()
     params_Re1000 = None; bsp = None
     if ds == "bridge":
@@ -785,11 +658,6 @@ def main(
     print(f"  m={m:.6e}  c={c:.6e}  k={k:.6e}  rho={rho}  t_release={t_release:.4f}s")
 
 
-    # ── Build model (read hidden_size/input_cols from saved metrics) ───────
-    # input_cols is NOT hardcoded: a model trained on a restricted subset
-    # (e.g. --input_cols disp) has a different GRU input_size, and loading
-    # its state_dict against the wrong input_size raises immediately (a
-    # loud, unambiguous failure) rather than silently mismatching features.
     input_cols = ["disp", "vel", "acc"]
     hidden_size, num_layers = 64, 2
     if model_subdir is not None:
@@ -806,7 +674,6 @@ def main(
     input_size = len(input_cols) + (1 if use_ur_context else 0)
 
 
-    # ── Load CFD trajectory at this Ur ────────────────────────────────────
     print(f"\nLoading CFD trajectory at Ur={Ur} for warm-start...")
     if ds == "bridge":
         from viv_analysis.preprocess import load_bridge_df_cached
@@ -840,8 +707,8 @@ def main(
         tt = np.sort(np.unique(case_df["time"].to_numpy(dtype=np.float64)))
         dt = float(np.median(np.diff(tt)))
         print(f"  [bridge] Newmark dt = {dt:.6f}s  ({(1/fn)/dt:.0f} steps/cycle)")
- 
-    
+
+
     initial_history, initial_state, t_handoff, handoff_idx = warmup_history(
         cfd_case_df=case_df,
         release_t=t_release,
@@ -864,9 +731,8 @@ def main(
     print(f"  Initial state at handoff: "
           f"h={initial_state['h']:.6f}  h_dot={initial_state['h_dot']:.6f}  "
           f"h_ddot={initial_state['h_ddot']:.6f}")
-    
 
-        # Sanity check: warm-start kinematics should NOT all be zero
+
     raw_kin = case_df.iloc[handoff_idx - seq_len : handoff_idx][input_cols].to_numpy()
     raw_kin = raw_kin * float(cfd_scale)
     raw_kin = to_model_coords(raw_kin, nd_inputs, D, U, input_cols=input_cols)
@@ -875,10 +741,9 @@ def main(
         print(f"    {_col:4s} range: [{raw_kin[:,_i].min():.5f}, {raw_kin[:,_i].max():.5f}]")
 
 
-    model = VIV_GRU(input_size=input_size, hidden_size=hidden_size, 
+    model = VIV_GRU(input_size=input_size, hidden_size=hidden_size,
                     num_layers=num_layers, dropout=0.1).to(device)
-    
-    # Load checkpoint: handle both training checkpoints (with 'model' key) and raw state_dicts
+
     ckpt = torch.load(artifact_dir / checkpoint, map_location=device)
     if isinstance(ckpt, dict) and "model" in ckpt:
         model.load_state_dict(ckpt["model"])
@@ -887,7 +752,6 @@ def main(
 
     print(f"Model loaded: input_size={input_size}  hidden_size={hidden_size}")
 
-    # Guards 
     expected_features = len(input_cols) + (1 if use_ur_context else 0)
 
     if initial_history.shape != (seq_len, expected_features):
@@ -902,9 +766,6 @@ def main(
     )
 
     if run_replay_diag:
-        # Default (replay_duration_s=None) preserves the original hardcoded
-        # 5000-step window exactly, for backward compatibility with any
-        # existing caller that doesn't pass the new argument.
         replay_n_steps = (int(round(replay_duration_s / dt))
                            if replay_duration_s is not None else 5000)
         replay_current = diagnostic_true_force_newmark_replay(
@@ -947,15 +808,6 @@ def main(
             CFD_STYLE, MODEL_STYLE, TEXT_WIDTH_IN, apply_thesis_style,
         )
         apply_thesis_style()
-        # Figure is inserted in the thesis at \includegraphics[width=0.8\textwidth].
-        # apply_thesis_style()'s font sizes are absolute points, tuned so a
-        # figure saved at figsize width=TEXT_WIDTH_IN reads correctly when
-        # included at width=\textwidth (LaTeX scale factor 1, no distortion).
-        # Declaring the saved figure's width as 0.8*TEXT_WIDTH_IN here --
-        # matching its actual on-page display width -- keeps that same
-        # scale factor of 1 at this narrower inclusion width, instead of
-        # shrinking the fonts by inflating the saved figure and letting
-        # LaTeX scale it back down.
         INCLUDE_WIDTH_FRAC = 0.8
         t_star_replay = best_replay["time"] * U / D
 
@@ -979,7 +831,6 @@ def main(
     else:
         print("[info] --run_replay_diag not set; skipping Newmark replay diagnostic")
 
-    # ── Run coupled inference ─────────────────────────────────────────────
     n_steps = int((total_time - t_handoff) / dt)
     if n_steps <= 0:
         raise ValueError(
@@ -989,7 +840,6 @@ def main(
     print(f"\nRunning coupled inference for {total_time}s ({n_steps} steps)...")
     print(f"{n_steps} steps) ...")
 
-    # ── Precompute stochastic forcing vector ──────────────────────────────
     e_forcing = np.zeros(n_steps, dtype=np.float32)
     if noise_mode != "none" and residual_npz is not None:
         from viv_analysis.residual_forcing import make_forcing
@@ -997,7 +847,7 @@ def main(
         if "Ur" in d_npz and abs(float(d_npz["Ur"]) - Ur) > 1e-6:
             raise ValueError(f"residual_npz is Ur={float(d_npz['Ur'])} but run is Ur={Ur}")
         resid = np.asarray(d_npz["cl_true"], float) - np.asarray(d_npz["cl_tf"], float)
-        skip = int(5.0 / float(d_npz["dt"]))          # match the diagnostic's --skip_s 5
+        skip = int(5.0 / float(d_npz["dt"]))
         resid = resid[skip:]
         e_forcing = make_forcing(resid, n_steps, mode=noise_mode, scale=noise_scale, seed=noise_seed)
         print(f"[stochastic] mode={noise_mode} scale={noise_scale} "
@@ -1027,23 +877,16 @@ def main(
         e_forcing    = e_forcing,
     )
 
-    # ── Plot ───────────────────────────────────────────────────────────────
     t    = result["time"] + t_handoff
     h    = result["displacement"]
     CL   = result["CL"]
 
-    # ── Save coupled trajectory for harness ───────────────────────────────
     _case_df_sorted = case_df.sort_values("time")
     h_cfd_tail = _case_df_sorted["disp"].to_numpy(dtype=np.float32)
     h_cfd_tail = h_cfd_tail[handoff_idx : handoff_idx + n_steps]
-    # cl_cfd alongside h_cfd so closed_loop_metrics.py can compute CFD-side
-    # energy/phase/amplitude/frequency/stability from this npz alone,
-    # without re-loading the raw CFD dataset.
     cl_cfd_tail = _case_df_sorted["cl"].to_numpy(dtype=np.float32)
     cl_cfd_tail = cl_cfd_tail[handoff_idx : handoff_idx + n_steps]
-    # canonical subdir name (use provided subdir or fallback to model_dataset)
     _sub = model_subdir or f"gru_{model_dataset}"
-    # short tags to ensure filenames are unique per experimental factors
     _nd_tag = "_nd" if nd_inputs else ""
     _noise_scale_tag = f"s{noise_scale:.6g}"
     _cfd_scale_tag = f"_scale{cfd_scale:g}"
@@ -1068,7 +911,6 @@ def main(
              git_dirty=bool(git_dirty), worktree_patch_hash=worktree_patch_hash or "")
     print(f"Saved coupled trajectory -> {npz_out}")
 
-    # ── JSON receipt (human-readable mirror of the NPZ metadata) ───────────
     receipt = {
         "cfd_dataset": cfd_dataset,
         "Ur": float(Ur),
@@ -1090,7 +932,6 @@ def main(
         json.dump(receipt, f, indent=2)
     print(f"Saved receipt -> {receipt_out}")
 
-    # ── Plot: GRU result alongside CFD ground truth for comparison ────────
     CFD_t = case_df["time"].values
     CFD_h = case_df["disp"].values
     CFD_cl = case_df["cl"].values
@@ -1104,10 +945,9 @@ def main(
                     label=f"handoff t={t_handoff:.1f}s")
     axes[0].axhline(0, color="0.8", lw=1, ls=":")
     axes[0].set_ylabel(r"$h/D$")
-    # axes[0].set_title(f"Coupled GRU-Structural VIV  —  Ur={Ur} — {} (post-release warm-start)")
     axes[0].legend(loc="upper right")
     axes[0].grid(True, alpha=0.3)
- 
+
     axes[1].plot(CFD_t, CFD_cl, lw=0.8, color="black", alpha=0.7, label="CFD")
     axes[1].plot(t, CL, lw=1, color="tab:orange", alpha=0.9, label=present_model_label(ds, "GRU coupled"))
     axes[1].axvline(t_handoff, color="green", ls="--", lw=1, alpha=0.7)
@@ -1122,7 +962,6 @@ def main(
     plt.close(fig)
     print(f"\nSaved coupled VIV plot to {out_png}")
 
-    # ── Steady-state amplitude ─────────────────────────────────────────────
     ss_start = int(0.7 * len(h))
     amp      = (h[ss_start:].max() - h[ss_start:].min()) / (2 * D)
     print(f"\nSteady-state A/D = {amp:.4f}")
@@ -1147,14 +986,13 @@ if __name__ == "__main__":
                          "Default 2000 = existing sweep; vary for noise floor.")
     parser.add_argument("--cfd_scale", type=float, default=1.0,
                     help="Scale factor for physical CFD kinematics at handoff")
-    
-    # Coordinate mode: mutually exclusive
+
     coord_group = parser.add_mutually_exclusive_group()
     coord_group.add_argument("--nd_inputs", action="store_true",
                     help="Use non-dimensional physical inputs [h/D, hdot/U, hddot/(U^2/D)]")
     coord_group.add_argument("--dim_inputs", action="store_true",
                     help="Use dimensional (physical) inputs [h, hdot, hddot]; overrides artifact mode")
-    
+
     parser.add_argument("--residual_npz", default=None,
                     help="npz with cl_true, cl_tf (the TF-residual you measured)")
     parser.add_argument("--noise_mode", default="none",
@@ -1193,4 +1031,3 @@ if __name__ == "__main__":
         replay_duration_s=args.replay_duration_s,
         output_dir=args.output_dir,
     )
-    

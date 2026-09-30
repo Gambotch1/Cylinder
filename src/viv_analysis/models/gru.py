@@ -1,5 +1,3 @@
-# src/models/gru.py
-
 from __future__ import annotations
 import numpy as np
 import torch
@@ -13,18 +11,9 @@ from viv_analysis.utils import parse_ur_label, segment_by_time_gaps
 
 
 class VIV_GRU(nn.Module):
-    """
-    GRU surrogate for aerodynamic lift coefficient prediction.
-    
-    Processes kinematics as a sequence.
-    Hidden state carries phase information across timesteps.
-    
-    Input shape:  (batch, seq_len, n_features)
-    Output shape: (batch,)  — CL at the last timestep
-    """
     def __init__(
         self,
-        input_size:  int = 3,     # [disp, vel, acc]
+        input_size:  int = 3,
         hidden_size: int = 64,
         num_layers:  int = 2,
         dropout:     float = 0.1,
@@ -48,24 +37,15 @@ class VIV_GRU(nn.Module):
 
     def forward(
         self,
-        x:  torch.Tensor,                    # (batch, seq_len, input_size)
-        h0: Optional[torch.Tensor] = None,   # (num_layers, batch, hidden_size)
+        x:  torch.Tensor,
+        h0: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         out, hn = self.gru(x, h0)
-        pred = self.head(out[:, -1, :]).squeeze(-1)   # (batch,)
+        pred = self.head(out[:, -1, :]).squeeze(-1)
         return pred, hn
 
 
 class VIVSequenceDataset(Dataset):
-    """
-    Dataset that returns (sequence, target) pairs.
-
-    sequence shape: (seq_len, n_features)
-    target:         scalar CL value
-
-    Unlike the ELM dataset, we do NOT flatten — the GRU needs the
-    sequence structure.
-    """
     def __init__(
         self,
         df:           pd.DataFrame,
@@ -102,10 +82,6 @@ class VIVSequenceDataset(Dataset):
             if len(ordered) <= seq_len:
                 continue
 
-            # Never let a window span a time-axis discontinuity (a
-            # discontinuous CFD restart -- see Ur=6.9491's ~77.5s gap):
-            # each segment is windowed independently, exactly as the whole
-            # array would have been in the no-gap case.
             for seg_start, seg_end in segment_by_time_gaps(times):
                 start_i = max(seg_start + seq_len, release_idx + seq_len)
                 if start_i >= seg_end:
@@ -119,8 +95,8 @@ class VIVSequenceDataset(Dataset):
         return len(self.targets)
 
     def __getitem__(self, idx: int) -> tuple:
-        x = torch.from_numpy(self.sequences[idx])   # (seq_len, n_features)
-        y = torch.tensor(self.targets[idx], dtype=torch.float32)  # scalar
+        x = torch.from_numpy(self.sequences[idx])
+        y = torch.tensor(self.targets[idx], dtype=torch.float32)
         return x, y, self.case_names[idx]
 
 
@@ -129,7 +105,6 @@ def fit_scalers(
     input_cols:   list[str],
     target_col:   str,
 ) -> tuple[StandardScaler, StandardScaler]:
-    """Fit scalers on training data only."""
     x_vals = train_df[input_cols].to_numpy(dtype=np.float32)
     y_vals = train_df[target_col].to_numpy(dtype=np.float32)
     x_scaler = StandardScaler().fit(x_vals)
@@ -144,7 +119,6 @@ def apply_scalers_to_df(
     input_cols:  list[str],
     target_col:  str,
 ) -> pd.DataFrame:
-    """Return a copy of df with input cols and target col scaled."""
     df = df.copy()
     df[input_cols]  = x_scaler.transform(df[input_cols].to_numpy(dtype=np.float32))
     if y_scaler is not None:

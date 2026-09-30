@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""Two-branch rollout-informed refinement for the bridge GRU surrogate.
-
-This driver implements the method described by
-``sec:bridge_rollout_refinement`` and is intentionally separate from the
-period-based curriculum driver in ``train_rollout.py``.
-
-Objective
----------
-
-    L = L_TF + lambda_roll * L_state_roll
-
-``L_TF`` is evaluated on independent CFD-prescribed GRU windows.  The
-rollout branch places the same GRU inside the differentiable
-GRU -> force -> Newmark-beta -> generated-state feedback loop and compares
-the generated displacement and velocity with the corresponding CFD states.
-Both branches use the same sampled intervals and update only GRU parameters.
-
-The baseline architecture, weights, scalers, Ur statistics, and recorded
-train/validation/test partition are reused without refitting.  Test cases are
-recorded in the output metadata but are never loaded for training or model
-selection.
-"""
 from __future__ import annotations
 
 import argparse
@@ -131,7 +109,6 @@ def load_baseline(artifact_dir: Path, device: str) -> dict:
 
 
 def load_raw_bridge_data():
-    """Return physical bridge data; ND conversion occurs exactly once later."""
     D = float(config["bridge_D_ref"])
     fn = float(config["bridge_fn_hz"])
     structural = bridge_structural_params()
@@ -180,13 +157,6 @@ def build_tf_batch_for_starts(
     fn: float,
     device: str,
 ) -> dict:
-    """Build one independent CFD-window example for every rollout start.
-
-    The teacher-forced branch retains the aerodynamic mapping; it does not
-    need to materialize every heavily-overlapping window from the rollout
-    interval.  One target per sampled rollout start keeps this branch
-    independent and avoids an unnecessary ``B * H * seq_len`` GRU graph.
-    """
     batches = [
         build_tf_batch_from_case(
             case_df=case_df,
@@ -228,7 +198,6 @@ def two_branch_losses(
     B_ref: float,
     device: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Evaluate the independent TF branch and differentiable state branch."""
     rollout_batch = build_batch_from_case(
         case_df=case_df,
         case_name=case_name,
@@ -327,7 +296,6 @@ def validate(
     lambda_roll: float,
     seed: int,
 ) -> dict:
-    """Evaluate fixed validation starts without touching test cases."""
     was_training = model.training
     model.eval()
     per_horizon: dict[str, dict] = {}

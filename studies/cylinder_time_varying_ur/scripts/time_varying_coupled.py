@@ -1,31 +1,3 @@
-"""
-Generalization of viv_analysis.coupled_inference.run_coupled_viv to a
-TIME-VARYING reduced velocity Ur(t), for the operating-condition-
-continuation study (studies/cylinder_time_varying_ur/).
-
-Reuses, unmodified, imported directly from production code:
-  - Newmark_beta            (the structural integrator itself)
-  - warmup_history          (the one-time CFD warm-start builder)
-  - to_model_coords         (ND-transform, name-keyed divisors)
-  - VIV_GRU                 (model class)
-  - the run's own frozen x_scaler/y_scaler/ur_stats
-
-Nothing here reimplements or modifies the structural solver. What IS new
-is the per-step orchestration loop itself (run_coupled_viv hardcodes a
-single scalar U/ur_value for its entire duration; there is no way to pass
-it a schedule). test_time_varying_ur.py's constant-Ur regression test
-proves this generalization collapses to run_coupled_viv's own output
-within floating-point tolerance when the schedule is degenerate (constant).
-
-Critical invariant (see the module docstring's "Input-history handling"
-requirement): the rolling `history` buffer is a FIFO (np.roll + overwrite
-the last row) exactly as in run_coupled_viv. A row, once written using
-step i's Ur_i/U_i, is NEVER revisited or renormalized when Ur changes at
-a later step -- it only leaves the window naturally as the roll evicts it.
-This is not an added safeguard; it is the same mechanism run_coupled_viv
-already uses for its (constant) Ur, simply carried through unchanged while
-U_i/Ur_i now vary per step.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -41,7 +13,7 @@ if str(_SRC) not in sys.path:
 
 from viv_analysis.coupled_inference import Newmark_beta  # noqa: E402
 
-CYLINDER200_RE = 200.0  # matches config['cylinder200_Re'] -- constant-Re family
+CYLINDER200_RE = 200.0
 
 
 def run_coupled_viv_time_varying_ur(
@@ -69,21 +41,6 @@ def run_coupled_viv_time_varying_ur(
     re: float = CYLINDER200_RE,
     track_history_provenance: bool = False,
 ) -> dict:
-    """Time-varying-Ur generalization of run_coupled_viv.
-
-    Ur_schedule[i] is the reduced velocity active DURING step i: it drives
-    both this step's force scaling (F_aero = 0.5*rho*U_i**2*B*CL) and the
-    Newmark update from state i to i+1, AND the ND-normalization of the
-    new history row appended at the end of step i -- exactly mirroring how
-    run_coupled_viv uses its single scalar U/ur_value for both purposes
-    within one iteration.
-
-    track_history_provenance (opt-in, default False -> zero cost when
-    unused): also returns history_U_provenance / history_Ur_provenance,
-    parallel rolling buffers recording which U_j/Ur_j produced each row
-    currently in the model-input window -- used only by the regression
-    tests to prove old rows are never renormalized.
-    """
     model.eval()
     B = D if B is None else B
     if dt is None:
@@ -97,17 +54,11 @@ def run_coupled_viv_time_varying_ur(
             "are restricted to displacement/velocity (+ Ur context) by "
             "explicit requirement.")
 
-    # float32 throughout, matching run_coupled_viv exactly (not float64) --
-    # otherwise a constant-Ur schedule accumulates a tiny but real
-    # numerical divergence from run_coupled_viv's own float32 rounding
-    # over enough steps, which would defeat the constant-Ur regression
-    # test's purpose (bit-for-bit-equivalent floating-point path, not just
-    # "close" for an unrelated reason).
     h = np.zeros(n_steps + 1, dtype=np.float32)
     h_dot = np.zeros(n_steps + 1, dtype=np.float32)
     h_ddot = np.zeros(n_steps + 1, dtype=np.float32)
     CL = np.zeros(n_steps + 1, dtype=np.float32)
-    U_arr = np.zeros(n_steps, dtype=np.float64)  # metadata only, not fed through fp32 math
+    U_arr = np.zeros(n_steps, dtype=np.float64)
     mu_arr = np.zeros(n_steps, dtype=np.float64)
     F_L_arr = np.zeros(n_steps, dtype=np.float32)
 
@@ -132,8 +83,6 @@ def run_coupled_viv_time_varying_ur(
     _state_names = ("disp", "vel", "acc")
 
     if track_history_provenance:
-        # Parallel buffers, rolled identically to `history` -- row j here
-        # records the U/Ur that produced history[j], NOT the current step's.
         hist_U_prov = np.full(history.shape[0], np.nan, dtype=np.float64)
         hist_Ur_prov = np.full(history.shape[0], np.nan, dtype=np.float64)
     else:

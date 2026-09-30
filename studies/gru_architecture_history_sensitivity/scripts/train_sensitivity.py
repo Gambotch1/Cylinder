@@ -1,32 +1,3 @@
-"""
-Architecture/history-length sensitivity training wrapper.
-
-Trains one (dataset, hidden_size, num_layers, seq_len, seed) configuration
-from scratch by calling viv_analysis.train_gru.main() in-process, after
-temporarily overriding config.config['hidden_size']/['num_layers'] --
-train_gru's own CLI has no flag for those two, and the study is not allowed
-to modify production code, so this is the "wrapper inside the study
-directory" the task calls for. --seq_len IS already a native train_gru CLI
-flag and is passed straight through, unmodified.
-
-Output is redirected out of results/ into this study's own results/ tree
-purely via train_gru's existing --exp_subdir flag (a relative path with
-'..' components) -- see _common.exp_subdir_arg. No production file is
-touched, and existing production result directories are never written to.
-
-Every invocation unconditionally passes --skip_test_eval (the opt-in
-production flag added to train_gru.py for this study): the test dataframe/
-loader is never built, test inference never runs, and no test metric/plot/
-artifact is produced. There is no post-hoc redaction step and no
-_test_locked/ directory -- prevention, not concealment. The only place this
-study ever computes a test metric is scripts/unlock_test_evaluation.py,
-gated behind an already-frozen, configuration-level selection manifest.
-
-Everything else (dropout, lr, weight_decay, batch_size, epochs, patience,
-noise_std, input_cols, nd_inputs, use_ur_context) is held fixed at the
-Stage-0-audited production baseline (studies/.../configs/architecture_grid.json
-fixed_hyperparameters) for every architecture/history point.
-"""
 from __future__ import annotations
 
 import argparse
@@ -141,7 +112,7 @@ def main() -> None:
 
     param_count = sum(
         p.numel() for p in VIV_GRU(
-            input_size=len(fixed["input_cols"]) + 1,  # +1 for Ur context
+            input_size=len(fixed["input_cols"]) + 1,
             hidden_size=args.hidden_size,
             num_layers=args.num_layers,
             dropout=fixed["dropout"],

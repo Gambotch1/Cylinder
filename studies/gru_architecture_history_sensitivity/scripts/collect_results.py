@@ -1,16 +1,3 @@
-"""
-Aggregates study_receipt.json + open_loop_val_metrics.json +
-closed_loop_eval/closed_loop_summary.json (validation-only outputs; no test
-metric exists anywhere in this study until unlock_test_evaluation.py runs)
-across all seeds for every (dataset, stage, architecture/history point)
-directory under studies/.../results/, and writes a combined per-run table
-plus a median/IQR-aggregated table (one row per CONFIGURATION, aggregated
-across the 3 seeds, with the seed list preserved rather than averaged away)
-to reports/. Never reads closed_loop_train_diagnostic/ output (see
-evaluate_closed_loop_train_diagnostic.py) -- that directory is excluded
-from selection by construction, since this function only ever globs
-closed_loop_eval/.
-"""
 from __future__ import annotations
 
 import argparse
@@ -99,12 +86,6 @@ def aggregate(df: pd.DataFrame) -> pd.DataFrame:
         row = dict(zip(group_cols, key))
         row["n_seeds"] = len(grp)
         row["seeds"] = sorted(grp["seed"].tolist())
-        # "Reject configurations with missing runs" means exactly the 3
-        # required seeds, not merely "whichever seeds happen to have a
-        # study_receipt.json" -- a config where 1 of 3 seeds failed (e.g.
-        # a CUDA OOM during training) must never be ranked as if the
-        # other 2 seeds were the whole story, which is what a bare
-        # grp["valid"].all() would do (it is silent about missing rows).
         has_all_required_seeds = set(grp["seed"].tolist()) == set(REQUIRED_SEEDS)
         row["all_valid"] = bool(grp["valid"].all()) and has_all_required_seeds
         for c in numeric_cols:
@@ -124,17 +105,6 @@ def _fmt_median_iqr(median, iqr, decimals=3) -> str:
 
 
 def format_collection_report(dataset: str, agg: pd.DataFrame) -> pd.DataFrame:
-    """The one-row-per-architecture (never one row per seed) review table:
-    Dataset | Hidden size | Layers | Parameters | Open-loop R2 median[IQR]
-    | Stable runs | Closed-loop amplitude error median[IQR] | Worst error.
-    Built directly from aggregate()'s already seed-aggregated rows.
-
-    "Stable runs" and the amplitude-error columns read from the settled_
-    lco subset for bridge (validation_*_among_settled_lco), since the
-    amplitude-gate framework only scores settled_lco cases there -- see
-    the same convention documented in select_configuration.py's
-    _closed_loop_rank_cols.
-    """
     if agg.empty:
         return pd.DataFrame()
     if dataset == "bridge":

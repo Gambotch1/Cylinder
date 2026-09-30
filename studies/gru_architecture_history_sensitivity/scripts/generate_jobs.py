@@ -1,48 +1,3 @@
-"""
-Freezes the study manifest and generates LSF (bsub) job arrays into jobs/.
-
-Two modes:
-  --freeze-manifest   Combine configs/*.json + manifests/stage0_audit.json
-                       into the single frozen manifests/study_manifest.json.
-                       Must be run (and audit_pipeline.py must have already
-                       run) before job generation.
-  (default)            Read manifests/study_manifest.json and emit bsub
-                       scripts into jobs/. Never reconstructs the grid from
-                       configs/*.json directly -- always goes through the
-                       frozen manifest, per the task's explicit requirement.
-
-Cluster conventions (queue, GPU request, module/venv activation, env vars)
-are copied from the repo's existing working submission scripts
-(gen_train_missing_ablations.bsub / gen_eval_missing_ablations_batch*.bsub),
-not re-derived.
-
-Stage 2 job scripts: each dataset gets its OWN selection manifest file,
-manifests/selection_manifest_{dataset}_stage1.json (never a shared/
-unqualified filename -- cylinder200 and bridge freeze independently, and a
-shared filename would let freezing one silently overwrite the other's,
-which is exactly what happened once during this study before this was
-fixed). At generation time, this script checks whether that dataset's own
-manifest exists and is frozen:
-  - NOT frozen yet: writes jobs/stage2_train_eval_{dataset}_DISABLED.bsub --
-    #BSUB directives commented out, and the script body itself also refuses
-    to run (exits 1) if the manifest still isn't frozen by the time anyone
-    tries to run it directly.
-  - Frozen: writes jobs/stage2_train_eval_{dataset}.bsub -- a genuinely
-    submittable array (real #BSUB directives), with the selected
-    (hidden_size, num_layers) baked in from that manifest. The runtime
-    frozen-check is kept in BOTH cases as a second line of defense, not
-    just skipped once generation-time sees frozen=true.
-Nothing in this script submits any job -- it only writes files.
-
-The generated stage1_{open,closed}_loop_validation job arrays call
-evaluate_open_loop.py / evaluate_closed_loop.py only -- both restricted to
-the canonical VALIDATION partition by hard assertion. This script never
-generates a job for evaluate_closed_loop_train_diagnostic.py (training-case
-diagnostics, including the bridge Ur=6.7385 mechanistic control) or
-unlock_test_evaluation.py (test-partition evaluation) -- both are run
-manually, by name, outside any generated array, and have no effect on
-selection.
-"""
 from __future__ import annotations
 
 import argparse
@@ -128,8 +83,6 @@ def _write_train_array(manifest: dict, dataset: str) -> Path:
 
 
 def _write_eval_array(manifest: dict, kind: str) -> Path:
-    """kind in {'open_loop', 'closed_loop'}; one array spanning both
-    datasets' Stage 1 points (cylinder200 first, then bridge)."""
     points_cyl = [("cylinder200", H, L, seed, manifest["architecture_grid"]
                     ["dataset_history"]["cylinder200"]["seq_len"])
                   for H, L, seed in _stage1_points(manifest)]
@@ -157,16 +110,6 @@ def _write_eval_array(manifest: dict, kind: str) -> Path:
 
 
 def _write_stage2_disabled(manifest: dict, dataset: str) -> Path:
-    """Writes jobs/stage2_train_eval_{dataset}.bsub (real, submittable
-    #BSUB directives) if this dataset's OWN selection_manifest_{dataset}_
-    stage1.json is already frozen at generation time, otherwise jobs/
-    stage2_train_eval_{dataset}_DISABLED.bsub (directives commented out).
-    Either way the script body keeps its own runtime frozen-check as a
-    second line of defense -- generation-time and run-time can disagree
-    (e.g. this was regenerated before freezing, then the file got frozen
-    later without regenerating), so the runtime check is never skipped
-    just because generation-time already saw frozen=true.
-    """
     points = list(_stage2_points(manifest, dataset))
     job_name = f"stage2_train_eval_{dataset}"
     study_rel = STUDY_ROOT.relative_to(REPO_ROOT)
@@ -246,10 +189,6 @@ def _write_stage2_disabled(manifest: dict, dataset: str) -> Path:
 
     out = STUDY_ROOT / "jobs" / out_name
     out.write_text("\n".join(lines) + "\n")
-    # If this dataset was previously ungenerated (or generated while still
-    # unfrozen) and is now frozen, an old *_DISABLED.bsub for it would
-    # otherwise linger alongside the new enabled one -- remove it so
-    # there's exactly one, unambiguous script per dataset.
     stale = STUDY_ROOT / "jobs" / f"{job_name}_DISABLED.bsub"
     if is_frozen and stale.exists() and stale != out:
         stale.unlink()

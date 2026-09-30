@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-Compare closed-loop (coupled-inference) A/D sweeps from two or more
-evaluate_all.py runs -- merges their sweep_results.csv on Ur and produces
-one combined comparison plot + CSV.
-"""
 import argparse
 from pathlib import Path
 

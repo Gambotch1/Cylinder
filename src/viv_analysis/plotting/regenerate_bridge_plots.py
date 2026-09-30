@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-Regenerate bridge closed-loop (coupled GRU-structural) thesis figures from
-ALREADY-SAVED results
-
-Usage:
-    python -m src.viv_analysis.plotting.regenerate_bridge_plots \
-        --coupled_eval_dir gru_bridge_p0_nd_context_noacc_final22_coupled_eval \
-        --model_column gru_bridge_p0_nd_context_noacc \
-        --thesis
-"""
 from __future__ import annotations
 
 import argparse
@@ -58,11 +48,6 @@ def _load_case(npz_path: Path, cfd_df: pd.DataFrame):
 def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame,
                              dataset_note: str | None,
                              appendix_font_scale: float = 1.0) -> dict[float, dict]:
-    """appendix_font_scale != 1.0: writes to thesis_figures/appendix_narrow/
-    instead of thesis_figures/ -- see regenerate_cylinder_plots.py's
-    identical parameter for why (no separate "representative" filename for
-    closed-loop figures, so in-place regeneration at a narrower scale would
-    clobber whichever case is used as the full-width main-text figure)."""
     thesis_dir = coupled_eval_dir / "thesis_figures"
     if appendix_font_scale != 1.0:
         thesis_dir = thesis_dir / "appendix_narrow"
@@ -75,7 +60,6 @@ def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame,
 
         model_mask = case["t"] <= 200
 
-        # CFD trajectory mask
         cfd_mask = case["CFD_t"] <= 200
         fn = config["bridge_fn_hz"]
         U = case["Ur"] * fn * case["D"]
@@ -93,9 +77,6 @@ def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame,
 
 
 def _load_partition_by_ur(model_column: str) -> dict[float, str]:
-    """train/val/test label per Ur, from the model's OWN training-time
-    metrics_gru.json (case_split) -- not re-derived, since that's the one
-    place the split was actually decided."""
     from viv_analysis.utils import parse_ur_label
 
     metrics_path = PROJECT_ROOT / "results" / model_column / "metrics_gru.json"

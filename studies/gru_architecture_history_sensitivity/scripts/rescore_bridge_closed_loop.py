@@ -1,21 +1,3 @@
-"""
-One-off recovery: regenerates status_aware_report.csv and closed_loop_
-summary.json for every bridge Stage N run, from the ALREADY-SAVED
-sweep_results.csv and (now correctly relocated, see migrate_misplaced_
-closed_loop_output.py) npz files -- WITHOUT re-running run_coupled_sweep
-(no coupled simulation, no GPU work). Reproduces evaluate_closed_loop.py's
-bridge branch (build_status_aware_report + the same summary dict) exactly,
-verbatim, so this is not a new scoring rule -- just re-deriving the same
-numbers now that the npz files are where build_status_aware_report can
-actually find them.
-
-Only touches bridge run_dirs (cylinder200's summary was already computed
-correctly in-loop by _compute_gate/compute_case_metrics during the
-original sweep -- it never depended on re-reading the npz afterward, so
-it was never wrong; only its npz FILES were misplaced, which this script
-does not need to fix since collect_results.py/select_configuration.py
-never read them).
-"""
 from __future__ import annotations
 
 import argparse

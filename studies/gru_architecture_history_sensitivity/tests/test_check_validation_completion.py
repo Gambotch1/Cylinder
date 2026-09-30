@@ -1,13 +1,3 @@
-"""
-check_validation_completion.py is the gate between the validation arrays
-and collect_results.py / select_configuration.py --freeze. These tests
-build a minimal but complete fixture tree (run_config.json,
-open_loop_val_metrics.json, closed_loop_eval/{sweep_results.csv,
-closed_loop_summary.json}, gru_best.pt/x_scaler.pkl/y_scaler.pkl,
-manifests/stage0_audit.json) and check the four things the task requires
-before selection: completion receipts, exact validation-case identities,
-a computed checkpoint/scaler hash, and zero test-case contamination.
-"""
 import json
 
 import pandas as pd
@@ -57,9 +47,6 @@ def _write_clean_run_dir(study_root, tag="H64_L2_seq1000_seed123", dataset="cyli
 
 
 def test_clean_run_dir_reports_ok(tmp_path, monkeypatch):
-    """main() only calls sys.exit(1) on a failure path -- a clean run
-    returns normally (no SystemExit at all), so success is "did not
-    raise", not "raised with code 0"."""
     import check_validation_completion as cvc
     monkeypatch.setattr(cvc, "STUDY_ROOT", tmp_path)
     _write_stage0_audit(tmp_path)
@@ -69,15 +56,12 @@ def test_clean_run_dir_reports_ok(tmp_path, monkeypatch):
     old_argv = sys.argv
     sys.argv = ["check_validation_completion.py", "--dataset", "cylinder200", "--stage", "1"]
     try:
-        cvc.main()  # must not raise
+        cvc.main()
     finally:
         sys.argv = old_argv
 
 
 def test_missing_receipts_fail_closed(tmp_path, monkeypatch):
-    """A trained run_dir (study_receipt.json present) with no validation
-    output at all must be reported as incomplete and exit nonzero -- the
-    gate must fail closed, not silently treat "nothing to check" as OK."""
     import check_validation_completion as cvc
     monkeypatch.setattr(cvc, "STUDY_ROOT", tmp_path)
     _write_stage0_audit(tmp_path)
@@ -102,9 +86,6 @@ def test_missing_receipts_fail_closed(tmp_path, monkeypatch):
 
 
 def test_wrong_validation_case_identity_is_caught(tmp_path, monkeypatch):
-    """Same COUNT (4) as canonical but different cases in
-    open_loop_val_metrics.json must be caught -- mirrors the existing
-    evaluate_open_loop.py test's own framing of this exact risk."""
     import check_validation_completion as cvc
     monkeypatch.setattr(cvc, "STUDY_ROOT", tmp_path)
     _write_stage0_audit(tmp_path)
@@ -123,14 +104,9 @@ def test_wrong_validation_case_identity_is_caught(tmp_path, monkeypatch):
 
 
 def test_test_case_ur_in_sweep_results_is_a_hard_failure(tmp_path, monkeypatch):
-    """A test-case Ur value appearing in sweep_results.csv should be
-    structurally impossible (evaluate_closed_loop.py asserts val/test
-    have no overlap before ever sweeping) -- if it happens anyway, this
-    must be caught, not waved through as "close enough"."""
     import check_validation_completion as cvc
     monkeypatch.setattr(cvc, "STUDY_ROOT", tmp_path)
     _write_stage0_audit(tmp_path)
-    # 7.0 is a TEST case (Ur7) contaminating the closed-loop sweep output.
     _write_clean_run_dir(tmp_path, extra_sweep_ur=[7.0])
 
     import sys
@@ -163,11 +139,6 @@ def test_expect_count_mismatch_fails(tmp_path, monkeypatch):
 
 
 def test_sha256_is_computed_for_every_hashable_artifact(tmp_path, monkeypatch):
-    """The hash-of-record: gru_best.pt/x_scaler.pkl/y_scaler.pkl must all
-    get a real sha256 for a clean run_dir. No training-time hash exists
-    anywhere in this study to compare against (study_receipt.json has no
-    hash field) -- this establishes the first one, it does not verify
-    against a prior value."""
     import check_validation_completion as cvc
     monkeypatch.setattr(cvc, "STUDY_ROOT", tmp_path)
     _write_stage0_audit(tmp_path)
@@ -180,4 +151,4 @@ def test_sha256_is_computed_for_every_hashable_artifact(tmp_path, monkeypatch):
     for name in ("gru_best.pt", "x_scaler.pkl", "y_scaler.pkl"):
         digest = result["sha256"][name]
         assert digest is not None
-        assert len(digest) == 64  # hex sha256
+        assert len(digest) == 64

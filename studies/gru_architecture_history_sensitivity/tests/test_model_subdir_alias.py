@@ -1,10 +1,3 @@
-"""Regression test for the coupled_inference.py --model_subdir filename-
-embedding bug found during smoke testing: a relative '..'-escaping path
-(safe for directory resolution) gets embedded verbatim into
-coupled_inference.py's output filenames too, corrupting them with
-embedded '/' characters. model_subdir_alias() must return a flat,
-slash-free name; cleanup_model_subdir_alias() must remove the symlink
-afterward, leaving no trace under results/."""
 from pathlib import Path
 
 from _common import REPO_ROOT, cleanup_model_subdir_alias, model_subdir_alias
@@ -20,8 +13,6 @@ def test_model_subdir_alias_is_flat_and_resolves_correctly(tmp_path):
         assert "/" not in alias, f"alias {alias!r} must be a flat name (no '/')"
         link_path = REPO_ROOT / "results" / alias
         assert link_path.is_symlink()
-        # coupled_inference.py resolves PROJECT_ROOT/'results'/model_subdir --
-        # confirm that join actually reaches our run_dir's contents.
         resolved = (REPO_ROOT / "results" / alias).resolve()
         assert resolved == run_dir.resolve()
         assert (REPO_ROOT / "results" / alias / "gru_best.pt").read_text() == "fake checkpoint"
@@ -48,17 +39,6 @@ def test_model_subdir_alias_does_not_collide_across_configs(tmp_path):
 
 
 def test_model_subdir_alias_is_safe_under_concurrent_calls_on_the_SAME_run_dir(tmp_path):
-    """The real 36-job validation arrays map each array index to a
-    distinct run_dir by construction (generate_jobs.py's itertools.product
-    over architectures/seeds has no duplicates), so this scenario never
-    actually happens for them. This test deliberately targets the
-    pathological case anyway -- many threads calling model_subdir_alias
-    concurrently for the IDENTICAL run_dir -- to make the "no collision"
-    claim unconditional rather than dependent on how the caller currently
-    behaves. Every returned alias must be unique, every symlink must
-    resolve to the same correct target, and cleanup must never remove a
-    symlink another thread is still using.
-    """
     import threading
     import time
 
@@ -75,12 +55,9 @@ def test_model_subdir_alias_is_safe_under_concurrent_calls_on_the_SAME_run_dir(t
     def worker():
         alias = None
         try:
-            barrier.wait()  # maximize actual overlap
+            barrier.wait()
             alias = model_subdir_alias(run_dir)
             link_path = REPO_ROOT / "results" / alias
-            # Hold the alias "in use" briefly, exactly as run_coupled_sweep
-            # does across its per-Ur subprocess loop, then confirm it is
-            # STILL our own, unmolested symlink before cleaning it up.
             time.sleep(0.01)
             assert link_path.is_symlink(), f"{alias} vanished while still in use"
             assert link_path.resolve() == run_dir.resolve()

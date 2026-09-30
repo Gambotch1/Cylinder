@@ -1,16 +1,3 @@
-"""
-Full-duration closed-loop TRAINING-CASE diagnostic sweep. NOT part of Stage
-1/2 selection.
-
-This is the "separate explicitly labelled command" for training-case
-diagnostics: it sweeps this run's train_cases (or a single --ur override,
-e.g. the bridge Ur=6.7385 mechanistic control), writes its output to
-<run_dir>/closed_loop_train_diagnostic/ -- a directory
-collect_results.py/select_configuration.py never read -- and is never
-invoked by the Stage 1/2 job arrays generate_jobs.py produces. Running this
-script has no effect on selection: nothing it writes enters the Pareto
-table, the aggregated results table, or the frozen selection manifest.
-"""
 from __future__ import annotations
 
 import argparse

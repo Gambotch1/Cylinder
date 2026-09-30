@@ -17,10 +17,6 @@ matplotlib.use("Agg")
 
 from viv_analysis.preprocess import compute_kinematics, merge_dataframes, downsample
 from viv_analysis.utils import PROJECT_ROOT, format_ur_label, present_model_label
-from viv_analysis.self_excitation import (
-    build_seed_history, analyze_run, measure_cfd_amplitude, measure_mu_from_cfd,
-    A_REF_CONVENTION,
-)
 from viv_analysis.config import config, CYLINDER200_ALIASES, cylinder200_structural_params
 
 
@@ -63,9 +59,8 @@ def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float,
 def positive_finite_float(value: str) -> float:
     """argparse `type=` validator: strictly positive, finite float.
 
-    Used by --a_ref_m so a bad value (0, negative, inf, nan, non-numeric)
-    fails fast with a clear message instead of silently corrupting the
-    v3_coherent closure (a_ref<=0 divides-by-zero inside run_coupled_viv).
+    Used by --replay_duration_s so a bad value (0, negative, inf, nan,
+    non-numeric) fails fast with a clear message.
     """
     try:
         v = float(value)
@@ -78,54 +73,43 @@ def positive_finite_float(value: str) -> float:
     return v
 
 
-def finite_admissible_mu(value: str) -> float:
-    """argparse `type=` validator for --mu: finite, non-negative float.
+def get_git_dirty_and_patch_hash(cwd: Optional[Path] = None) -> tuple[bool, str]:
+    """Best-effort worktree cleanliness check for receipt provenance.
 
-    mu is the v3_coherent NEGATIVE-DAMPING STRENGTH (see run_coupled_viv's
-    VdP-like closure term). By that term's own sign convention, mu<0 would
-    flip it into a stabilizing (positive-damping) term instead -- not what
-    "negative-damping strength" means here, so it's rejected as physically
-    inadmissible rather than silently accepted. mu=0 is valid (the v2/v3
-    closure term vanishes, reducing to the bare GRU lift).
+    Returns (git_dirty, worktree_patch_hash). git_dirty is True if `git
+    status --porcelain` reports ANY change (tracked or untracked).
+    worktree_patch_hash is the sha256 of `git diff HEAD --binary` (tracked
+    changes only -- untracked files are reflected in git_dirty but not
+    hashed here, since a diff can't represent a file git doesn't know about
+    yet). On any git failure, fails safe: (True, "").
     """
     try:
-        v = float(value)
-    except (TypeError, ValueError):
-        raise argparse.ArgumentTypeError(f"expected a float, got {value!r}")
-    if not np.isfinite(v):
-        raise argparse.ArgumentTypeError(f"expected a finite value, got {v}")
-    if v < 0:
-        raise argparse.ArgumentTypeError(
-            f"expected a non-negative value (mu is a negative-damping STRENGTH; "
-            f"a negative mu would flip the v3_coherent closure into a "
-            f"stabilizing term, which is not physically admissible here), got {v}"
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=cwd or PROJECT_ROOT,
+            capture_output=True, text=True, timeout=15, check=True,
+        ).stdout
+        dirty = len(status.strip()) > 0
+        diff = subprocess.run(
+            ["git", "diff", "HEAD", "--binary"], cwd=cwd or PROJECT_ROOT,
+            capture_output=True, timeout=15, check=True,
+        ).stdout
+        patch_hash = hashlib.sha256(diff).hexdigest() if diff else ""
+        return dirty, patch_hash
+    except Exception:
+        return True, ""
+
+
+def get_git_commit(cwd: Optional[Path] = None) -> Optional[str]:
+    """Best-effort current commit hash for receipt provenance; None if unavailable."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd or PROJECT_ROOT,
+            capture_output=True, text=True, timeout=5, check=True,
         )
-    return v
-
-
-def resolve_a_ref(amp: dict, a_ref_m: Optional[float]) -> tuple[float, str]:
-    """Resolve a_ref for the v2/v3 closure.
-
-    CLI override (--a_ref_m) wins verbatim and is never replaced by the
-    target-case measurement; omitted -> preserves the pre-existing measured
-    behavior exactly. `amp` is the dict returned by measure_cfd_amplitude.
-    """
-    if a_ref_m is not None:
-        return float(a_ref_m), "cli_override"
-    return float(amp["a_ref_peak"]), "measured_from_target_cfd"
-
-
-def resolve_mu_source(mu: Optional[float], forcing_mode: str) -> str:
-    """Label where mu_used came from, without altering mu's numeric value.
-
-    mu is only measured from CFD growth for forcing_mode=v3_coherent when
-    --mu is omitted; for other modes it's unused (defaults to 0.0 downstream).
-    """
-    if mu is not None:
-        return "cli_override"
-    if forcing_mode == "v3_coherent":
-        return "measured_from_target_cfd"
-    return "not_applicable"
+        return out.stdout.strip()
+    except Exception:
+        return None
 
 
 LEGACY_COORD_SOURCE = "legacy assumption: dimensional"
@@ -397,176 +381,6 @@ def warmup_history(
 
     return history.astype(np.float32), initial_state, handoff_time, handoff_idx
 
-def diagnostic_teacher_forcing_vs_coupled(
-    model,
-    x_scaler,
-    y_scaler,
-    case_df,
-    initial_history,
-    initial_state,
-    handoff_idx,
-    seq_len,
-    input_cols,
-    m,
-    c,
-    k,
-    rho,
-    U,
-    D,
-    B,
-    dt,
-    use_ur_context,
-    ur_value,
-    ur_stats,
-    device,
-    nd_inputs: bool,
-    n_steps=500,
-    tf_batch_size=1024,
-):
-    ordered = case_df.sort_values("time").reset_index(drop=True)
-
-    if handoff_idx + n_steps >= len(ordered):
-        n_steps = len(ordered) - handoff_idx - 1
-
-    ur_mean, ur_std = ur_stats
-    ur_std_safe = float(ur_std) if abs(float(ur_std)) > 0 else 1.0
-    ur_scaled = (float(ur_value) - float(ur_mean)) / ur_std_safe
-
-    # ------------------------------------------------------------
-    # 1. Teacher forcing: true CFD kinematics → GRU → CL
-    # ------------------------------------------------------------
-    # Scale the whole trajectory once (StandardScaler is row-wise, so this is
-    # identical to scaling each window separately) instead of re-slicing the
-    # DataFrame and re-fitting/transforming per step — needed now that n_steps
-    # can span the full post-release record (1e5+ steps) rather than a short window.
-    kinematics_full_scaled = x_scaler.transform(
-        to_model_coords(ordered[input_cols].to_numpy(dtype=np.float32), nd_inputs, D, U,
-                        input_cols=input_cols)
-    )
-    if use_ur_context:
-        ur_col_full = np.full((len(ordered), 1), ur_scaled, dtype=np.float32)
-        kinematics_full_scaled = np.hstack([kinematics_full_scaled, ur_col_full])
-
-    # Every TF window is driven by true CFD kinematics, never by the model's
-    # own output, so the n_steps windows are independent of each other and can
-    # be batched through the GRU instead of run one at a time (h0 still resets
-    # to zero per window — same convention VIVSequenceDataset trained on).
-    # sliding_window_view is a zero-copy strided view; only the per-batch
-    # slice below gets materialized, so this stays cheap even for 1e5+ steps.
-    all_windows = sliding_window_view(kinematics_full_scaled, window_shape=seq_len, axis=0)
-    all_windows = np.transpose(all_windows, (0, 2, 1))  # (n_windows, seq_len, n_features)
-
-    start_k = handoff_idx - seq_len
-    if start_k < 0 or start_k + n_steps > all_windows.shape[0]:
-        raise ValueError(
-            f"Teacher-forcing window range out of bounds: start_k={start_k}, "
-            f"n_steps={n_steps}, n_windows={all_windows.shape[0]}"
-        )
-    tf_windows = all_windows[start_k : start_k + n_steps]
-
-    tf_cl = np.empty(n_steps, dtype=np.float32)
-    model.eval()
-
-    with torch.no_grad():
-        for start in range(0, n_steps, tf_batch_size):
-            end = min(start + tf_batch_size, n_steps)
-            batch = np.ascontiguousarray(tf_windows[start:end])
-
-            x = torch.from_numpy(batch).to(device)
-            cl_s, _ = model(x)  # (B,)
-
-            cl_s = cl_s.detach().cpu().numpy().reshape(-1, 1)
-            tf_cl[start:end] = y_scaler.inverse_transform(cl_s).reshape(-1)
-
-    # ------------------------------------------------------------
-    # 2. Coupled: self-generated kinematics → GRU → CL
-    # ------------------------------------------------------------
-    coupled = run_coupled_viv(
-        model=model,
-        x_scaler=x_scaler,
-        y_scaler=y_scaler,
-        seq_len=seq_len,
-        input_cols=input_cols,
-        initial_history=initial_history,
-        initial_state=initial_state,
-        m=m,
-        c=c,
-        k=k,
-        rho=rho,
-        U=U,
-        D=D,
-        B=B,
-        dt=dt,
-        n_steps=n_steps,
-        use_ur_context=use_ur_context,
-        ur_value=ur_value,
-        ur_stats=ur_stats,
-        device=device,
-        nd_inputs=nd_inputs,
-    )
-
-    coupled_cl = coupled["CL"]
-    coupled_h = coupled["displacement"]
-
-    # ------------------------------------------------------------
-    # 3. CFD truth
-    # ------------------------------------------------------------
-    cfd_cl = ordered["cl"].to_numpy(dtype=np.float32)[handoff_idx : handoff_idx + n_steps]
-    cfd_h = ordered["disp"].to_numpy(dtype=np.float32)[handoff_idx : handoff_idx + n_steps]
-    cfd_v = ordered["vel"].to_numpy(dtype=np.float32)[handoff_idx : handoff_idx + n_steps]
-    times = ordered["time"].to_numpy(dtype=np.float32)[handoff_idx : handoff_idx + n_steps]
-
-    def rmse(a, b):
-        a = np.asarray(a)
-        b = np.asarray(b)
-        return float(np.sqrt(np.mean((a - b) ** 2)))
-
-    horizons = [10, 50, 100, 250, 500]
-    horizon_rows = []
-
-    for H in horizons:
-        if H <= n_steps:
-            horizon_rows.append({
-                "horizon_steps": H,
-                "horizon_seconds": H * dt,
-                "rmse_tf_vs_cfd_cl": rmse(tf_cl[:H], cfd_cl[:H]),
-                "rmse_coupled_vs_tf_cl": rmse(coupled_cl[:H], tf_cl[:H]),
-                "rmse_coupled_vs_cfd_cl": rmse(coupled_cl[:H], cfd_cl[:H]),
-                "max_abs_coupled_minus_tf_cl": float(np.max(np.abs(coupled_cl[:H] - tf_cl[:H]))),
-                "max_abs_h_error_over_D": float(np.max(np.abs(coupled_h[:H] - cfd_h[:H])) / D),
-            })
-
-    print("\nTeacher-forcing vs coupled diagnostic")
-    print("--------------------------------------")
-    print(f"n_steps = {n_steps}")
-    print(f"RMSE TF CL vs CFD CL       = {rmse(tf_cl, cfd_cl):.6f}")
-    print(f"RMSE coupled CL vs TF CL   = {rmse(coupled_cl, tf_cl):.6f}")
-    print(f"RMSE coupled CL vs CFD CL  = {rmse(coupled_cl, cfd_cl):.6f}")
-    print(f"Max |coupled CL - TF CL|   = {float(np.max(np.abs(coupled_cl - tf_cl))):.6f}")
-    print(f"Max |coupled h - CFD h|/D  = {float(np.max(np.abs(coupled_h - cfd_h)) / D):.6f}")
-
-    print("\nBy horizon:")
-    for row in horizon_rows:
-        print(
-            f"  {row['horizon_steps']:>4} steps "
-            f"({row['horizon_seconds']:.3f}s): "
-            f"TF-CFD CL RMSE={row['rmse_tf_vs_cfd_cl']:.5f}, "
-            f"CPL-TF CL RMSE={row['rmse_coupled_vs_tf_cl']:.5f}, "
-            f"max |h_err|/D={row['max_abs_h_error_over_D']:.5f}"
-        )
-
-    return {
-        "time": times,
-        "cfd_cl": cfd_cl,
-        "tf_cl": tf_cl,
-        "coupled_cl": coupled_cl,
-        "cfd_h": cfd_h,
-        "cfd_v": cfd_v,
-        "coupled_h": coupled_h,
-        "horizon_rows": horizon_rows,
-        "coupled_result": coupled,
-    }
-
 def diagnostic_true_force_newmark_replay(
     case_df,
     handoff_idx,
@@ -695,12 +509,6 @@ def run_coupled_viv(
     device:       str = "cpu",
     nd_inputs:    bool = False,
     e_forcing:    np.ndarray = None,  # additive residual forcing on CL, shape (n_steps,)
-    gru_off:      bool = False,       # if True, zero GRU lift (forcing-only null control)
-    # Optional closure / forcing parameters
-    forcing_mode: str = "v1_additive",
-    fn: Optional[float] = None,
-    a_ref: Optional[float] = None,
-    mu: float = 0.0,
     track_hidden: bool = False,  # opt-in only; default False -> zero change to existing call sites
 ) -> dict:
     """
@@ -768,19 +576,7 @@ def run_coupled_viv(
     _nd_divisor_by_name = {"disp": D, "vel": U, "acc": (U * U) / D} if nd_inputs else None
     _state_names = ("disp", "vel", "acc")
 
-    # ── Closure / forcing-mode setup ───────────────────────────────────
-    # Validate required inputs for non-default forcing modes and precompute
-    # oscillator frequency used by v2/v3 laws.
-    if forcing_mode != "v1_additive":
-        if fn is None or a_ref is None or a_ref <= 0:
-            raise ValueError(
-                f"forcing_mode={forcing_mode} requires fn and a_ref>0 "
-                f"(got fn={fn}, a_ref={a_ref})")
-    omega_n = 2.0 * np.pi * float(fn) if fn is not None else None
-
-    # Component logging arrays (for decomposition/diagnostics)
     CL_det_arr = np.zeros(n_steps, dtype=np.float32)
-    CL_vdp_arr = np.zeros(n_steps, dtype=np.float32)
     hidden_norms = [] if track_hidden else None
     hidden_vecs = [] if track_hidden else None
     zmax_trace = [] if track_hidden else None
@@ -793,25 +589,10 @@ def run_coupled_viv(
             if track_hidden:
                 hidden_norms.append(float(torch.linalg.norm(hn[-1]).item()))
                 hidden_vecs.append(hn[-1].detach().cpu().numpy().ravel().copy())
-            cl_det = 0.0 if gru_off else float(cl_scaled.item()) * y_scale + y_mean
-
-            # Forcing law selection:
-            # - v1_additive: additive residual forcing (legacy)
-            # - v2_multiplicative: amplitude-gained noise: (a_env/a_ref)*_e[i]
-            # - v3_coherent: VdP-like coherent closure term
-            cl_vdp = 0.0
-            if forcing_mode == "v3_coherent":
-                a_env = np.sqrt(h[i] ** 2 + (h_dot[i] / omega_n) ** 2)
-                cl_vdp = mu * (1.0 - (a_env / a_ref) ** 2) * (h_dot[i] / (omega_n * a_ref))
-                cl = cl_det + cl_vdp + _e[i]
-            elif forcing_mode == "v2_multiplicative":
-                a_env = np.sqrt(h[i] ** 2 + (h_dot[i] / omega_n) ** 2)
-                cl = cl_det + (a_env / a_ref) * _e[i]
-            else:  # v1_additive
-                cl = cl_det + _e[i]
+            cl_det = float(cl_scaled.item()) * y_scale + y_mean
+            cl = cl_det + _e[i]
 
             CL_det_arr[i] = cl_det
-            CL_vdp_arr[i] = cl_vdp
             CL[i] = cl
 
             # ── Step 2: compute aerodynamic force ─────────────────────
@@ -879,7 +660,6 @@ def run_coupled_viv(
         "acceleration": h_ddot[:n_steps],
         "CL": CL[:n_steps],
         "CL_det": CL_det_arr,
-        "CL_vdp": CL_vdp_arr,
         "e_forcing": _e[:n_steps].copy(),
         "max_abs_scaled_kinematics": float(max_abs_z_seen),
         "n_ood_warnings": int(n_ood_warnings),
@@ -904,13 +684,6 @@ def main(
     noise_mode: str = "none",
     noise_scale: float = 1.0,
     noise_seed: int = 0,
-    gru_off: bool = False,
-    ad_seed: Optional[float] = None,
-    cfd_target_AD: float = 0.23,
-    forcing_mode: str = "v1_additive",
-    mu: Optional[float] = None,
-    a_ref_m: Optional[float] = None,
-    make_tf_residual: bool = False,
     run_replay_diag: bool = False,
     replay_duration_s: Optional[float] = None,
     output_dir: Optional[str] = None,
@@ -1114,59 +887,6 @@ def main(
 
     print(f"Model loaded: input_size={input_size}  hidden_size={hidden_size}")
 
-    # ── Attractor test: seed with artificial A/D ───────────────────────
-    if ad_seed is not None:
-        print(f"\n[ATTRACTOR TEST] Seeding loop with artificial A/D = {ad_seed}")
-        
-        from viv_analysis.self_excitation import dominant_freq
-        cfd_fdom = dominant_freq(case_df["disp"].to_numpy(), dt, fn)
-        print(f"  Measured CFD true frequency: {cfd_fdom:.3f} Hz")
-        
-        initial_history, initial_state = build_seed_history(
-            ad_seed=ad_seed, seq_len=seq_len, dt=dt, D=D, fn=fn,
-            nd_inputs=nd_inputs, U=U,
-            x_scaler=x_scaler, use_ur_context=use_ur_context,
-            ur_value=Ur, ur_stats=(ur_mean, ur_std),
-            freq=cfd_fdom,
-        )
-        t_handoff = 0.0
-        n_steps = int(total_time / dt)
-
-        result = run_coupled_viv(
-            model=model, x_scaler=x_scaler, y_scaler=y_scaler,
-            initial_history=initial_history, initial_state=initial_state,
-            seq_len=seq_len, input_cols=input_cols,
-            m=m, c=c, k=k, rho=rho, U=U, D=D, B=B, dt=dt, n_steps=n_steps,
-            use_ur_context=use_ur_context, ur_value=Ur, ur_stats=(ur_mean, ur_std),
-            nd_inputs=nd_inputs,
-            device=device, e_forcing=None, gru_off=False,
-        )
-
-        h = result["displacement"]
-        diag = analyze_run(h, D=D, dt=dt, fn=fn, ad_cfd_ref=cfd_target_AD)
-        print(f"[ATTRACTOR] seed A/D={ad_seed}  final A/D={diag['ad_final']:.4f}  "
-              f"target={cfd_target_AD}  f_dom={diag['f_dominant']:.3f}  "
-              f"converged={diag['converged']}")
-
-        # save envelope for the two-sided figure
-        np.savez(
-            results_out_dir / f"attractor_Ur{Ur}_seed{ad_seed}.npz",
-            t=result["time"],
-            h=h,
-            h_dot=result["velocity"],
-            h_ddot=result["acceleration"],
-            cl=result["CL"],
-            cl_det=result.get("CL_det"),
-            D=D,
-            Ur=float(Ur),
-            ad_seed=ad_seed,
-            ad_final=diag["ad_final"],
-            env_t=diag["env_t"],
-            env_ad=diag["env_ad"],
-            cfd_target_AD=cfd_target_AD,
-        )
-        return
-
     # Guards 
     expected_features = len(input_cols) + (1 if use_ur_context else 0)
 
@@ -1180,76 +900,6 @@ def main(
         f"Model/input check: input_size={input_size}, "
         f"history_shape={initial_history.shape}"
     )
-
-    # Run TF-vs-coupled over the full post-release CFD record (not a short
-    # window) so a Welch PSD on the dumped arrays has the resolution to
-    # separate the lock-in peak from the broadband floor.
-    n_steps_tf = len(case_df) - handoff_idx - 1
-    print(f"\nTF-vs-coupled diagnostic over full post-release record: "
-          f"{n_steps_tf} steps ({n_steps_tf * dt:.1f}s)")
-
-    diag = None
-    if make_tf_residual:
-        diag = diagnostic_teacher_forcing_vs_coupled(
-            model=model,
-            x_scaler=x_scaler,
-            y_scaler=y_scaler,
-            case_df=case_df,
-            initial_history=initial_history,
-            initial_state=initial_state,
-            handoff_idx=handoff_idx,
-            seq_len=seq_len,
-            input_cols=input_cols,
-            m=m,
-            c=c,
-            k=k,
-            rho=rho,
-            U=U,
-            D=D,
-            B=B,
-            dt=dt,
-            use_ur_context=use_ur_context,
-            ur_value=Ur,
-            ur_stats=(ur_mean, ur_std),
-            device=device,
-            nd_inputs=nd_inputs,
-            n_steps=n_steps_tf,
-            tf_batch_size=256,
-        )
-
-        tf_residual_path = results_out_dir / f"tf_residual_Ur{Ur}_off{handoff_offset_steps}.npz"
-        np.savez(
-            tf_residual_path,
-            cl_true=diag["cfd_cl"],
-            cl_tf=diag["tf_cl"],
-            vel=diag["cfd_v"],
-            dt=dt,
-            fn=fn,
-        )
-        print(f"Saved TF residual arrays to {tf_residual_path}")
-
-        fig, axes = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
-
-        axes[0].plot(diag["time"], diag["cfd_cl"], color="black", lw=0.8, label="CFD CL")
-        axes[0].plot(diag["time"], diag["tf_cl"], color="tab:blue", lw=0.8, label="GRU teacher forcing")
-        axes[0].plot(diag["time"], diag["coupled_cl"], color="tab:orange", lw=0.8, label=present_model_label(ds, "GRU coupled"))
-        axes[0].set_ylabel("$C_L$")
-        axes[0].legend()
-        axes[0].grid(True, alpha=0.3)
-
-        axes[1].plot(diag["time"], diag["cfd_h"] / D, color="black", lw=0.8, label="CFD h/D")
-        axes[1].plot(diag["time"], diag["coupled_h"] / D, color="tab:green", lw=0.8, label="Coupled h/D")
-        axes[1].set_ylabel("$h/D$")
-        axes[1].set_xlabel("Time [s]")
-        axes[1].legend()
-        axes[1].grid(True, alpha=0.3)
-
-        diag_png = results_out_dir / f"diagnostic_tf_vs_coupled_Ur_{Ur}_{checkpoint}_handoff_{handoff_offset_steps}_{model_subdir}.png"
-        fig.savefig(diag_png, dpi=150)
-        plt.close(fig)
-        print(f"Saved diagnostic plot to {diag_png}_{checkpoint}")
-    else:
-        print("[info] --make_tf_residual not set; skipping TF diagnostic (diag plot and residual generation)")
 
     if run_replay_diag:
         # Default (replay_duration_s=None) preserves the original hardcoded
@@ -1352,36 +1002,6 @@ def main(
         e_forcing = make_forcing(resid, n_steps, mode=noise_mode, scale=noise_scale, seed=noise_seed)
         print(f"[stochastic] mode={noise_mode} scale={noise_scale} "
               f"resid_std={resid.std():.4f} e_std={e_forcing.std():.4f}")
-    # Closure / coherent forcing parameters: measure CFD amplitude and (optionally)
-    # derive the negative-damping mu from the CFD growth transient for v3_coherent.
-    qD = 0.5 * rho * U**2 * B
-    amp = measure_cfd_amplitude(case_df, handoff_idx, D)
-    a_ref, a_ref_source = resolve_a_ref(amp, a_ref_m)
-    if a_ref_source == "cli_override":
-        print(f"[closure] a_ref OVERRIDDEN via --a_ref_m = {a_ref:.4f} m "
-              f"(measured target-CFD peak a_ref would have been {amp['a_ref_peak']:.4f} m)")
-    print(f"[closure] CFD RMS A/D={amp['rms_AD']:.4f}  a_ref={a_ref:.4f} m  source={a_ref_source}")
-
-    mu_used = mu
-    mu_source = resolve_mu_source(mu, forcing_mode)
-    if forcing_mode == "v3_coherent" and mu is None:
-        if a_ref_source == "cli_override":
-            print(f"[closure] [WARNING] a_ref is CLI-overridden ({a_ref:.4f} m) but mu is "
-                  f"still being MEASURED from the target CFD growth transient, which uses "
-                  f"THIS a_ref internally to scale beta_true -> mu. Mixing an externally "
-                  f"supplied amplitude scale with an independently-measured growth rate "
-                  f"means mu_used will not match what would be measured under the target "
-                  f"case's own a_ref. If you intend a fully self-consistent override, also "
-                  f"pass --mu explicitly.")
-        mm = measure_mu_from_cfd(case_df, t_release, m, c, D, dt, fn, a_ref, qD)
-        mu_used = mm["mu"]
-        print(f"[closure] measured growth lambda={mm['lam']:.4f}/s (R2={mm['r2']:.3f}, "
-              f"n={mm['n']}, t=[{mm.get('t0',0):.0f},{mm.get('t1',0):.0f}]s) "
-              f"-> mu={mu_used:.4f}")
-        if mm["r2"] < 0.9:
-            print(f"  [warn] growth fit R2={mm['r2']:.2f} < 0.9 -- transient not cleanly "
-                  f"exponential; mu is unreliable, inspect the envelope before trusting v3.")
-
     result = run_coupled_viv(
         model        = model,
         x_scaler     = x_scaler,
@@ -1405,11 +1025,6 @@ def main(
         ur_value     = Ur,
         ur_stats     = (ur_mean, ur_std),
         e_forcing    = e_forcing,
-        gru_off      = gru_off,
-        forcing_mode = forcing_mode,
-        fn = fn,
-        a_ref = a_ref,
-        mu = (mu_used or 0.0),
     )
 
     # ── Plot ───────────────────────────────────────────────────────────────
@@ -1429,40 +1044,28 @@ def main(
     # canonical subdir name (use provided subdir or fallback to model_dataset)
     _sub = model_subdir or f"gru_{model_dataset}"
     # short tags to ensure filenames are unique per experimental factors
-    _gru_tag = "_gruoff" if gru_off else ""
     _nd_tag = "_nd" if nd_inputs else ""
     _noise_scale_tag = f"s{noise_scale:.6g}"
     _cfd_scale_tag = f"_scale{cfd_scale:g}"
-    # Only appears when --a_ref_m is supplied, so omitted-case filenames are
-    # byte-identical to pre-override behavior (backward compatibility).
-    _aref_tag = f"_arefm{a_ref_m:.4g}" if a_ref_m is not None else ""
-    _exp_tag = f"{_sub}_forc-{forcing_mode}{_aref_tag}_noise-{noise_mode}{_gru_tag}{_nd_tag}{_cfd_scale_tag}_{_noise_scale_tag}_seed{noise_seed}_handoff_{handoff_offset_steps}"
+    _exp_tag = f"{_sub}_forc-v1_additive_noise-{noise_mode}{_nd_tag}{_cfd_scale_tag}_{_noise_scale_tag}_seed{noise_seed}_handoff_{handoff_offset_steps}"
 
-    a_ref_over_D = float(a_ref) / float(D)
-    a_ref_convention = A_REF_CONVENTION
     coordinate_mode = "nondimensional" if nd_inputs else "dimensional"
+    git_commit = get_git_commit()
+    git_dirty, worktree_patch_hash = get_git_dirty_and_patch_hash()
+    if git_dirty:
+        print(f"[provenance] [WARNING] worktree is DIRTY (uncommitted changes present). "
+              f"For reproducible experiments, commit before running coupled inference. "
+              f"worktree_patch_hash={worktree_patch_hash[:12] if worktree_patch_hash else 'n/a'}")
 
-    # target_a_ref_diagnostic_* is ALWAYS the value measured from the target
-    # CFD case's own steady tail, regardless of a_ref_source -- kept purely
-    # for comparison against a_ref_used_m when overridden. It is never the
-    # value fed into run_coupled_viv (that's a_ref_used_m); the literal
-    # target_a_ref_diagnostic_used=False marker exists so a downstream reader
-    # can't mistake this diagnostic field for the operative one.
-    target_a_ref_diagnostic_m = float(amp["a_ref_peak"])
-
-    npz_out = results_out_dir / f"coupled_{cfd_dataset}_Ur{Ur}_{_exp_tag}_mu{mu_used}.npz"
+    npz_out = results_out_dir / f"coupled_{cfd_dataset}_Ur{Ur}_{_exp_tag}_muNone.npz"
     np.savez(npz_out, t=t, h=h, cl=CL, h_cfd=h_cfd_tail, cl_cfd=cl_cfd_tail, D=D, Ur=float(Ur),
-             model_subdir=_sub, forcing_mode=forcing_mode, noise_mode=noise_mode,
-             gru_off=bool(gru_off), noise_scale=float(noise_scale), noise_seed=int(noise_seed),
-             cl_det=result.get("CL_det"), cl_vdp=result.get("CL_vdp"), e=result.get("e_forcing"),
+             model_subdir=_sub, noise_mode=noise_mode,
+             noise_scale=float(noise_scale), noise_seed=int(noise_seed),
+             cl_det=result.get("CL_det"), e=result.get("e_forcing"),
              h_dot=result["velocity"], h_ddot=result["acceleration"],
-             a_ref_used_m=float(a_ref), a_ref_over_D=a_ref_over_D, a_ref_convention=a_ref_convention,
-             a_ref_used_source=a_ref_source,
-             target_a_ref_diagnostic_m=target_a_ref_diagnostic_m,
-             target_a_ref_diagnostic_used=False,
-             mu_value=float(mu_used or 0.0), mu_source=mu_source,
              coordinate_mode=coordinate_mode, checkpoint=checkpoint,
-             handoff_offset=int(handoff_offset_steps))
+             handoff_offset=int(handoff_offset_steps), git_commit=git_commit or "unknown",
+             git_dirty=bool(git_dirty), worktree_patch_hash=worktree_patch_hash or "")
     print(f"Saved coupled trajectory -> {npz_out}")
 
     # ── JSON receipt (human-readable mirror of the NPZ metadata) ───────────
@@ -1470,22 +1073,16 @@ def main(
         "cfd_dataset": cfd_dataset,
         "Ur": float(Ur),
         "D": float(D),
-        "forcing_mode": forcing_mode,
         "noise_mode": noise_mode,
-        "a_ref_used_m": float(a_ref),
-        "a_ref_over_D": a_ref_over_D,
-        "a_ref_convention": a_ref_convention,
-        "a_ref_used_source": a_ref_source,
-        "target_a_ref_diagnostic_m": target_a_ref_diagnostic_m,
-        "target_a_ref_diagnostic_used": False,
-        "mu_value": float(mu_used or 0.0),
-        "mu_source": mu_source,
         "coordinate_mode": coordinate_mode,
         "model_subdir": _sub,
         "checkpoint": checkpoint,
         "handoff_offset": int(handoff_offset_steps),
         "handoff_time_s": float(t_handoff),
         "total_time_s": float(total_time),
+        "git_commit": git_commit or "unknown",
+        "git_dirty": bool(git_dirty),
+        "worktree_patch_hash": worktree_patch_hash or "",
         "npz_path": str(npz_out),
     }
     receipt_out = npz_out.with_suffix(".receipt.json")
@@ -1520,7 +1117,7 @@ def main(
     axes[1].grid(True, alpha=0.3)
 
 
-    out_png = results_out_dir / f"coupled_viv_Ur{Ur}_{_exp_tag}_mu{mu_used}.png"
+    out_png = results_out_dir / f"coupled_viv_Ur{Ur}_{_exp_tag}_muNone.png"
     plt.savefig(out_png, dpi=150)
     plt.close(fig)
     print(f"\nSaved coupled VIV plot to {out_png}")
@@ -1561,31 +1158,9 @@ if __name__ == "__main__":
     parser.add_argument("--residual_npz", default=None,
                     help="npz with cl_true, cl_tf (the TF-residual you measured)")
     parser.add_argument("--noise_mode", default="none",
-                    choices=["surrogate", "replay", "white", "none"])
+                    choices=["surrogate", "white", "none"])
     parser.add_argument("--noise_scale", type=float, default=1.0)
     parser.add_argument("--noise_seed", type=int, default=0)
-    parser.add_argument("--gru_off", action="store_true",
-                    help="zero the GRU lift; forcing only (resonance null control)")
-    parser.add_argument("--ad_seed", type=float, default=None, 
-                    help="Run self-excitation attractor test. Specify initial A/D (e.g., 0.1 or 0.3)")
-    parser.add_argument("--cfd_target_AD", type=float, default=0.23, 
-                    help="The expected true limit-cycle A/D for convergence checking")
-    parser.add_argument("--forcing_mode", default="v1_additive",
-                    choices=["v1_additive", "v2_multiplicative", "v3_coherent"])
-    parser.add_argument("--mu", type=finite_admissible_mu, default=None,
-                    help="v3 negative-damping strength. Must be finite and non-negative "
-                         "(negative mu would flip the closure into a stabilizing term, "
-                         "which is not physically admissible). If omitted, MEASURED "
-                         "from CFD growth.")
-    parser.add_argument("--a_ref_m", type=positive_finite_float, default=None,
-                    help="Explicit amplitude reference for the v3_coherent (and v2_multiplicative) "
-                         "closure, in METRES. Must be finite and positive. If omitted (default), "
-                         "a_ref is measured internally from the target CFD case's steady-state tail "
-                         "(peak amplitude = sqrt(2)*RMS displacement) -- current behavior is unchanged. "
-                         "When supplied, this value is used verbatim and is NOT replaced by the "
-                         "target-case measurement.")
-    parser.add_argument("--make_tf_residual", action="store_true",
-                    help="Regenerate TF residual and diagnostic plot. Run once per Ur. Required for new Ur with --noise_mode surrogate.")
     parser.add_argument("--run_replay_diag", action="store_true",
                     help="Run Newmark replay diagnostic (oracle for force/timing validation). Safe to run on demand.")
     parser.add_argument("--replay_duration_s", type=positive_finite_float, default=None,
@@ -1614,13 +1189,6 @@ if __name__ == "__main__":
         noise_mode=args.noise_mode,
         noise_scale=args.noise_scale,
         noise_seed=args.noise_seed,
-        gru_off=args.gru_off,
-        ad_seed=args.ad_seed,
-        cfd_target_AD=args.cfd_target_AD,
-        forcing_mode=args.forcing_mode,
-        mu=args.mu,
-        a_ref_m=args.a_ref_m,
-        make_tf_residual=args.make_tf_residual,
         run_replay_diag=args.run_replay_diag,
         replay_duration_s=args.replay_duration_s,
         output_dir=args.output_dir,

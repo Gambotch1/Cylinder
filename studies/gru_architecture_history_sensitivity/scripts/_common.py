@@ -149,7 +149,7 @@ FULL_DURATION_S = {"cylinder200": 500.0, "bridge": 300.0}
 
 
 def run_coupled_sweep(run_dir: Path, cases: list[str], out_dir: Path,
-                       handoff_offset: int = 2000, forcing_mode: str = "v1_additive",
+                       handoff_offset: int = 2000,
                        window_frac: float = 0.5, pass_amp_rel_error_threshold: float = 0.20,
                        timeout_s: int = 1800, total_time_override: float | None = None) -> "tuple":
     """Full-duration closed-loop sweep over an EXPLICIT case list, reusing
@@ -213,7 +213,6 @@ def run_coupled_sweep(run_dir: Path, cases: list[str], out_dir: Path,
                 "--Ur", str(Ur),
                 "--total_time", str(total_time),
                 "--handoff_offset", str(handoff_offset),
-                "--forcing_mode", forcing_mode,
                 # .resolve() is load-bearing: coupled_inference.py's own
                 # --output_dir resolution is `PROJECT_ROOT/"results"/output_dir`
                 # for any NON-absolute path (it assumes a short name directly

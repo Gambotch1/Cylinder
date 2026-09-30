@@ -25,12 +25,6 @@ from viv_analysis.config import (
 from viv_analysis.preprocess import compute_kinematics, merge_dataframes
 from viv_analysis.utils import PROJECT_ROOT, format_ur_label, parse_ur_label
 
-CLOSURE_LABELS = {
-    "v1_additive": "Raw causal GRU (primary baseline)",
-    "v2_multiplicative": "Exploratory amplitude-gained residual forcing",
-    "v3_coherent": "Exploratory CFD-calibrated amplitude regulator",
-}
-
 CYLINDER200_D = config['cylinder200_D_ref']
 CYLINDER200_STRUCTURAL_PARAMS = cylinder200_structural_params()
 
@@ -180,12 +174,6 @@ def parse_args():
                          "--dataset bridge and --dataset cylinder200.")
     parser.add_argument("--label", default=None,
                     help="Column/legend label for this model (default: model_subdir)")
-    parser.add_argument("--forcing_mode", default="v1_additive",
-                    choices=["v1_additive", "v2_multiplicative", "v3_coherent"])
-    parser.add_argument("--mu", type=float, default=None,
-                    help="v3_coherent negative-damping strength. Omit to measure it from the "
-                         "target CFD growth transient (matches coupled_inference.py's own "
-                         "default when --mu isn't passed).")
     parser.add_argument("--total_time", type=float, default=None,
                     help="Sim end time per Ur, seconds (default: 200s cylinder, 500s bridge)")
     parser.add_argument("--t_star_end", type=float, default=None,
@@ -257,17 +245,11 @@ def main():
         output_dir = PROJECT_ROOT / "results" / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    closure_label = CLOSURE_LABELS.get(args.forcing_mode, args.forcing_mode)
     print("=" * 80)
     print("COUPLED GRU-STRUCTURAL VIV SWEEP")
-    print(f"dataset={dataset}  forcing_mode={args.forcing_mode}  ({closure_label})  "
-          f"mu={'measured from CFD' if args.mu is None else args.mu}")
+    print(f"dataset={dataset}")
     print(f"{len(Ur_list)} Ur cases: {Ur_list}")
     print(f"output_dir={output_dir}")
-    if args.forcing_mode != "v1_additive":
-        print(f"NOTE: {closure_label} is not an independently predictive closure -- "
-              f"its parameters (mu, a_ref) are measured from each target case's own "
-              f"CFD trajectory. Treat as exploratory, not the primary evaluation.")
     print("=" * 80)
 
     # Pre-compute CFD amplitudes -- load the CFD dataset ONCE and slice it
@@ -311,11 +293,8 @@ def main():
                 "--Ur", str(Ur),
                 "--total_time", str(ur_total_time),
                 "--handoff_offset", str(args.handoff_offset),
-                "--forcing_mode", args.forcing_mode,
                 "--output_dir", str(output_dir),
             ]
-            if args.mu is not None:
-                cmd += ["--mu", str(args.mu)]
 
             try:
                 out = subprocess.run(
@@ -469,7 +448,7 @@ def main():
     # Build dataframe
     rows = []
     for Ur in Ur_list:
-        row_dict = {"Ur": Ur, "CFD": cfd_amplitudes.get(Ur), "closure_mode": closure_label}
+        row_dict = {"Ur": Ur, "CFD": cfd_amplitudes.get(Ur)}
         for _, _, lbl in configs:
             row_dict[lbl] = results.get((lbl, Ur))
             gate = gate_results.get((lbl, Ur))
@@ -489,7 +468,7 @@ def main():
         ax.plot(df["Ur"], df[lbl], "s--", label=lbl)
     ax.set_xlabel("$U_r$")
     ax.set_ylabel("Steady-state $A/D$")
-    ax.set_title(f"Coupled GRU-Structural VIV: closed-loop A/D vs $U_r$ ({dataset}, {args.forcing_mode})")
+    ax.set_title(f"Coupled GRU-Structural VIV: closed-loop A/D vs $U_r$ ({dataset})")
     ax.legend()
     ax.grid(True, alpha=0.3)
 

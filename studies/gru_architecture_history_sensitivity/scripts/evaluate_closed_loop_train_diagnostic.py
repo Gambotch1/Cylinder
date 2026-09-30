@@ -28,7 +28,6 @@ def parse_args():
                         "train_cases) instead of the full training set, "
                         "e.g. --ur 6.7385 for the bridge mechanistic control.")
     p.add_argument("--handoff_offset", type=int, default=2000)
-    p.add_argument("--forcing_mode", default="v1_additive")
     p.add_argument("--window_frac", type=float, default=0.5)
     p.add_argument("--pass_amp_rel_error_threshold", type=float, default=0.20)
     p.add_argument("--timeout_s", type=int, default=1800)
@@ -65,7 +64,7 @@ def main() -> dict:
 
     sweep_df, timings, label = run_coupled_sweep(
         run_dir, sweep_cases, out_dir,
-        handoff_offset=args.handoff_offset, forcing_mode=args.forcing_mode,
+        handoff_offset=args.handoff_offset,
         window_frac=args.window_frac,
         pass_amp_rel_error_threshold=args.pass_amp_rel_error_threshold,
         timeout_s=args.timeout_s,

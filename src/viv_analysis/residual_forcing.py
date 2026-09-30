@@ -4,7 +4,6 @@ Generate a stochastic forcing vector e[0:n_steps] from a measured TF residual.
 Modes
 -----
 surrogate : phase-randomized surrogate — same power spectrum, independent phase realization
-replay    : direct replay of the residual (tiled to fill n_steps)
 white     : white noise matched to residual std (spectral-shape null control)
 none      : zeros (handled at call site; this function is not called for "none")
 """
@@ -18,7 +17,7 @@ def make_forcing(resid, n_steps, mode="surrogate", scale=1.0, seed=0):
     ----------
     resid   : 1-D array — cl_true - cl_tf for one CFD case
     n_steps : length of the output vector
-    mode    : "surrogate" | "replay" | "white"
+    mode    : "surrogate" | "white"
     scale   : scalar multiplier applied to the whole vector
     seed    : RNG seed (for surrogate and white modes)
 
@@ -47,16 +46,12 @@ def make_forcing(resid, n_steps, mode="surrogate", scale=1.0, seed=0):
             pieces.append(np.fft.irfft(fft_surr, n=n_resid))
         e = np.concatenate(pieces)[:n_steps]
 
-    elif mode == "replay":
-        tiles_needed = int(np.ceil(n_steps / n_resid))
-        e = np.tile(resid, tiles_needed)[:n_steps]
-
     elif mode == "white":
         # Same variance as the residual so energy comparison is fair.
         e = rng.normal(0.0, float(resid.std()), n_steps)
 
     else:
         raise ValueError(f"make_forcing: unknown mode '{mode}'. "
-                         "Use 'surrogate', 'replay', or 'white'.")
+                         "Use 'surrogate' or 'white'.")
 
     return (scale * e).astype(np.float32)

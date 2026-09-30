@@ -594,7 +594,13 @@ def plot_open_loop_representative(
 
     from sklearn.metrics import r2_score
     r2 = float(r2_score(cl_true, cl_pred))
-
+    caption = (
+        f"Open-loop lift-coefficient prediction for {condition_label or case_label}, "
+        f"the representative test case for the main text. The upper panel shows the "
+        f"complete analysed interval, the middle panel enlarges the first "
+        f"{zoom_duration:g} seconds, and the lower panel shows the residual "
+        f"$e_{{C_L}}$ over that same interval. The model achieved $R^2={r2:.4f}$."
+    )
     if physical_params_note:
         caption += f" Physical parameters: {physical_params_note}."
     caption_path = output_dir / f"{out_name}_{case_label}.caption.txt"

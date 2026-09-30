@@ -1,9 +1,7 @@
 """
 Thesis figures for the time-varying-Ur continuation study (item 9).
 Reuses viv_analysis.plotting.plot_style.apply_thesis_style (the shared thesis
-style) and viv_analysis.self_excitation.amplitude_envelope/dominant_freq
-(the same envelope/frequency utilities production diagnostics already
-use) rather than reimplementing either.
+style) and defines its own sliding-window amplitude envelope.
 """
 from __future__ import annotations
 
@@ -22,8 +20,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from viv_analysis.plotting.plot_style import TEXT_WIDTH_IN, apply_thesis_style  # noqa: E402
-from viv_analysis.self_excitation import amplitude_envelope  # noqa: E402
-
 MIN_ENVELOPE_WINDOWS = 5  # fewer than this is not a curve, just sparse points
 
 
@@ -33,6 +29,19 @@ def t_star_of(t_arr: np.ndarray, ur_arr: np.ndarray, fn: float) -> np.ndarray:
     Ur(t) dt -- reduces to the familiar t*=tU/D when Ur is constant."""
     return fn * np.concatenate(([0.0], np.cumsum(
         0.5 * (ur_arr[1:] + ur_arr[:-1]) * np.diff(t_arr))))
+
+
+def amplitude_envelope(h, D, dt, fn, win_cycles=3.0, step_frac=0.5):
+    """Sliding-window A/D envelope (sqrt(2)*RMS/D ~ sinusoid amplitude)."""
+    h = np.asarray(h, float)
+    win = max(int(win_cycles / fn / dt), 8)
+    step = max(int(step_frac * win), 1)
+    centers, env = [], []
+    for s in range(0, len(h) - win, step):
+        seg = h[s:s + win]
+        centers.append((s + win / 2) * dt)
+        env.append(np.sqrt(2.0) * np.std(seg) / D)
+    return np.asarray(centers), np.asarray(env)
 
 
 def envelope_or_unavailable(h: np.ndarray, D: float, dt: float, fn: float,

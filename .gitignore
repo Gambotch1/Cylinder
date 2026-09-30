@@ -1,36 +1,23 @@
-# Python cache
+# Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
 
-# Virtual environments
+# Environments and editor
 .venv/
 venv/
 env/
-
-# Notebook state
-.ipynb_checkpoints/
-
-# Local editor settings
 .vscode/
 
-# Build / run outputs
+# Data and outputs are not versioned (see README, sections 4 and 10)
+data/
+results/
+logs/
+bsub_jobs/
+studies/*/results/
+studies/*/jobs/
 *.out
-*.png
-*.log
-*.egg-info
 *.log
 *.bsub
-*.npz
-*.json
-*.pdf
-*.txt
-*.csv
-*.pkl
-*.pt
-*.tex
-*.parquet
-*.bsub
-*.sh
-/bsub_jobs

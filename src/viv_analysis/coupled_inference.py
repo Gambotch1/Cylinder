@@ -717,8 +717,7 @@ def main(
     else:
         raise ValueError(
             f"coupled_inference: unsupported cfd_dataset '{cfd_dataset}'. "
-            f"Supported: 'bridge', cylinder200 (aliases: {sorted(CYLINDER200_ALIASES)}). "
-            f"The Re=1000 cylinder pipeline has been removed."
+            f"Supported: 'bridge', cylinder200 (aliases: {sorted(CYLINDER200_ALIASES)})."
         )
 
     U = Ur * fn * D

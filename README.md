@@ -105,8 +105,8 @@ The first lines of each file explain what it does, what it reads and writes, and
 Python 3.10 or newer. A GPU is recommended for training and long closed-loop runs, but everything also runs on the CPU.
 
 ```bash
-git clone https://github.com/Gambotch1/Cylinder.git
-cd Cylinder
+git clone https://github.com/Gambotch1/viv-gru-surrogate.git
+cd viv-gru-surrogate
 python -m venv .venv && source .venv/bin/activate
 pip install -e .              # installs the package and its dependencies
 pip install pytest            # for the tests
@@ -271,7 +271,15 @@ The main tests check the Newmark integrator, the stability classification and me
 
 `results/` and `data/` are not part of the repository. Every closed-loop run writes a `.receipt.json` next to its `.npz` with the settings, the git commit and a flag plus hash for uncommitted changes. Commit your code before production runs, so the recorded commit is enough to reproduce them.
 
-The runs behind the thesis were made on an HPC cluster between July and August 2026. Several were made from a working copy with uncommitted changes. The receipts show which commit each run started from.
+This repository starts from the final, cleaned state of the code. The full development history is kept in the archived repository [Gambotch1/Cylinder](https://github.com/Gambotch1/Cylinder), including the code the thesis runs were made with. Receipts of those runs refer to commit hashes in that archive. The relevant commits are tagged there:
+
+| Tag | Commit | Content |
+|---|---|---|
+| `thesis-runs-2026-08-23` | `a34e975` | code of the August runs; receipts stamped `914e686` were made with the uncommitted code first committed here |
+| `thesis-code-2026-08-30` | `458c52a` | last complete state before the cleanup |
+| `curriculum-prototype` | `73d6031` | period-based curriculum driver (not in the thesis) |
+
+Several thesis runs were made from a working copy with uncommitted changes (`git_dirty: true` in their receipts), so these commits are the closest committed states, not exact copies.
 
 ---
 
@@ -281,7 +289,7 @@ From the thesis (Sec. 7.4–7.5):
 
 - **The bridge coupled response decays** although the open-loop prediction is accurate. Small errors in the lift–velocity phase reverse the aerodynamic work (Sec. 6.5). The rollout refinement and the residual forcing did not fix this.
 - **Aerodynamic state.** The GRU only sees the structural motion. A low-dimensional wake state (e.g. from POD of the flow field) could let it follow the flow memory.
-- **Curriculum learning.** The refinement used a 0.5 s rollout; the coupled assessment runs for about 90 structural periods. Training should move gradually from one-step to multi-cycle rollouts. A prototype period-based curriculum driver exists in the git history (commit `73d6031`, `src/viv_analysis/train_rollout.py`).
+- **Curriculum learning.** The refinement used a 0.5 s rollout; the coupled assessment runs for about 90 structural periods. Training should move gradually from one-step to multi-cycle rollouts. A prototype period-based curriculum driver exists in the archived repository (tag `curriculum-prototype`, file `src/viv_analysis/train_rollout.py`).
 - **Time-varying Ur has no CFD counterpart.** The history dependence seen in Sec. 5.7 cannot be confirmed as physical hysteresis without CFD runs with the same velocity schedule.
 - **Two degrees of freedom.** Extending to heave and pitch needs a C_M prediction and coupled structural modes.
 

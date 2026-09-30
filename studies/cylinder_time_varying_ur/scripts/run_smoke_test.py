@@ -1,3 +1,5 @@
+"""Short check of the time-varying pipeline on a development checkpoint."""
+
 from __future__ import annotations
 
 import sys

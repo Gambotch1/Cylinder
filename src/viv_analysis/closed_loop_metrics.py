@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+"""Metrics for closed-loop trajectories (thesis Sec. 4.7).
+
+All metrics use the last `window_frac` of the trajectory (default: the last half).
+    amplitude A* = A/D and frequency  - averaged over complete oscillation cycles
+    aerodynamic work per cycle        - E_f = integral of C_L h' dt over one cycle
+    lift-velocity phase               - sin(phi) = E_f / (pi A F1), F1 = lift amplitude at f_osc
+    stability label                   - stationary_lco, divergence or decay_to_rest,
+                                        from the growth of the Hilbert envelope
+
+Run as a script to score a folder of coupled_*.npz files:
+    PYTHONPATH=src python -m viv_analysis.closed_loop_metrics --npz_dir <folder>
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -10,18 +23,21 @@ from scipy.signal import hilbert
 
 
 def _same_direction_crossings(x: np.ndarray) -> np.ndarray:
+    """Indices where x crosses zero upwards."""
     sign = np.sign(x)
     sign[sign == 0] = 1.0
     return np.where((sign[:-1] < 0) & (sign[1:] >= 0))[0] + 1
 
 
 _FLAT_SIGNAL_REL_TOL = 1e-5
+# Oscillations with A/D below this are treated as noise, not as cycles.
 DEFAULT_A_STAR_NOISE_FLOOR = 1e-4
 
 
 def cycles_from_displacement(t: np.ndarray, h: np.ndarray, D: float | None = None,
                              a_star_floor: float = DEFAULT_A_STAR_NOISE_FLOOR
                              ) -> list[tuple[int, int]]:
+    """Split a displacement signal into cycles (between upward zero crossings of the velocity)."""
     if len(t) < 2:
         return []
     h_range = float(h.max() - h.min())
@@ -36,6 +52,7 @@ def cycles_from_displacement(t: np.ndarray, h: np.ndarray, D: float | None = Non
 
 
 def _windowed(t: np.ndarray, *arrays: np.ndarray, window_frac: float):
+    """Keep the last window_frac of each array."""
     n = len(t)
     start = int((1.0 - window_frac) * n)
     return (t[start:],) + tuple(a[start:] for a in arrays)
@@ -45,6 +62,7 @@ def _trustworthy_cycles(t_w: np.ndarray, h_w: np.ndarray, cycles: list[tuple[int
                         D: float | None, a_star_floor: float = DEFAULT_A_STAR_NOISE_FLOOR,
                         min_period_frac_of_median: float = 0.5
                         ) -> list[tuple[int, int]]:
+    """Drop cycles below the amplitude floor or shorter than half the median period."""
     if D is None or D <= 0:
         return cycles
     amp_ok = []
@@ -62,6 +80,7 @@ def _trustworthy_cycles(t_w: np.ndarray, h_w: np.ndarray, cycles: list[tuple[int
 
 def cycle_amplitude_and_frequency(t: np.ndarray, h: np.ndarray, D: float,
                                   window_frac: float = 0.5) -> dict:
+    """Mean cycle amplitude (A, A* = A/D) and frequency in the analysis window."""
     t_w, h_w = _windowed(t, h, window_frac=window_frac)
     cycles = _trustworthy_cycles(t_w, h_w, cycles_from_displacement(t_w, h_w, D=D), D=D)
     if not cycles:
@@ -85,6 +104,7 @@ def cycle_amplitude_and_frequency(t: np.ndarray, h: np.ndarray, D: float,
 def cycle_average_energy(t: np.ndarray, h: np.ndarray, cl: np.ndarray,
                          window_frac: float = 0.5, D: float | None = None
                          ) -> dict:
+    """Aerodynamic work per cycle, E_f = integral of C_L h' dt: mean, std and coefficient of variation."""
     t_w, h_w, cl_w = _windowed(t, h, cl, window_frac=window_frac)
     cycles = _trustworthy_cycles(t_w, h_w, cycles_from_displacement(t_w, h_w, D=D), D=D)
     if not cycles:
@@ -103,6 +123,7 @@ def cycle_average_energy(t: np.ndarray, h: np.ndarray, cl: np.ndarray,
 
 
 def single_bin_dft_amplitude(t: np.ndarray, x: np.ndarray, f: float) -> float:
+    """Amplitude of x at one frequency f (single-bin Fourier transform)."""
     x = np.asarray(x, dtype=float)
     x = x - x.mean()
     n = len(x)
@@ -114,6 +135,7 @@ def single_bin_dft_amplitude(t: np.ndarray, x: np.ndarray, f: float) -> float:
 
 def energy_and_phase(t: np.ndarray, h: np.ndarray, cl: np.ndarray, D: float,
                      window_frac: float = 0.5) -> dict:
+    """Work per cycle plus the lift-velocity phase derived from it (sin phi = E_f / (pi A F1))."""
     energy = cycle_average_energy(t, h, cl, window_frac, D=D)
     E_f, E_f_std, E_f_cv, n_cycles = (
         energy["E_f_mean"], energy["E_f_std"], energy["E_f_cv"], energy["n_cycles"]
@@ -147,6 +169,12 @@ def energy_and_phase(t: np.ndarray, h: np.ndarray, cl: np.ndarray, D: float,
 def classify_stability(t: np.ndarray, h: np.ndarray,
                        window_frac: float = 0.5,
                        stationary_frac_threshold: float = 0.10) -> dict:
+    """Label a trajectory from its envelope growth over the analysis window.
+
+    The Hilbert envelope is fitted with an exponential. If it changes by less
+    than stationary_frac_threshold (10 %) over the window: stationary_lco;
+    otherwise divergence (growing) or decay_to_rest (decaying).
+    """
     t_w, h_w = _windowed(t, h, window_frac=window_frac)
     if len(t_w) < 4:
         return {"label": "insufficient_data", "growth_rate_per_s": float("nan"),
@@ -193,6 +221,7 @@ def classify_stability(t: np.ndarray, h: np.ndarray,
 
 def compute_signal_metrics(t: np.ndarray, h: np.ndarray, cl: np.ndarray, D: float,
                            window_frac: float = 0.5) -> dict:
+    """Amplitude, frequency, energy, phase and stability of one trajectory."""
     amp = cycle_amplitude_and_frequency(t, h, D, window_frac)
     energy = energy_and_phase(t, h, cl, D, window_frac)
     stab = classify_stability(t, h, window_frac)
@@ -200,6 +229,7 @@ def compute_signal_metrics(t: np.ndarray, h: np.ndarray, cl: np.ndarray, D: floa
 
 
 def compare_surrogate_vs_cfd(surrogate: dict, cfd: dict) -> dict:
+    """Errors of the surrogate against CFD: amplitude, frequency, energy and phase."""
     out = {}
     out["A_star_error"] = surrogate["A_star"] - cfd["A_star"]
     out["A_star_rel_error"] = (out["A_star_error"] / cfd["A_star"]
@@ -219,6 +249,7 @@ def compare_surrogate_vs_cfd(surrogate: dict, cfd: dict) -> dict:
 
 
 def compute_case_metrics(npz_path: str | Path, window_frac: float = 0.5) -> dict:
+    """All metrics for one coupled npz, for the surrogate and (if stored) the CFD reference."""
     npz_path = Path(npz_path)
     d = np.load(npz_path, allow_pickle=True)
     t, h, cl = d["t"], d["h"], d["cl"]
@@ -248,6 +279,7 @@ def compute_case_metrics(npz_path: str | Path, window_frac: float = 0.5) -> dict
 
 
 def parse_args():
+    """Command-line options."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--npz_dir", required=True,
                    help="Directory of coupled_*.npz files (an evaluate_all.py "
@@ -261,6 +293,7 @@ def parse_args():
 
 
 def main():
+    """Score every coupled_*.npz in a folder and write closed_loop_metrics.csv."""
     args = parse_args()
     npz_dir = Path(args.npz_dir)
     npz_files = sorted(npz_dir.glob("coupled_*.npz"))

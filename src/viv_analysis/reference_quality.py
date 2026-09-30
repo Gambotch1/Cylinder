@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""Classify how usable each bridge CFD case is as a reference (thesis Sec. 4.7, 6.2).
+
+Only U = 16 m/s reached a clearly stationary response; other cases are
+slowly evolving or beating. They cannot all be scored with one steady amplitude.
+Each case gets one status (criteria in REFERENCE_QUALITY_CRITERIA):
+    settled_lco                    steady limit cycle: amplitude, frequency, phase and energy are compared
+    statistically_stationary_les   stable but modulated: statistics only, no single amplitude
+    transient_or_slowly_evolving   still changing: finite-horizon comparison only
+    insufficient_duration          too short after release: not scored
+    numerically_suspect            non-finite values or jumps in the record: not scored
+
+Run as a script to write results/bridge_reference_status.csv.
+"""
+
 from __future__ import annotations
 
 import numpy as np
@@ -53,6 +67,7 @@ _EVAL_PROCEDURE_BY_STATUS = {
 
 
 def _dominant_freq(t: np.ndarray, x: np.ndarray) -> float:
+    """Frequency of the largest spectral peak (Hann window, mean removed)."""
     if len(t) < 8:
         return float("nan")
     dt = float(np.median(np.diff(t)))
@@ -70,6 +85,7 @@ def _dominant_freq(t: np.ndarray, x: np.ndarray) -> float:
 
 def _numerically_suspect_reason(t: np.ndarray, h: np.ndarray, v: np.ndarray,
                                 cl: np.ndarray) -> str | None:
+    """Reason text if a record has non-finite values, time gaps or single-step displacement jumps; otherwise None."""
     for name, arr in (("disp", h), ("vel", v), ("cl", cl)):
         if not np.all(np.isfinite(arr)):
             return f"non-finite values present in {name}"
@@ -102,6 +118,7 @@ def _numerically_suspect_reason(t: np.ndarray, h: np.ndarray, v: np.ndarray,
 
 
 def classify_reference_status(row: dict) -> tuple[str, str]:
+    """Status and reason for one case, from its duration, blockwise RMS ratio and frequency stability."""
     crit = REFERENCE_QUALITY_CRITERIA
 
     if row.get("numerically_suspect_reason"):
@@ -141,6 +158,7 @@ def classify_reference_status(row: dict) -> tuple[str, str]:
 
 
 def build_reference_status_table() -> pd.DataFrame:
+    """Compute the statistics and the status of every bridge CFD case."""
     D = config["bridge_D_ref"]
     fn = config["bridge_fn_hz"]
     zeta = config["bridge_zeta"]
@@ -206,6 +224,7 @@ def build_reference_status_table() -> pd.DataFrame:
 
 
 def compute_non_lco_summary(npz_path: str, rms_agreement_band: tuple[float, float] = (0.7, 1.43)) -> dict:
+    """Scores for cases without a steady limit cycle: blockwise RMS ratio and cumulative aerodynamic work, surrogate vs CFD."""
     d = np.load(npz_path, allow_pickle=True)
     if "h_cfd" not in d.files or "cl_cfd" not in d.files:
         return {"scoring_method": "non_lco_block_energy", "unscored": True,
@@ -250,6 +269,7 @@ def compute_non_lco_summary(npz_path: str, rms_agreement_band: tuple[float, floa
 def build_status_aware_report(sweep_dir: str, model_label: str,
                               reference_status_csv: str = "results/bridge_reference_status.csv"
                               ) -> pd.DataFrame:
+    """Combine a sweep_results.csv with the reference statuses, scoring each case in the way its status allows."""
     from pathlib import Path
 
     ref = pd.read_csv(reference_status_csv).set_index("Ur")
@@ -292,6 +312,7 @@ def build_status_aware_report(sweep_dir: str, model_label: str,
 
 
 def main():
+    """Build the status table and write it to CSV."""
     table = build_reference_status_table()
     out_csv = "results/bridge_reference_status.csv"
     table.to_csv(out_csv, index=False)

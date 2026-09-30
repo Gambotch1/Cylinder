@@ -1,3 +1,5 @@
+"""Open-loop (teacher-forced) validation metrics of one trained run."""
+
 from __future__ import annotations
 
 import argparse

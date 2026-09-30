@@ -1,3 +1,16 @@
+"""Read the Fluent monitor files and build one dataframe per dataset (thesis Sec. 3.5, 4.3).
+
+Expected layout (one .out file per case and signal):
+    data/cylinder_Re_200/{disp,cl,cd,vel,force}/
+    data/Bridge/{disp,cl,cm,vel,force}/
+Bridge files are named by wind speed (e.g. disp-16.out) and are converted to
+Ur labels. The output has one row per time step with columns
+case, step, time, disp, cd (or cm), cl, vel, acc.
+
+The full bridge preprocessing takes about an hour, so its result is cached
+in data/cache/ as parquet (see load_bridge_df_cached).
+"""
+
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -24,14 +37,18 @@ BRIDGE_CL_DIR   = DIR / "data" / "Bridge" / "cl"
 BRIDGE_VEL_DIR  = DIR / "data" / "Bridge" / "vel"
 BRIDGE_FY_DIR   = DIR / "data" / "Bridge" / "force"
 
+# 19.5 m/s is left out of the bridge dataset (outlier case, decided with the supervisors).
 BRIDGE_EXCLUDED_RAW_SPEEDS = {"19.5"}
 
 BASE_DTYPES  = {"step": "int32", "time": "float32"}
 VALUE_DTYPE  = "float32"
+# Steps dropped at the start of every case to remove the impulsive start.
+# Override with the environment variable VIV_INITIAL_TRIM.
 INITIAL_TRIM_STEPS = int(os.getenv("VIV_INITIAL_TRIM", "100"))
 
 
 def read_out_files(filepath: str | Path) -> tuple[pd.DataFrame, str]:
+    """Parse one Fluent .out monitor file into columns step, val, time (header lines are skipped)."""
     try:
         data    = []
         started = False
@@ -69,6 +86,7 @@ def read_out_files(filepath: str | Path) -> tuple[pd.DataFrame, str]:
 
 
 def extract_case_name(filepath: str | Path) -> str:
+    """Case name from a file name: 'UrX' labels are normalised, otherwise the part after the last '-' or '_'."""
     stem = Path(filepath).stem
 
     ur_match = re.search(r"[Uu][Rr][_\-]?([0-9]+(?:\.[0-9]+)?)", stem)
@@ -85,6 +103,7 @@ def extract_case_name(filepath: str | Path) -> str:
 
 
 def _resolve_data_dirs(dataset: str) -> tuple[Path, Path, Path]:
+    """Directories of the disp, drag/moment and lift files for a dataset."""
     ds = dataset.strip().lower()
     if ds == "bridge":
         return BRIDGE_DISP_DIR, BRIDGE_CM_DIR, BRIDGE_CL_DIR
@@ -96,6 +115,7 @@ def _resolve_data_dirs(dataset: str) -> tuple[Path, Path, Path]:
 
 
 def _normalize_bridge_cases_to_ur(df: pd.DataFrame, fn_hz: float, d_ref: float) -> pd.DataFrame:
+    """Replace bridge wind-speed labels by Ur labels: Ur = U / (fn D)."""
     if fn_hz <= 0 or d_ref <= 0:
         raise ValueError("fn_hz and d_ref must be positive.")
     out   = df.copy()
@@ -117,6 +137,7 @@ def empty_case_frame(value_name: str) -> pd.DataFrame:
 
 
 def read_out_directory(directory: Path, value_name: str) -> pd.DataFrame:
+    """Read all .out files of one signal into a long dataframe (case, step, time, value)."""
     files = sorted(directory.glob("*.out"))
     if not files:
         print(f"No .out files found in: {directory}")
@@ -148,6 +169,7 @@ def read_out_directory(directory: Path, value_name: str) -> pd.DataFrame:
 
 
 def downsample(df: pd.DataFrame, every_n: int) -> pd.DataFrame:
+    """Keep every n-th row of each case."""
     if every_n <= 1:
         return df.copy()
     pos = df.groupby("case", sort=False).cumcount()
@@ -160,6 +182,12 @@ def merge_dataframes(
     d_ref:   float | None = None,
     convert_bridge_to_ur: bool = True,
 ) -> pd.DataFrame:
+    """Load and join displacement, drag/moment and lift for all cases of a dataset.
+
+    Only time steps present in all three signals are kept. For the bridge, the
+    excluded speeds are removed and, if convert_bridge_to_ur is True, cases are
+    relabelled by Ur (needs fn_hz and d_ref).
+    """
     ds = (dataset or os.getenv("VIV_DATASET", "cylinder200")).strip().lower()
     disp_dir, cd_dir, cl_dir = _resolve_data_dirs(ds)
 
@@ -218,6 +246,7 @@ def merge_dataframes(
 
 
 def _load_force(dataset: str) -> dict[str, pd.DataFrame]:
+    """Read the optional velocity and fluid-force monitors (used to compute acceleration)."""
     ds = dataset.strip().lower()
     known = {"bridge"} | CYLINDER200_ALIASES
     if ds not in known:
@@ -249,6 +278,15 @@ def compute_kinematics(df: pd.DataFrame, dataset: str | None = None,
                        structural_params: dict | None = None,
                        bridge_structural_params: dict | None = None,
                        acc_source: str = "force_residual") -> pd.DataFrame:
+    """Add the columns vel and acc to the merged dataframe.
+
+    vel is the recorded velocity monitor where available. acc depends on acc_source:
+      "force_residual": acc = (F_fluid - c v - k y) / m with the same m, c, k as the
+                        Newmark integrator. This makes C_L an exact linear function of
+                        [disp, vel, acc] (the acceleration leakage of thesis Sec. 5.4).
+      "savgol_vel":     numerical derivative of the smoothed recorded velocity.
+    Cases without monitors fall back to Savitzky-Golay derivatives of the displacement.
+    """
     if acc_source not in ("force_residual", "savgol_vel"):
         raise ValueError(
             f"acc_source must be 'force_residual' or 'savgol_vel', got {acc_source!r}")
@@ -301,6 +339,7 @@ def compute_kinematics(df: pd.DataFrame, dataset: str | None = None,
 
 
 def _savgol_derivative_per_case(df: pd.DataFrame, col: str) -> pd.Series:
+    """Time derivative of one column per case, after Savitzky-Golay smoothing (window 11, order 3)."""
     out = pd.Series(index=df.index, dtype="float64")
     for _, case_df in df.groupby("case", sort=False):
         t = case_df["time"].to_numpy()
@@ -315,6 +354,7 @@ def _savgol_derivative_per_case(df: pd.DataFrame, col: str) -> pd.Series:
 
 
 def _fill_missing_kinematics_with_savgol(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill missing vel/acc from Savitzky-Golay derivatives of the displacement."""
     velocities, accelerations = [], []
     for _, case_df in df.groupby("case", sort=False):
         t = case_df["time"].to_numpy()
@@ -340,10 +380,12 @@ def _fill_missing_kinematics_with_savgol(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# Increase this when the preprocessing changes, so an old cache is not reused.
 BRIDGE_CACHE_VERSION = 2
 
 
 def bridge_cache_path() -> Path:
+    """Path of the parquet cache; the name encodes downsampling, trim and cache version."""
     return (
         PROJECT_ROOT / "data" / "cache"
         / f"bridge_ds{config['bridge_downsample']}"
@@ -358,6 +400,11 @@ def load_bridge_df_cached(
     bridge_structural_params: dict,
     force_rebuild: bool = False,
 ) -> pd.DataFrame:
+    """Return the preprocessed bridge dataframe, building and caching it on first use.
+
+    Pipeline: merge_dataframes -> downsample (every 20th sample) -> compute_kinematics.
+    Use force_rebuild=True (or delete the cache file) after changing the raw data.
+    """
     cache = bridge_cache_path()
 
     if cache.exists() and not force_rebuild:

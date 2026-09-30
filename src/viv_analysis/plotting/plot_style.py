@@ -1,3 +1,9 @@
+"""Shared figure style for all thesis figures: colours, line styles and fonts.
+
+Figures are sized for a 16.5 cm text width (TEXT_WIDTH_IN), so they can be
+included at full width without rescaling the fonts.
+"""
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
@@ -37,6 +43,7 @@ ERROR_STYLE = {
 
 
 def apply_thesis_style() -> None:
+    """Set the matplotlib defaults used by every thesis figure."""
     plt.style.use("default")
     mpl.rcParams.update({
         "font.family": "STIXGeneral",

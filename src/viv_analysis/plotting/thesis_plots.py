@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Figure functions used by the regenerate_* scripts. Nothing here reads data files
+or runs a model; every function takes arrays or dataframes and writes a figure.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,6 +22,7 @@ HANDOFF_COLOR = "#777777"
 
 
 def break_at_gaps(t: np.ndarray, *ys: np.ndarray):
+    """Insert NaN at time gaps so a line plot does not connect separate pieces."""
     t = np.asarray(t)
     segs = segment_by_time_gaps(t)
     if len(segs) <= 1:
@@ -29,10 +34,12 @@ def break_at_gaps(t: np.ndarray, *ys: np.ndarray):
 
 
 def ur_tag(ur: float) -> str:
+    """Ur as a file-name-safe tag with two decimals, e.g. 6.7385 -> 'Ur6p74'."""
     return f"Ur{ur:.2f}".replace(".", "p")
 
 
 def downsample_for_display(x: np.ndarray, y: np.ndarray, max_points: int = 8000):
+    """Thin a long time series for plotting (keeps the figure file small)."""
     x = np.asarray(x); y = np.asarray(y)
     n = len(x)
     if n <= max_points:
@@ -53,6 +60,7 @@ def downsample_for_display(x: np.ndarray, y: np.ndarray, max_points: int = 8000)
 
 def build_caption(condition_label: str, r2: float, zoom_duration: float,
                   quantity: str = "lift-coefficient") -> str:
+    """Default caption text for an open-loop figure."""
     return (
         f"Open-loop {quantity} prediction for {condition_label}. "
         f"The upper panel shows the complete analysed interval, while the "
@@ -78,6 +86,7 @@ def plot_tf_result_thesis(
     linewidth_scale: float = 1.0,
     linewidth: float | None = None,
 ) -> dict:
+    """Open-loop (teacher-forced) C_L prediction vs CFD, with a zoom panel and the residual."""
     apply_thesis_style()
     if font_scale != 1.0:
         mpl.rcParams.update({
@@ -183,6 +192,7 @@ def plot_coupled_thesis(
     font_scale: float = 1.0,
     linewidth: float = 0.6,
 ) -> dict:
+    """Closed-loop displacement vs CFD for one case."""
     apply_thesis_style()
     if font_scale != 1.0:
         mpl.rcParams.update({
@@ -298,6 +308,7 @@ def plot_amplitude_response_thesis(
     out_name: str = "amplitude_response",
     font_scale: float = 1.0,
 ) -> dict:
+    """Closed-loop amplitude A* over Ur, surrogate vs CFD (and literature data if given)."""
     apply_thesis_style()
     if font_scale != 1.0:
         mpl.rcParams.update({
@@ -371,6 +382,7 @@ def plot_amplitude_response_status_aware_thesis(
     out_name: str = "amplitude_response_status_aware",
     font_scale: float = 1.0,
 ) -> dict:
+    """Bridge amplitude response where only cases with a settled CFD limit cycle get an amplitude point."""
     apply_thesis_style()
     if font_scale != 1.0:
         mpl.rcParams.update({
@@ -445,6 +457,7 @@ def plot_learning_curve_thesis(
     out_name: str = "learning_curve",
     font_scale: float = 1.0,
 ) -> dict:
+    """Training and validation loss over the epochs."""
     apply_thesis_style()
     if font_scale != 1.0:
         mpl.rcParams.update({
@@ -511,6 +524,7 @@ def plot_open_loop_representative(
     linewidth_scale: float = 1.0,
     linewidth: float | None = None,
 ) -> dict:
+    """Main-text open-loop figure for one representative test case (full record, zoom, residual)."""
     apply_thesis_style()
     if font_scale != 1.0:
         mpl.rcParams.update({
@@ -604,6 +618,7 @@ def plot_open_loop_representative(
 
 def build_metrics_table(rows: list[dict], output_dir: Path, out_name: str = "test_case_metrics",
                         caption: str | None = None) -> dict:
+    """LaTeX table of open-loop metrics per case."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 

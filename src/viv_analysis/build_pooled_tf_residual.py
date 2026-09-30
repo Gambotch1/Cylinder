@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+r"""Pooled teacher-forcing residual for the residual forcing test (thesis Sec. 6.6.2).
+
+For every training case of the model, the open-loop residual cl_true - cl_tf
+is computed (first --skip_s seconds dropped) and all residuals are joined into
+one record. The target case is excluded as long as it is not a training case
+of the model.
+
+Writes results/<model_subdir>/pooled_tf_residual_train_cases.npz, which
+coupled_inference.py reads with --residual_npz.
+
+Example:
+    PYTHONPATH=src python -m viv_analysis.build_pooled_tf_residual \
+        --model_subdir gru_bridge_nd_context_noacc --target_ur 6.7385
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -16,6 +31,7 @@ from viv_analysis.utils import PROJECT_ROOT
 
 
 def main():
+    """Compute and save the pooled residual."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--model_subdir", required=True)
     p.add_argument("--target_ur", type=float, required=True,

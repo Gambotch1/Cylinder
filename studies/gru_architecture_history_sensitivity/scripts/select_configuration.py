@@ -1,3 +1,5 @@
+"""Rank the configurations of a stage on validation results (median over seeds); --freeze writes the selection manifest."""
+
 from __future__ import annotations
 
 import argparse

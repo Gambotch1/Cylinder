@@ -1,3 +1,31 @@
+r"""Closed-loop GRU-structure simulation for one reduced velocity (thesis Sec. 4.6).
+
+The CFD solver is replaced by the trained GRU:
+    1. Start from a window of CFD kinematics (warm-start) and hand off to the
+       surrogate at  handoff = release + seq_len + handoff_offset  steps.
+    2. At every step the GRU predicts C_L from the last seq_len states.
+    3. F = 0.5 rho U^2 B C_L  (B = deck width for the bridge, D for the cylinder).
+    4. Newmark-beta (average acceleration) advances displacement, velocity, acceleration.
+    5. The new state is appended to the input window.
+
+Reads the model folder written by train_gru.py (results/<model_subdir>/) and
+the CFD case at the requested Ur.
+
+Writes to results/ or --output_dir:
+    coupled_<dataset>_Ur<Ur>_<tags>.npz   trajectory (t, h, cl, h_dot, h_ddot, e)
+                                         plus the CFD reference h_cfd, cl_cfd
+    .receipt.json                        settings and git commit of the run
+    coupled_viv_Ur<Ur>_<tags>.png        quick-look plot
+
+Options:
+    --residual_npz + --noise_mode surrogate|white   residual forcing test (Sec. 6.6.2)
+    --run_replay_diag   drive Newmark with the CFD lift instead of the GRU (Fig. 6.8)
+
+Example:
+    PYTHONPATH=src python -m viv_analysis.coupled_inference --cfd_dataset cylinder200 \
+        --model_subdir gru_cylinder200_nd_context_noacc --Ur 5 --total_time 300
+"""
+
 import argparse
 import hashlib
 import json
@@ -37,6 +65,7 @@ plt.rcParams.update({
 
 def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float,
                     input_cols: tuple[str, ...] = ("disp", "vel", "acc")) -> np.ndarray:
+    """Convert physical kinematics to model inputs: unchanged, or disp/D, vel/U, acc/(U^2/D) if nd_inputs."""
     if not nd_inputs:
         return kin
     if D <= 0 or U <= 0:
@@ -50,6 +79,7 @@ def to_model_coords(kin: np.ndarray, nd_inputs: bool, D: float, U: float,
 
 
 def positive_finite_float(value: str) -> float:
+    """argparse type: a finite number > 0."""
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -62,6 +92,7 @@ def positive_finite_float(value: str) -> float:
 
 
 def get_git_dirty_and_patch_hash(cwd: Optional[Path] = None) -> tuple[bool, str]:
+    """Whether the working tree has uncommitted changes, and a hash of `git diff HEAD` (stored in the receipt)."""
     try:
         status = subprocess.run(
             ["git", "status", "--porcelain"], cwd=cwd or PROJECT_ROOT,
@@ -79,6 +110,7 @@ def get_git_dirty_and_patch_hash(cwd: Optional[Path] = None) -> tuple[bool, str]
 
 
 def get_git_commit(cwd: Optional[Path] = None) -> Optional[str]:
+    """Current git commit hash, or None if git is unavailable (stored in the receipt)."""
     try:
         out = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -94,6 +126,12 @@ LEGACY_COORD_SOURCE = "legacy assumption: dimensional"
 
 
 def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None) -> bool:
+    """Decide whether the model expects nondimensional inputs.
+
+    Reads the mode recorded in run_config.json (or ur_stats.pkl). A command-line
+    choice that contradicts the recorded mode is an error. Old model folders
+    without a record are treated as dimensional and cannot be run with --nd_inputs.
+    """
     artifact_nd_inputs = None
     metadata_source = None
 
@@ -158,6 +196,7 @@ def load_artifact_coordinate_mode(artifact_dir: Path, cli_nd_inputs: bool | None
 
 
 def normalize_cfd_dataset(dataset: str) -> str:
+    """Canonical dataset name ('cylinder200' or 'bridge')."""
     ds = dataset.strip().lower()
     if ds == "bridge":
         return "bridge"
@@ -167,6 +206,7 @@ def normalize_cfd_dataset(dataset: str) -> str:
 
 
 def check_artifact_dataset_compatibility(artifact_dir: Path, requested_cfd_dataset: str) -> None:
+    """Error if the model was trained on a different dataset than the one requested."""
     recorded_dataset = None
     metadata_source = None
 
@@ -221,6 +261,12 @@ def check_artifact_dataset_compatibility(artifact_dir: Path, requested_cfd_datas
 
 
 def Newmark_beta( F, h, h_dot, h_ddot, dt, m, c, k, beta=0.25, gamma=0.5):
+    """One Newmark-beta step for m h'' + c h' + k h = F.
+
+    beta = 1/4, gamma = 1/2 (average acceleration, unconditionally stable).
+    Takes the state at step n and the force F, returns the state at step n+1.
+    Works on floats and on torch tensors (used by the rollout training).
+    """
     a1 = m / (beta * dt**2) + gamma * c / (beta * dt)
     a2 = m / (beta * dt) + (gamma / beta - 1.0) * c
     a3 = (0.5 / beta - 1.0) * m + dt * (gamma / (2.0 * beta) - 1.0) * c
@@ -251,6 +297,12 @@ def warmup_history(
     handoff_offset_steps: int = 0,
     cfd_scale: float = 1.0,
 ):
+    """Build the initial input window and state from the CFD record.
+
+    The window is the seq_len CFD rows before the handoff index, converted to model
+    coordinates and scaled. The initial state is the CFD disp/vel/acc at the
+    handoff index. Returns (window, state, handoff time, handoff index).
+    """
     ordered = cfd_case_df.sort_values("time").reset_index(drop=True)
     times = ordered["time"].to_numpy(dtype=np.float32)
 
@@ -316,6 +368,12 @@ def diagnostic_true_force_newmark_replay(
     dt=None,
     force_timing: str = "current",
 ):
+    """Replay the structural response with the CFD lift instead of the GRU (thesis Fig. 6.8).
+
+    If Newmark driven by the CFD force reproduces the CFD displacement, the
+    structural part of the coupling is correct. force_timing selects whether the
+    force of the current or the next sample drives each step.
+    """
     ordered = case_df.sort_values("time").reset_index(drop=True)
 
     if handoff_idx + n_steps + 1 >= len(ordered):
@@ -423,6 +481,13 @@ def run_coupled_viv(
     e_forcing:    np.ndarray = None,
     track_hidden: bool = False,
 ) -> dict:
+    """The closed loop: GRU lift -> aerodynamic force -> Newmark step -> new input row.
+
+    initial_history and initial_state come from warmup_history. e_forcing is an
+    optional additive C_L forcing of length n_steps. Returns a dict with the time
+    series (time, displacement, velocity, acceleration, CL, CL_det = GRU part,
+    e_forcing) and simple diagnostics.
+    """
     model.eval()
     B = D if B is None else B
     if dt is None:
@@ -483,6 +548,7 @@ def run_coupled_viv(
                 hidden_norms.append(float(torch.linalg.norm(hn[-1]).item()))
                 hidden_vecs.append(hn[-1].detach().cpu().numpy().ravel().copy())
             cl_det = float(cl_scaled.item()) * y_scale + y_mean
+            # e is the residual forcing (zero unless --residual_npz and --noise_mode are given).
             cl = cl_det + _e[i]
 
             CL_det_arr[i] = cl_det
@@ -500,6 +566,8 @@ def run_coupled_viv(
                 c=c,
                 k=k,
             )
+            # Append the state that drove this step, so the window ends at step i and the
+            # next prediction is C_L at i+1 (same convention as VIVSequenceDataset).
             _state_by_name = dict(zip(_state_names, (h[i], h_dot[i], h_ddot[i])))
             new_kinematics_raw = np.array(
                 [_state_by_name[c] for c in input_cols], dtype=np.float32)
@@ -575,6 +643,7 @@ def main(
     replay_duration_s: Optional[float] = None,
     output_dir: Optional[str] = None,
     ):
+    """Load the model and CFD case, run the closed loop and save npz, receipt and plot."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
@@ -847,6 +916,7 @@ def main(
         if "Ur" in d_npz and abs(float(d_npz["Ur"]) - Ur) > 1e-6:
             raise ValueError(f"residual_npz is Ur={float(d_npz['Ur'])} but run is Ur={Ur}")
         resid = np.asarray(d_npz["cl_true"], float) - np.asarray(d_npz["cl_tf"], float)
+        # Drop the first 5 s of the residual record (same convention as build_pooled_tf_residual --skip_s).
         skip = int(5.0 / float(d_npz["dt"]))
         resid = resid[skip:]
         e_forcing = make_forcing(resid, n_steps, mode=noise_mode, scale=noise_scale, seed=noise_seed)
@@ -890,6 +960,8 @@ def main(
     _nd_tag = "_nd" if nd_inputs else ""
     _noise_scale_tag = f"s{noise_scale:.6g}"
     _cfd_scale_tag = f"_scale{cfd_scale:g}"
+    # The '_forc-v1_additive' and '_muNone' parts of the file name are kept so
+    # new runs have the same names as the result files used in the thesis.
     _exp_tag = f"{_sub}_forc-v1_additive_noise-{noise_mode}{_nd_tag}{_cfd_scale_tag}_{_noise_scale_tag}_seed{noise_seed}_handoff_{handoff_offset_steps}"
 
     coordinate_mode = "nondimensional" if nd_inputs else "dimensional"

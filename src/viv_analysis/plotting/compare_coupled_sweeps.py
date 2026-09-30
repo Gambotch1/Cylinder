@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Quick comparison of several sweep_results.csv files in one amplitude plot
+(not thesis style). Writes to results/coupled_comparison/ by default.
+"""
+
 import argparse
 from pathlib import Path
 
@@ -12,6 +16,7 @@ from viv_analysis.utils import PROJECT_ROOT
 
 
 def parse_args():
+    """Command-line options."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--sweep_csv", nargs="+", required=True,
                    help="Paths to two or more sweep_results.csv files to compare")
@@ -26,6 +31,7 @@ def parse_args():
 
 
 def main():
+    """Plot the given sweeps together."""
     args = parse_args()
     if len(args.sweep_csv) < 2:
         raise SystemExit("Need at least 2 --sweep_csv paths to compare.")

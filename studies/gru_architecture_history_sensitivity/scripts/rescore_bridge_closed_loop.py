@@ -1,3 +1,5 @@
+"""One-off: rebuild the bridge status_aware_report.csv of existing closed-loop runs without rerunning them."""
+
 from __future__ import annotations
 
 import argparse

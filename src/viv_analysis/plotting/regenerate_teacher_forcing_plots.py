@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+r"""Open-loop (teacher-forced) figures and metric tables for the cylinder models
+(thesis Fig. 5.4, 5.7 and Appendix D).
+
+Runs the trained model over each test case with the CFD kinematics as input.
+A fast batched version is checked against the slow step-by-step one before use
+(skip with --skip_verify). Writes to results/<model_subdir>/thesis_figures/.
+
+Example:
+    PYTHONPATH=src python -m viv_analysis.plotting.regenerate_teacher_forcing_plots \
+        --model_subdir gru_cylinder200_nd_context_noacc
+"""
+
 
 from __future__ import annotations
 
@@ -23,6 +35,7 @@ from viv_analysis.utils import PROJECT_ROOT, parse_ur_label, segment_by_time_gap
 def fast_teacher_forcing(model, case_df_scaled, input_cols, seq_len, release_t,
                          y_scaler, case_name, device, use_ur_context, ur_stats,
                          batch_size=1024):
+    """Open-loop prediction over a whole case in batches (same result as train_gru.teacher_forcing_rollout, faster)."""
     ordered = case_df_scaled.sort_values("time").reset_index(drop=True)
     signal = ordered[input_cols].to_numpy(dtype=np.float32)
 
@@ -63,6 +76,7 @@ def fast_teacher_forcing(model, case_df_scaled, input_cols, seq_len, release_t,
 
 
 def _load_model_artifacts(model_subdir: str, device: str):
+    """Model, scalers, split and settings from a model folder."""
     d = PROJECT_ROOT / "results" / model_subdir
     import json
     rc = json.load(open(d / "run_config.json"))
@@ -88,6 +102,7 @@ def _load_model_artifacts(model_subdir: str, device: str):
 
 
 def _verify_matches_slow_reference(art, case_df_scaled, release_t, device, n_check_steps=3000):
+    """Check that the fast open-loop prediction matches the step-by-step reference."""
     seq_len = art["seq_len"]
     ordered_full = case_df_scaled.sort_values("time").reset_index(drop=True)
     times_full = ordered_full["time"].to_numpy(dtype=np.float32)
@@ -114,6 +129,7 @@ def _verify_matches_slow_reference(art, case_df_scaled, release_t, device, n_che
 
 
 def main():
+    """Make the open-loop figures and tables for each model."""
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--model_subdir", action="append", required=True)

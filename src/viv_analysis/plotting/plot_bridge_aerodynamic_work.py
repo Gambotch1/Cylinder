@@ -1,3 +1,11 @@
+"""Aerodynamic energy transfer during the coupled bridge prediction at Ur = 6.7385
+(thesis Fig. 6.9): (a) lift-velocity phase over time, (b) band-passed lift and
+velocity near fn, (c) cumulative net aerodynamic work per cycle.
+
+Reads one coupled npz (default: the final baseline run at Ur = 6.7385) and
+writes to <npz folder>/thesis_figures/.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -23,6 +31,7 @@ STRUCTURAL_BAND_FRAC = (0.5, 1.5)
 
 
 def single_bin_dft_complex(t: np.ndarray, x: np.ndarray, f: float) -> complex:
+    """Complex Fourier coefficient of x at one frequency f."""
     x = np.asarray(x, dtype=float)
     x = x - x.mean()
     n = len(x)
@@ -33,6 +42,7 @@ def single_bin_dft_complex(t: np.ndarray, x: np.ndarray, f: float) -> complex:
 
 
 def phase_difference_rad(t: np.ndarray, x1: np.ndarray, x2: np.ndarray, f: float) -> float:
+    """Phase of x1 relative to x2 at frequency f, in [-pi, pi]."""
     c1 = single_bin_dft_complex(t, x1, f)
     c2 = single_bin_dft_complex(t, x2, f)
     if not (np.isfinite(c1.real) and np.isfinite(c2.real)):
@@ -43,6 +53,7 @@ def phase_difference_rad(t: np.ndarray, x1: np.ndarray, x2: np.ndarray, f: float
 
 def sliding_phase(t: np.ndarray, F_L: np.ndarray, h_dot: np.ndarray, fn: float,
                    window_periods: float = 2.0, stride_periods: float = 1.0) -> dict:
+    """Lift-velocity phase in sliding windows over time."""
     Tn = 1.0 / fn
     win_s, stride_s = window_periods * Tn, stride_periods * Tn
     t_rel = t - t[0]
@@ -65,6 +76,7 @@ def sliding_phase(t: np.ndarray, F_L: np.ndarray, h_dot: np.ndarray, fn: float,
 
 def cycle_resolved_work(t: np.ndarray, F_L: np.ndarray, h_dot: np.ndarray, c: float,
                         fn: float) -> dict:
+    """Aerodynamic work done in each displacement cycle."""
     Tn = 1.0 / fn
     t_rel = t - t[0]
     n_cycles = int(t_rel[-1] / Tn)
@@ -89,6 +101,7 @@ def cycle_resolved_work(t: np.ndarray, F_L: np.ndarray, h_dot: np.ndarray, c: fl
 
 
 def compute_aerodynamic_work(npz_path: Path) -> dict:
+    """All quantities shown in the figure, from one coupled npz."""
     d = np.load(npz_path, allow_pickle=True)
     receipt = json.loads(npz_path.with_suffix(".receipt.json").read_text())
 
@@ -137,6 +150,7 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
                           bandpass_window_periods: tuple[float, float] = (0.0, 10.0),
                           phase_window_periods: tuple[float, float] = (0.0, 30.0),
                           font_scale: float = 1.0):
+    """Draw the three-panel figure."""
     apply_thesis_style()
     import matplotlib as mpl
     import matplotlib.pyplot as plt
@@ -243,6 +257,7 @@ def plot_aerodynamic_work(result: dict, out_path_stem: Path,
 
 
 def main():
+    """Compute and plot for the given npz."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--npz_path", default=DEFAULT_NPZ)
     p.add_argument("--out_dir", default=None,

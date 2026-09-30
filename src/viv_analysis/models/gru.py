@@ -1,3 +1,9 @@
+"""GRU surrogate, sequence dataset and input/output scaling (thesis Sec. 4.4).
+
+The model reads a window of past kinematics (and optionally Ur) and predicts
+the lift coefficient at the next time step.
+"""
+
 from __future__ import annotations
 import numpy as np
 import torch
@@ -11,6 +17,7 @@ from viv_analysis.utils import parse_ur_label, segment_by_time_gaps
 
 
 class VIV_GRU(nn.Module):
+    """GRU encoder followed by a small dense head that outputs one C_L value."""
     def __init__(
         self,
         input_size:  int = 3,
@@ -40,12 +47,23 @@ class VIV_GRU(nn.Module):
         x:  torch.Tensor,
         h0: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """x: (batch, seq_len, n_features). Returns (C_L prediction, final hidden state).
+
+        Only the last time step of the GRU output is passed to the head.
+        """
         out, hn = self.gru(x, h0)
         pred = self.head(out[:, -1, :]).squeeze(-1)
         return pred, hn
 
 
 class VIVSequenceDataset(Dataset):
+    """Sliding windows over each CFD case for teacher-forced training.
+
+    Convention used everywhere in the package: the window is rows
+    i - seq_len ... i - 1 and the target is C_L at row i. Windows start only
+    after release_time + seq_len and never cross a time gap. With
+    use_ur_context, a constant scaled Ur column is appended to every row.
+    """
     def __init__(
         self,
         df:           pd.DataFrame,
@@ -105,6 +123,7 @@ def fit_scalers(
     input_cols:   list[str],
     target_col:   str,
 ) -> tuple[StandardScaler, StandardScaler]:
+    """Fit standard scalers for inputs and C_L on the training cases only."""
     x_vals = train_df[input_cols].to_numpy(dtype=np.float32)
     y_vals = train_df[target_col].to_numpy(dtype=np.float32)
     x_scaler = StandardScaler().fit(x_vals)
@@ -119,6 +138,7 @@ def apply_scalers_to_df(
     input_cols:  list[str],
     target_col:  str,
 ) -> pd.DataFrame:
+    """Standardise the input columns (and C_L, if y_scaler is given) of a dataframe."""
     df = df.copy()
     df[input_cols]  = x_scaler.transform(df[input_cols].to_numpy(dtype=np.float32))
     if y_scaler is not None:

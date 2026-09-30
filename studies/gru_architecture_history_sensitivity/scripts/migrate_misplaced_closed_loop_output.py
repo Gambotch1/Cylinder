@@ -1,3 +1,5 @@
+"""One-off: move closed-loop outputs that were written to the wrong folder (--apply to actually move)."""
+
 from __future__ import annotations
 
 import argparse

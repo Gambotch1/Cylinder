@@ -1,3 +1,5 @@
+"""Figures of the time-varying Ur runs (thesis Fig. 5.11-5.13 and F.1): Ur(t), displacement and amplitude envelope, transitions, and plateau amplitudes vs fixed-Ur runs."""
+
 from __future__ import annotations
 
 import sys

@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+r"""Closed-loop sweep: run coupled_inference for every Ur of a model and score the results.
+
+For each Ur, coupled_inference runs in a subprocess and writes its npz into
+--output_dir. Each run is then scored with closed_loop_metrics. A case passes
+if its response is a stationary limit cycle and the amplitude error against
+CFD is within --pass_amp_rel_error_threshold (default 20 %).
+
+Writes to --output_dir: every run's npz/receipt/png, sweep_results.csv
+(amplitude, stability label, error and pass per Ur) and a summary plot.
+
+Example:
+    PYTHONPATH=src python -m viv_analysis.evaluate_all --dataset cylinder200 \
+        --model_subdir gru_cylinder200_nd_context_noacc --output_dir <eval folder>
+"""
+
 import argparse
 import json
 import re
@@ -29,6 +44,7 @@ BRIDGE_STRUCTURAL_PARAMS = bridge_structural_params()
 
 
 def extract_steady_state_amplitude(stdout: str) -> float | None:
+    """Read the 'Steady-state A/D' value printed by coupled_inference."""
     match = re.search(r"Steady-state A/D = ([\d.]+)", stdout)
     if match:
         return float(match.group(1))
@@ -36,6 +52,7 @@ def extract_steady_state_amplitude(stdout: str) -> float | None:
 
 
 def extract_npz_path(stdout: str) -> str | None:
+    """Read the path of the saved trajectory printed by coupled_inference."""
     match = re.search(r"Saved coupled trajectory -> (\S+)", stdout)
     if match:
         return match.group(1)
@@ -43,6 +60,7 @@ def extract_npz_path(stdout: str) -> str | None:
 
 
 def _compute_gate(npz_path: str, window_frac: float, pass_amp_rel_error_threshold: float) -> dict:
+    """Stability label, amplitude error and pass/fail for one trajectory."""
     try:
         row = compute_case_metrics(npz_path, window_frac=window_frac)
     except Exception as e:
@@ -61,6 +79,7 @@ def _compute_gate(npz_path: str, window_frac: float, pass_amp_rel_error_threshol
 
 
 def load_full_cfd_df(dataset: str) -> pd.DataFrame:
+    """All CFD cases of a dataset with kinematics (used for the CFD amplitudes)."""
     if dataset == "bridge":
         from viv_analysis.preprocess import load_bridge_df_cached
         return load_bridge_df_cached(
@@ -80,6 +99,7 @@ def load_full_cfd_df(dataset: str) -> pd.DataFrame:
 
 
 def cfd_steady_state_amplitude(full_cfd_df: pd.DataFrame, Ur: float, D: float) -> float | None:
+    """CFD amplitude A/D from the last 30 % of the case (half the peak-to-peak range)."""
     case_label = format_ur_label(Ur)
     case_df = full_cfd_df[full_cfd_df["case"] == case_label]
     if case_df.empty:
@@ -94,6 +114,7 @@ def cfd_steady_state_amplitude(full_cfd_df: pd.DataFrame, Ur: float, D: float) -
 
 
 def bridge_ur_list_from_model(model_subdir: str) -> list[float]:
+    """Ur values of all cases in the bridge model's split that exist in the current data."""
     model_dir = PROJECT_ROOT / "results" / model_subdir
     run_config_path = model_dir / "run_config.json"
     if run_config_path.exists():
@@ -122,6 +143,7 @@ def bridge_ur_list_from_model(model_subdir: str) -> list[float]:
 
 
 def cylinder200_ur_list_from_model(model_subdir: str) -> list[float]:
+    """Ur values of all cases in the cylinder model's split."""
     run_config_path = PROJECT_ROOT / "results" / model_subdir / "run_config.json"
     with open(run_config_path) as f:
         rc = json.load(f)
@@ -130,6 +152,7 @@ def cylinder200_ur_list_from_model(model_subdir: str) -> list[float]:
 
 
 def parse_args():
+    """Command-line options of the sweep."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", choices=["cylinder200", "bridge"], default="cylinder200")
     parser.add_argument("--model_subdir", default=None,
@@ -163,6 +186,7 @@ def parse_args():
 
 
 def main():
+    """Run the sweep and write sweep_results.csv and the summary plot."""
     args = parse_args()
     dataset = args.dataset
 

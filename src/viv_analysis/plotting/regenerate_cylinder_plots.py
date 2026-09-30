@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+r"""Closed-loop cylinder figures from an evaluate_all.py sweep
+(thesis Fig. 5.3, 5.8, 5.9 and Appendix E): time series per case and the
+amplitude response over Ur. Reads the sweep folder
+results/<model_subdir>_coupled_eval/ and writes to its thesis_figures/.
+
+Example:
+    PYTHONPATH=src python -m viv_analysis.plotting.regenerate_cylinder_plots \
+        --model_subdir <model folder>
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -24,6 +34,7 @@ _UR_RE = re.compile(r"coupled_cylinder200_Ur([0-9.]+)_(.+)\.npz$")
 
 
 def _load_case(npz_path: Path, cfd_df: pd.DataFrame):
+    """Load one coupled npz."""
     m = _UR_RE.match(npz_path.name)
     if not m:
         return None
@@ -46,6 +57,7 @@ def _load_case(npz_path: Path, cfd_df: pd.DataFrame):
 
 
 def replot_timeseries(coupled_eval_dir: Path, cfd_df: pd.DataFrame, dataset: str = "cylinder200") -> list[Path]:
+    """Quick-look time series (non-thesis style)."""
     written = []
     for npz_path in sorted(coupled_eval_dir.glob("coupled_cylinder200_Ur*.npz")):
         case = _load_case(npz_path, cfd_df)
@@ -96,6 +108,7 @@ def replot_timeseries(coupled_eval_dir: Path, cfd_df: pd.DataFrame, dataset: str
 
 
 def replot_sweep_summary(coupled_eval_dir: Path, dataset: str = "cylinder200") -> Path | None:
+    """Quick-look amplitude response (non-thesis style)."""
     csv_path = coupled_eval_dir / "sweep_results.csv"
     if not csv_path.exists():
         print(f"  [skip] no sweep_results.csv in {coupled_eval_dir}")
@@ -127,6 +140,7 @@ def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame, datas
                              dataset_note: str | None,
                              appendix_font_scale: float = 1.0,
                              linewidth: float = 0.6) -> dict[float, dict]:
+    """Thesis-style closed-loop time series for every case."""
     thesis_dir = coupled_eval_dir / "thesis_figures"
     if appendix_font_scale != 1.0:
         thesis_dir = thesis_dir / "appendix_narrow"
@@ -154,6 +168,7 @@ def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame, datas
 
 def replot_sweep_summary_thesis(coupled_eval_dir: Path, model_column: str,
                                 dataset_note: str | None) -> dict:
+    """Thesis-style amplitude response over Ur."""
     csv_path = coupled_eval_dir / "sweep_results.csv"
     if not csv_path.exists():
         print(f"  [skip] no sweep_results.csv in {coupled_eval_dir}")
@@ -174,6 +189,7 @@ def replot_sweep_summary_thesis(coupled_eval_dir: Path, model_column: str,
 
 
 def select_representative_cases(coupled_eval_dir: Path, model_column: str) -> dict:
+    """Cases shown in the main text; the others go to the appendix."""
     csv_path = coupled_eval_dir / "sweep_results.csv"
     if not csv_path.exists():
         return {}
@@ -187,6 +203,7 @@ def select_representative_cases(coupled_eval_dir: Path, model_column: str) -> di
 
 
 def main():
+    """Regenerate the figures for each model."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--model_subdir", action="append", required=True,
                   help="e.g. gru_cylinder200_dim_context_noacc (repeatable). "

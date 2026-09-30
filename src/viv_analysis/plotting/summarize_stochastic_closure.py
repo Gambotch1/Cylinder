@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Summary table of the residual forcing runs (thesis Sec. 6.6.2).
+
+Reads every coupled npz of the residual forcing runs plus the deterministic
+baseline run and writes stochastic_closure_summary.csv (amplitude, stability
+and near-fn energy per run), which plot_stochastic_closure_figures.py uses.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -18,6 +25,7 @@ WINDOW_FRAC = 0.5
 
 
 def near_fn_energy_fraction(h: np.ndarray, dt: float, fn: float, window_frac: float = WINDOW_FRAC) -> float:
+    """Fraction of the displacement spectrum's energy within the structural band around fn."""
     n = len(h)
     h_w = h[int((1.0 - window_frac) * n):]
     fs = 1.0 / dt
@@ -29,6 +37,7 @@ def near_fn_energy_fraction(h: np.ndarray, dt: float, fn: float, window_frac: fl
 
 
 def one_run_metrics(npz_path: Path) -> dict:
+    """Metrics of one coupled run."""
     receipt = json.loads(npz_path.with_suffix(".receipt.json").read_text())
     d = np.load(npz_path, allow_pickle=True)
     t, h = d["t"], d["h"]
@@ -56,6 +65,7 @@ def one_run_metrics(npz_path: Path) -> dict:
 
 
 def main():
+    """Build the summary CSV."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--stochastic_dir", required=True,
                    help="results/-relative dir containing the surrogate/white/replay coupled npz files")

@@ -1,4 +1,23 @@
 #!/usr/bin/env python3
+r"""Rollout-informed refinement of a trained bridge GRU (thesis Sec. 6.6.1, Fig. 6.10-6.12).
+
+Fine-tunes a one-step model with   L = L_TF + lambda_roll * L_roll:
+    L_TF    teacher-forced C_L error (keeps the one-step accuracy)
+    L_roll  displacement/velocity error after a short closed-loop rollout
+            (--rollout_steps, default 250 steps = 0.5 s)
+lambda_roll = 0.08064 (Eq. 6.2) and is ramped up over the first updates.
+After every pass the model is validated at several rollout horizons; the pass
+with the best score whose teacher-forced loss is within --tf_loss_tolerance
+of the baseline is kept.
+
+Writes --output_dir in the same format as train_gru.py, so evaluate_all.py
+can use it directly, plus run_manifest.json and train_history.json.
+
+Example:
+    PYTHONPATH=src python -m viv_analysis.train_rollout \
+        --baseline results/gru_bridge_p0_nd_context_noacc --output_dir results/<new folder>
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -31,6 +50,7 @@ DEFAULT_HORIZONS_S = (0.5, 3.125, 6.5, 10.0, 20.0)
 
 
 def sha256(path: Path) -> str:
+    """SHA-256 hash of a file (recorded for the baseline checkpoint)."""
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
@@ -39,6 +59,7 @@ def sha256(path: Path) -> str:
 
 
 def seed_everything(seed: int) -> None:
+    """Seed Python, NumPy and PyTorch."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -47,6 +68,7 @@ def seed_everything(seed: int) -> None:
 
 
 def load_baseline(artifact_dir: Path, device: str) -> dict:
+    """Load the one-step model folder: model, scalers, Ur statistics, split and settings."""
     with (artifact_dir / "run_config.json").open() as stream:
         run_config = json.load(stream)
     with (artifact_dir / "metrics_gru.json").open() as stream:
@@ -109,6 +131,7 @@ def load_baseline(artifact_dir: Path, device: str) -> dict:
 
 
 def load_raw_bridge_data():
+    """Cached bridge dataframe (see preprocess.load_bridge_df_cached)."""
     D = float(config["bridge_D_ref"])
     fn = float(config["bridge_fn_hz"])
     structural = bridge_structural_params()
@@ -127,6 +150,7 @@ def load_raw_bridge_data():
 
 
 def release_times(cases: list[str]) -> dict[str, float]:
+    """Release time t = t* D / U of each bridge case."""
     D = float(config["bridge_D_ref"])
     fn = float(config["bridge_fn_hz"])
     t_star = float(config["bridge_t_star_release"])
@@ -137,6 +161,7 @@ def release_times(cases: list[str]) -> dict[str, float]:
 
 
 def case_dt(case_df) -> float:
+    """Time step of one case (median of the time differences)."""
     times = case_df.sort_values("time")["time"].to_numpy(dtype=np.float64)
     differences = np.diff(times)
     if len(differences) == 0 or not np.isfinite(differences).all():
@@ -157,6 +182,7 @@ def build_tf_batch_for_starts(
     fn: float,
     device: str,
 ) -> dict:
+    """Teacher-forced windows and C_L targets starting at the given indices."""
     batches = [
         build_tf_batch_from_case(
             case_df=case_df,
@@ -198,6 +224,7 @@ def two_branch_losses(
     B_ref: float,
     device: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Teacher-forced loss L_TF and rollout state loss L_roll for one batch."""
     rollout_batch = build_batch_from_case(
         case_df=case_df,
         case_name=case_name,
@@ -272,6 +299,7 @@ def deterministic_starts(
     batch_size: int,
     seed: int,
 ) -> list[int]:
+    """Fixed, seeded rollout starts for validation."""
     return sample_batch_starts(
         case_df,
         release_t,
@@ -296,6 +324,7 @@ def validate(
     lambda_roll: float,
     seed: int,
 ) -> dict:
+    """Validation losses at each rollout horizon and the selection score."""
     was_training = model.training
     model.eval()
     per_horizon: dict[str, dict] = {}
@@ -356,6 +385,7 @@ def validate(
 
 
 def save_compatible_artifact(output_dir: Path, baseline: dict, state_dict: dict, manifest: dict) -> None:
+    """Save the selected model in the train_gru.py folder format."""
     torch.save(state_dict, output_dir / "gru_best.pt")
     for name, obj in (
         ("x_scaler.pkl", baseline["x_scaler"]),
@@ -401,6 +431,7 @@ def save_compatible_artifact(output_dir: Path, baseline: dict, state_dict: dict,
 
 
 def parse_args() -> argparse.Namespace:
+    """Command-line options."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--output_dir", type=Path, required=True)
@@ -429,6 +460,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the refinement passes and keep the best eligible model."""
     args = parse_args()
     if args.rollout_steps < 2 or args.passes < 1 or args.batch_size < 1:
         raise ValueError("rollout_steps>=2, passes>=1 and batch_size>=1 are required.")

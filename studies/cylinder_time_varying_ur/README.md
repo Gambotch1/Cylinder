@@ -4,12 +4,11 @@ An operating-condition continuation test: one continuous coupled
 simulation in which the reduced velocity Ur changes sequentially through
 the cylinder sweep, as opposed to independently-initialised fixed-Ur runs.
 
-**Status: implementation approved; production sweep held.** Full
-21-condition sweeps are gated behind a frozen, complete Stage 2 selection
-manifest from the architecture/history-length sensitivity study (see
-"Production gate" below), which has not been produced yet. Development
-checkpoint for `--smoke` runs: `gru_cylinder200_nd_context_noacc` (h/D,
-hdot/U, Ur context; no acceleration). No production code is modified.
+**Status: complete.** The production runs (one seed each; schedules
+ascending, ascending_cosine and triangular_cosine, run with
+`--single_seed_production`) are reported in thesis Sec. 5.7 and
+Appendix F. Model: `gru_cylinder200_nd_context_noacc` (h/D, hdot/U,
+Ur context; no acceleration).
 
 ## Directory layout
 

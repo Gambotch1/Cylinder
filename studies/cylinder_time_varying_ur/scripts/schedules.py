@@ -1,3 +1,5 @@
+"""Reduced-velocity schedules Ur(t) for the continuous sweep: ascending, ascending with cosine ramps, and triangular 2 -> 12 -> 2 (thesis Sec. 5.7, Appendix F)."""
+
 from __future__ import annotations
 
 import numpy as np

@@ -1,3 +1,5 @@
+"""Short end-to-end test of the study pipeline on one small configuration."""
+
 from __future__ import annotations
 
 import argparse

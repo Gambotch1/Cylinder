@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+r"""Learning-curve figures from the training logs (thesis Fig. 5.5 and 6.4).
+
+Reads the epoch lines printed by train_gru.py (the LSF log of the training job).
+
+Example:
+    PYTHONPATH=src python -m viv_analysis.plotting.regenerate_learning_curves \
+        --log <training log> --model_subdir <model folder>
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -12,6 +21,7 @@ _EPOCH_RE = re.compile(r"Epoch\s+(\d+)/\d+\s+train=([\d.]+)\s+val=([\d.]+)")
 
 
 def parse_epoch_log(log_path: Path) -> tuple[list[float], list[float]]:
+    """Epoch, training loss and validation loss from a training log."""
     train_losses, val_losses = [], []
     for line in Path(log_path).read_text().splitlines():
         m = _EPOCH_RE.search(line)
@@ -24,6 +34,7 @@ def parse_epoch_log(log_path: Path) -> tuple[list[float], list[float]]:
 
 
 def main():
+    """Plot the learning curve of each given log."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--log", action="append", required=True, help="Path to an LSF stdout log (repeatable).")
     p.add_argument("--model_subdir", action="append", required=True,

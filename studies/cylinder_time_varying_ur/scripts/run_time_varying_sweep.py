@@ -1,3 +1,10 @@
+r"""Continuous closed-loop cylinder simulation under a Ur(t) schedule (thesis Sec. 5.7).
+
+Example:
+    PYTHONPATH=src python studies/cylinder_time_varying_ur/scripts/run_time_varying_sweep.py \
+        --schedule ascending_cosine --dwell_s 100 --transition_s 5
+"""
+
 from __future__ import annotations
 
 import argparse

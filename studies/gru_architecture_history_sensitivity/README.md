@@ -144,9 +144,7 @@ test metric/plot/artifact from ever being produced; only the test case
 training job this study runs passes this flag unconditionally
 (`train_sensitivity.py`). There is no `_test_locked/` directory, no
 redaction step, and no post-hoc concealment anywhere in this study --
-prevention at the source. See `tests/test_skip_test_eval.py` in the main
-repo test suite for the regression proof that the test-only production
-functions are never called when the flag is set.
+prevention at the source.
 
 ## Selection rule
 

@@ -1,3 +1,5 @@
+"""Make all figures and the plateau summary table for one production run."""
+
 from __future__ import annotations
 
 import json

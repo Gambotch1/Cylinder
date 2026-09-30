@@ -1,3 +1,5 @@
+"""Closed-loop run of selected training cases (e.g. Ur 6.7385 for the bridge) as a mechanistic check. Not used for selection."""
+
 from __future__ import annotations
 
 import argparse

@@ -1,3 +1,5 @@
+"""Train one configuration of the grid (hidden size, layers, sequence length, seed) with train_gru.py, without touching the test cases."""
+
 from __future__ import annotations
 
 import argparse

@@ -1,3 +1,5 @@
+"""The coupled GRU-Newmark loop with Ur changing in time. For a constant schedule it gives the same result as coupled_inference.run_coupled_viv (tested)."""
+
 from __future__ import annotations
 
 from pathlib import Path

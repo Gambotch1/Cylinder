@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+r"""Two closed-loop sweeps in one amplitude-response figure, e.g. dimensional vs
+nondimensional inputs (thesis Fig. 5.10).
+
+Example:
+    PYTHONPATH=src python -m viv_analysis.plotting.regenerate_ablation_comparison_plot \
+        --primary_coupled_eval_dir <sweep A> --primary_model_column <col> --primary_label <label> \
+        --secondary_coupled_eval_dir <sweep B> --secondary_model_column <col> --secondary_label <label> \
+        --output_dir <folder>
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -15,6 +25,7 @@ from viv_analysis.utils import PROJECT_ROOT
 
 
 def _load_sweep(coupled_eval_dir: str, model_column: str) -> pd.DataFrame:
+    """Read sweep_results.csv from a sweep folder."""
     csv_path = PROJECT_ROOT / "results" / coupled_eval_dir / "sweep_results.csv"
     if not csv_path.exists():
         raise SystemExit(f"{csv_path} not found.")
@@ -27,6 +38,7 @@ def _load_sweep(coupled_eval_dir: str, model_column: str) -> pd.DataFrame:
 
 
 def main():
+    """Merge the two sweeps and plot them together."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--primary_coupled_eval_dir", required=True)
     p.add_argument("--primary_model_column", required=True)

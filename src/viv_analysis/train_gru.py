@@ -1,3 +1,19 @@
+r"""Train the one-step (teacher-forced) GRU surrogate for C_L (thesis Sec. 4.5).
+
+Steps: load the CFD cases -> compute vel/acc -> split into train/val/test ->
+optionally nondimensionalise the inputs -> fit scalers on the training cases ->
+train with early stopping -> evaluate -> save the model folder.
+
+Writes results/<exp_subdir>/:
+    gru_best.pt, x_scaler.pkl, y_scaler.pkl, ur_stats.pkl  (everything needed for inference)
+    run_config.json, metrics_gru.json                       (settings, split, metrics)
+    learning curve, amplitude_comparison.csv, open-loop plots
+
+Example (cylinder model without acceleration, nondimensional inputs, Ur context):
+    PYTHONPATH=src python -m viv_analysis.train_gru --cfd_dataset cylinder200 \
+        --input_cols disp vel --nd_inputs --exp_subdir gru_cylinder200_nd_context_noacc
+"""
+
 from __future__ import annotations
 
 import json
@@ -39,6 +55,7 @@ import random
 
 
 def seed_everything(seed: int) -> None:
+    """Seed Python, NumPy and PyTorch and make cuDNN deterministic, so a run can be repeated exactly."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -53,6 +70,7 @@ def worker_init_fn(worker_id: int) -> None:
     np.random.seed(seed + worker_id)
 
 def resolve_nd_reference_scales(dataset: str, cfg: dict) -> tuple[float, float]:
+    """Reference length D [m] and natural frequency fn [Hz] used to nondimensionalise a dataset."""
     ds = dataset.strip().lower()
 
     if ds == "bridge":
@@ -81,6 +99,11 @@ _ND_TRANSFORM_COLUMNS = ("disp", "vel", "acc")
 
 def apply_nd_transform(df: pd.DataFrame, nd_inputs: bool, D: float, fn: float,
                        input_cols: list[str]) -> pd.DataFrame:
+    """Nondimensionalise the kinematic inputs, case by case.
+
+    disp / D,  vel / U,  acc / (U^2 / D),  with U = Ur fn D of that case.
+    Returns a copy; with nd_inputs=False the data are returned unchanged.
+    """
     if not nd_inputs:
         return df.copy()
 
@@ -117,6 +140,7 @@ def apply_nd_transform(df: pd.DataFrame, nd_inputs: bool, D: float, fn: float,
 
 def enforce_holdout(train_cases: set, val_cases: set, test_cases: set,
                     all_cases: set, holdout_ur: float | None) -> tuple:
+    """Move the case at holdout_ur into the test set (--holdout_ur)."""
     if holdout_ur is None:
         return train_cases, val_cases, test_cases
 
@@ -143,6 +167,7 @@ def enforce_holdout(train_cases: set, val_cases: set, test_cases: set,
 
 def enforce_force_train(train_cases: set, val_cases: set, test_cases: set,
                         all_cases: set, force_train_ur: list[float] | None) -> tuple:
+    """Move the cases in force_train_ur into the training set (--force_train_ur)."""
     if not force_train_ur:
         return train_cases, val_cases, test_cases
 
@@ -172,6 +197,7 @@ def format_ur_label(ur: float) -> str:
 
 def resolve_use_ur_context(dataset_default: bool, use_ur_context_flag: bool,
                            no_ur_context_flag: bool) -> bool:
+    """Decide whether Ur is used as an input: command-line flag if given, else the dataset default."""
     if use_ur_context_flag:
         return True
     if no_ur_context_flag:
@@ -180,6 +206,7 @@ def resolve_use_ur_context(dataset_default: bool, use_ur_context_flag: bool,
 
 
 def resolve_dataset(dataset_pos: str | None, dataset_cli: str | None) -> str:
+    """Dataset name from the positional argument or --cfd_dataset (default: cylinder200)."""
     if dataset_pos is not None and dataset_cli is not None:
         if dataset_pos != dataset_cli:
             raise ValueError(
@@ -193,6 +220,7 @@ def resolve_dataset(dataset_pos: str | None, dataset_cli: str | None) -> str:
 
 
 def check_artifact_collision(output_dir: Path, overwrite: bool) -> None:
+    """Refuse to overwrite an existing model folder unless --overwrite is given."""
     if overwrite:
         return
     existing_artifacts = [
@@ -207,6 +235,11 @@ def check_artifact_collision(output_dir: Path, overwrite: bool) -> None:
 
 
 def _cylinder200_split(cases: list[str]) -> tuple:
+    """Fixed cylinder split used in the thesis (Fig. 5.6).
+
+    test: Ur 3.5, 5.5, 7, 11;  val: Ur 4.25, 6.25, 9, 10;  train: the other 13 cases.
+    Also returns the release time of every case.
+    """
     test  = {"Ur3.5", "Ur5.5", "Ur7", "Ur11"}
     val   = {"Ur4.25", "Ur6.25", "Ur9", "Ur10"}
     train = set(cases) - test - val
@@ -221,6 +254,9 @@ def _cylinder200_split(cases: list[str]) -> tuple:
 
 def _bridge_split(cases: list[str], fn_hz: float,
                   d_ref: float, t_star_release: float) -> tuple:
+    """Bridge split: cases sorted by Ur, about 20 % test and 20 % validation spread
+    evenly over the Ur range, the rest for training. Also returns release times.
+    """
     for c in cases:
         try:
             parse_ur_label(c)
@@ -260,6 +296,7 @@ def _bridge_split(cases: list[str], fn_hz: float,
 
 def split_cases(cases: list[str], dataset: str,
                 cfg: dict) -> tuple[set, set, set, dict]:
+    """Train/val/test case sets and release times for the given dataset."""
     ds = dataset.strip().lower()
     if ds in CYLINDER200_ALIASES:
         return _cylinder200_split(cases)
@@ -275,6 +312,11 @@ def split_cases(cases: list[str], dataset: str,
 
 def train_one_epoch(model, loader, optimizer, criterion, device, input_noise_std=0.0,
                     n_kinematic_cols=3, case_weights=None):
+    """One training epoch; returns the mean loss.
+
+    input_noise_std adds Gaussian noise to the standardised kinematic columns
+    (not to the Ur column). Gradients are clipped to norm 1.
+    """
     model.train()
     total = 0.0
     for x_b, y_b, case_b in loader:
@@ -301,6 +343,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, input_noise_std
 
 
 def run_validation(model, loader, criterion, device):
+    """Loss and predictions on a data loader. Returns (loss, predictions, targets, case names)."""
     model.eval()
     total, preds, trues, cases = 0.0, [], [], []
     with torch.no_grad():
@@ -323,6 +366,7 @@ def compute_case_loss_weights(
     df_scaled: pd.DataFrame, target_col: str, cases: list[str],
     min_var_frac_of_median: float = 0.01,
 ) -> dict[str, float]:
+    """Per-case loss weights 1/var(C_L), normalised to mean 1 (--amplitude_aware_loss)."""
     variances = {}
     for case in cases:
         vals = df_scaled.loc[df_scaled["case"] == case, target_col].to_numpy(dtype=np.float64)
@@ -342,6 +386,7 @@ def teacher_forcing_rollout(
         y_scaler, case_name, device,
         use_ur_context=False, ur_stats=None,
         ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Open-loop prediction over one whole case using the true CFD kinematics as input. Returns C_L predicted, C_L true, time."""
     model.eval()
     ordered   = case_df.sort_values("time").reset_index(drop=True)
     signal    = ordered[input_cols].to_numpy(dtype=np.float32)
@@ -379,6 +424,7 @@ def teacher_forcing_rollout(
 
 
 def plot_tf_result(cl_pred, cl_true, times, case_name, output_dir, dataset: str = ""):
+    """Quick-look plot of an open-loop prediction and its residual (ar_<case>.png)."""
     fig, axes = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
     ax = axes[0]
     ax.plot(times, cl_true, lw=0.8, color="black",    label="CFD (ground truth)")
@@ -403,6 +449,7 @@ def amplitude_comparison(model, all_df_s, release_time,
                           device, output_dir,
                           train_cases, val_cases, test_cases,
                           use_ur_context=False, ur_stats=None):
+    """Compare predicted and CFD C_L amplitude (last 30 % of each case) for all cases; writes amplitude_comparison.csv."""
     results = []
     for case_name, case_df in all_df_s.groupby("case"):
         ur        = parse_ur_label(str(case_name))
@@ -449,18 +496,19 @@ def amplitude_comparison(model, all_df_s, release_time,
 
 
 def setup_argparse() -> argparse.ArgumentParser:
+    """Command-line options of the training script."""
     parser = argparse.ArgumentParser(
         description="Train GRU model for VIV lift prediction (cylinder200 and bridge)."
     )
 
     parser.add_argument(
         "dataset_pos", nargs="?", default=None,
-        help="(Legacy) Dataset: cylinder, cylinder200, or bridge"
+        help="Dataset: cylinder200 or bridge (same as --cfd_dataset)"
     )
 
     parser.add_argument(
         "--cfd_dataset", type=str, default=None,
-        help="Dataset: cylinder, cylinder200, or bridge"
+        help="Dataset: cylinder200 or bridge"
     )
     parser.add_argument(
         "--nd_inputs", action="store_true",
@@ -580,6 +628,7 @@ def setup_argparse() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """Run the full training pipeline described at the top of this file."""
     parser = setup_argparse()
     args = parser.parse_args()
 
@@ -662,6 +711,7 @@ def main() -> None:
         raw_df = compute_kinematics(raw_df, dataset=dataset)
 
     if dataset == "bridge":
+        # Drop bridge cases shorter than 5 % of the median case length (unusable runs).
         sizes = raw_df.groupby("case").size().sort_values()
         BRIDGE_MIN_FRAC = 0.05
         med = float(sizes.median())
@@ -761,6 +811,7 @@ def main() -> None:
     seq_len = int(cfg["seq_len"])
     batch_size = int(cfg["batch_size"])
 
+    # Scalers and Ur statistics are fitted on the training cases only.
     x_scaler, y_scaler = fit_scalers(train_df, input_cols, target_col)
 
     print(f"\nx_scaler: mean={x_scaler.mean_} scale={x_scaler.scale_}")
@@ -895,6 +946,7 @@ def main() -> None:
 
     optimizer = torch.optim.Adam(
         model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
+    # Halve the learning rate after 5 epochs without validation improvement.
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=5)
     criterion = nn.MSELoss()
@@ -965,7 +1017,7 @@ def main() -> None:
         pickle.dump(ur_stats_dict, f)
 
     if test_loader is not None:
-        _, tp, tt = run_validation(model, test_loader, criterion, device)
+        _, tp, tt, _ = run_validation(model, test_loader, criterion, device)
         test_pred = y_scaler.inverse_transform(tp.reshape(-1, 1)).ravel()
         test_true = y_scaler.inverse_transform(tt.reshape(-1, 1)).ravel()
         test_metrics = evaluate(test_true, test_pred)
@@ -973,7 +1025,7 @@ def main() -> None:
         test_metrics = None
         print("\nTest:       SKIPPED (--skip_test_eval) -- no test inference performed")
 
-    _, vp, vt = run_validation(model, val_loader, criterion, device)
+    _, vp, vt, _ = run_validation(model, val_loader, criterion, device)
     val_pred = y_scaler.inverse_transform(vp.reshape(-1, 1)).ravel()
     val_true = y_scaler.inverse_transform(vt.reshape(-1, 1)).ravel()
     val_metrics = evaluate(val_true, val_pred)

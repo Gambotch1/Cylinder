@@ -1,3 +1,11 @@
+"""Figures for the rollout-informed refinement (thesis Sec. 6.6.1, Fig. 6.11 and 6.12):
+training progression, closed-loop error before/after refinement, and the
+long displacement trace at Ur = 6.7385.
+
+Reads the fixed result folders named at the top of this file and writes to
+results/gru_bridge_p0_nd_context_noacc/modelA_v2/thesis_figures/.
+"""
+
 from __future__ import annotations
 
 import json
@@ -24,6 +32,7 @@ HORIZONS = ["0.5s", "3.125s", "6.5s", "10s", "20s"]
 
 
 def plot_training_progression() -> tuple[Path, Path]:
+    """Validation errors per refinement pass."""
     apply_thesis_style()
     import matplotlib.pyplot as plt
 
@@ -62,6 +71,7 @@ def plot_training_progression() -> tuple[Path, Path]:
 
 
 def plot_closed_loop_comparison() -> tuple[Path, Path]:
+    """Closed-loop amplitude error, baseline vs refined model."""
     apply_thesis_style()
     import matplotlib.pyplot as plt
 
@@ -101,6 +111,7 @@ def plot_closed_loop_comparison() -> tuple[Path, Path]:
 
 
 def _load_coupled_case(case_dir: Path):
+    """Load one coupled npz and its receipt."""
     npz_path = next(case_dir.glob("coupled_bridge_Ur6.7385_*.npz"))
     receipt = json.loads(npz_path.with_suffix(".receipt.json").read_text())
     d = np.load(npz_path, allow_pickle=True)
@@ -111,6 +122,7 @@ def _load_coupled_case(case_dir: Path):
 
 
 def plot_representative_trace(font_scale: float = 1.0) -> tuple[Path, Path]:
+    """Displacement at Ur = 6.7385: CFD, baseline and refined model."""
     apply_thesis_style()
     import matplotlib as mpl
     import matplotlib.pyplot as plt
@@ -168,6 +180,7 @@ def plot_representative_trace(font_scale: float = 1.0) -> tuple[Path, Path]:
 
 
 def main():
+    """Make all refinement figures."""
     p1 = plot_training_progression()
     print(f"Wrote {p1[0]}\nWrote {p1[1]}")
     p2 = plot_closed_loop_comparison()

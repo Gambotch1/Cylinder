@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+r"""Open-loop (teacher-forced) figures and tables for the bridge models
+(thesis Fig. 6.5 and Appendix G). Writes to results/<model_subdir>/thesis_figures/.
+
+Example:
+    PYTHONPATH=src python -m viv_analysis.plotting.regenerate_bridge_open_loop_plots \
+        --model_subdir gru_bridge_nd_context_noacc
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -19,6 +27,7 @@ from viv_analysis.utils import parse_ur_label
 
 
 def main():
+    """Make the open-loop figures and table for each bridge model."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--model_subdir", action="append", required=True)
     p.add_argument("--skip_verify", action="store_true")

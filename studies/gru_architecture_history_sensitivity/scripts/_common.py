@@ -1,3 +1,5 @@
+"""Shared helpers of the architecture/history study: paths, run folders, training and evaluation wrappers around the production modules."""
+
 from __future__ import annotations
 
 import hashlib

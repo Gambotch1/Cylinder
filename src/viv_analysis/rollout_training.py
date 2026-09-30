@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Differentiable closed-loop building blocks for the rollout refinement (thesis Sec. 6.6.1).
+
+The same loop as coupled_inference.run_coupled_viv, written in torch so that
+gradients flow through GRU -> force -> Newmark -> next input window over
+several steps. Used by train_rollout.py.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,6 +20,7 @@ from viv_analysis.utils import parse_ur_label
 
 @dataclass
 class ScalerConstants:
+    """Means and scales of the fitted input/output scalers, as plain arrays."""
     x_mean: np.ndarray
     x_scale: np.ndarray
     y_mean: float
@@ -34,6 +42,7 @@ def build_next_row_torch(
     x_mean: np.ndarray, x_scale: np.ndarray,
     use_ur_context: bool, ur_scaled: float,
 ) -> torch.Tensor:
+    """Next input row from the current state (model coordinates, scaled, optional Ur column)."""
     state_by_name = {"disp": h_i, "vel": hdot_i, "acc": hddot_i}
     kin = torch.stack([state_by_name[c] for c in input_cols], dim=-1)
 
@@ -61,6 +70,12 @@ def rollout_chunk(
     input_cols: list[str], nd_inputs: bool, sc: ScalerConstants,
     use_ur_context: bool, ur_scaled: float,
 ) -> dict:
+    """Run the coupled loop for n_steps with gradients.
+
+    q = 0.5 rho U^2 B, so F = q C_L. Returns the predicted C_L (scaled and
+    physical), the displacement and velocity at each step, and the final window
+    and state so a longer rollout can be continued.
+    """
     win = window
     h_i, hdot_i, hddot_i = h_state, hdot_state, hddot_state
     cl_scaled_steps, cl_phys_steps, h_steps, hdot_steps = [], [], [], []
@@ -100,6 +115,7 @@ def sample_batch_starts(
     case_df: pd.DataFrame, release_t: float, seq_len: int, max_future_steps: int,
     batch_size: int, rng: np.random.Generator,
 ) -> list[int]:
+    """Random start indices for rollouts inside one case, spread evenly over the usable range after release."""
     ordered_times = case_df["time"].to_numpy(dtype=np.float64)
     release_idx = int(np.searchsorted(ordered_times, release_t))
     lo = release_idx + seq_len
@@ -121,6 +137,7 @@ def build_batch_from_case(
     use_ur_context: bool, ur_stats: tuple[float, float],
     max_future_steps: int, device: str,
 ) -> dict:
+    """Initial windows, states and CFD targets for a batch of rollouts from one case."""
     ur_value = parse_ur_label(str(case_name))
     U = ur_value * fn * D
     ordered = case_df.sort_values("time").reset_index(drop=True)
@@ -166,6 +183,7 @@ def build_tf_batch_from_case(
     input_cols: list[str], x_scaler, nd_inputs: bool, D: float, fn: float,
     use_ur_context: bool, ur_stats: tuple[float, float], device: str,
 ) -> dict:
+    """Teacher-forced input windows and C_L targets for n_steps consecutive steps."""
     from numpy.lib.stride_tricks import sliding_window_view
 
     ur_value = parse_ur_label(str(case_name))
@@ -207,6 +225,7 @@ def build_tf_batch_from_case(
 
 def loss_cl(cl_scaled_pred: torch.Tensor, cl_cfd_phys: torch.Tensor,
            y_mean: float, y_scale: float) -> torch.Tensor:
+    """Mean squared error of C_L in scaled units."""
     cl_cfd_scaled = (cl_cfd_phys - y_mean) / y_scale
 
     return torch.mean((cl_scaled_pred - cl_cfd_scaled) ** 2)
@@ -216,6 +235,7 @@ def loss_roll(h_pred: torch.Tensor, hdot_pred: torch.Tensor,
              h_cfd: torch.Tensor, hdot_cfd: torch.Tensor,
              D: float, U: float, x_mean: np.ndarray, x_scale: np.ndarray,
              disp_idx: int, vel_idx: int) -> torch.Tensor:
+    """Mean squared error of displacement and velocity along the rollout, in standardised model coordinates."""
     h_pred_std = (h_pred / D - x_mean[disp_idx]) / x_scale[disp_idx]
     h_cfd_std = (h_cfd / D - x_mean[disp_idx]) / x_scale[disp_idx]
     hdot_pred_std = (hdot_pred / U - x_mean[vel_idx]) / x_scale[vel_idx]

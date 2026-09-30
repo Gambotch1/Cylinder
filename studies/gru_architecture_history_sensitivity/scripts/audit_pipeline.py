@@ -1,3 +1,5 @@
+"""Stage 0: record the production settings this study keeps fixed and the trainable-parameter count of every grid configuration (manifests/stage0_audit.json)."""
+
 from __future__ import annotations
 
 import json

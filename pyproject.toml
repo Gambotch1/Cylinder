@@ -11,20 +11,19 @@ authors = [
 description = """Prediction of the VIV response of canonical cylinder and Rio-Niteroi bridge via Deep Learning
 techniques"""
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "scikit-learn",
-    "optuna",
-    "numpy",
+    "numpy>=2.0",
     "pandas",
+    "pyarrow",
     "scipy",
+    "scikit-learn",
     "matplotlib",
-    "SciencePlots==2.2.2",
     "torch",
 ]
 

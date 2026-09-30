@@ -1,3 +1,5 @@
+"""Write the LSF job arrays for Stage 1 (architecture grid) and Stage 2 (history length) into jobs/. Jobs are only written, not submitted."""
+
 from __future__ import annotations
 
 import argparse

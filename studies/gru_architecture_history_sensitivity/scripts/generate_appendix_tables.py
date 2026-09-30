@@ -1,3 +1,5 @@
+"""LaTeX tables for thesis Sec. 5.2.1 and Appendix C (architecture and history-length sensitivity) and the case partitions."""
+
 from __future__ import annotations
 
 import json

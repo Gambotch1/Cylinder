@@ -1,3 +1,11 @@
+"""Figures for the residual forcing test (thesis Fig. 6.13): displacement traces at
+Ur = 6.7385 for the deterministic GRU, frequency-matched residual forcing and
+white noise, compared with CFD.
+
+Reads the fixed result folders named at the top of this file and writes to
+<residual forcing folder>/thesis_figures/.
+"""
+
 from __future__ import annotations
 
 import json
@@ -37,11 +45,13 @@ MODE_LABEL = {
 
 
 def _seed_from_name(npz_name: str) -> int | None:
+    """Forcing seed from a result file name."""
     m = re.search(r"seed(\d+)", npz_name)
     return int(m.group(1)) if m else None
 
 
 def plot_amplitude_error_by_mode() -> tuple[Path, Path]:
+    """Amplitude and stability outcome per forcing mode."""
     apply_thesis_style()
     import matplotlib.pyplot as plt
 
@@ -104,6 +114,7 @@ def plot_amplitude_error_by_mode() -> tuple[Path, Path]:
 
 
 def _load_case(npz_path: Path, cfd_df):
+    """Load one coupled npz."""
     d = np.load(npz_path, allow_pickle=True)
     receipt = json.loads(npz_path.with_suffix(".receipt.json").read_text())
     Ur = float(d["Ur"])
@@ -117,6 +128,7 @@ def _load_case(npz_path: Path, cfd_df):
 
 
 def plot_representative_traces() -> tuple[Path, Path]:
+    """Representative displacement traces per forcing mode."""
     apply_thesis_style()
     import matplotlib.pyplot as plt
 
@@ -180,6 +192,7 @@ def plot_representative_traces() -> tuple[Path, Path]:
 
 
 def main():
+    """Make the residual forcing figures."""
     p1 = plot_amplitude_error_by_mode()
     print(f"Wrote {p1[0]}\nWrote {p1[1]}")
     p2 = plot_representative_traces()

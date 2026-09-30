@@ -1,3 +1,5 @@
+"""Collect the per-run results of a stage into one table and aggregate over seeds."""
+
 from __future__ import annotations
 
 import argparse

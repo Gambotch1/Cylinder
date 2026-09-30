@@ -1,3 +1,5 @@
+"""Check that every run of a stage has its open- and closed-loop validation results."""
+
 from __future__ import annotations
 
 import argparse

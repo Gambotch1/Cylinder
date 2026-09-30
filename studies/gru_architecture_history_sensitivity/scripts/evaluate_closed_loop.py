@@ -1,3 +1,5 @@
+"""Closed-loop validation sweep of one trained run (coupled_inference for each validation case); writes sweep_results.csv and, for the bridge, status_aware_report.csv."""
+
 from __future__ import annotations
 
 import argparse

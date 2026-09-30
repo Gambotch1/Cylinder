@@ -1,3 +1,5 @@
+"""Evaluate the test cases for the frozen, selected configuration only."""
+
 from __future__ import annotations
 
 import argparse

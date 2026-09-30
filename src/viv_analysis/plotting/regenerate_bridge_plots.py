@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+r"""Closed-loop bridge figures from an evaluate_all.py sweep folder
+(thesis Fig. 6.6, 6.7 and Appendix H). The amplitude response uses the
+reference status of each CFD case (reference_quality.py), so only settled
+limit cycles get an amplitude point. Writes to <sweep folder>/thesis_figures/.
+
+Example:
+    PYTHONPATH=src python -m viv_analysis.plotting.regenerate_bridge_plots \
+        --coupled_eval_dir <sweep folder> --model_column <column in sweep_results.csv>
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -24,6 +34,7 @@ _UR_RE = re.compile(r"coupled_bridge_Ur([0-9.]+)_(.+)\.npz$")
 
 
 def _load_case(npz_path: Path, cfd_df: pd.DataFrame):
+    """Load one coupled npz."""
     m = _UR_RE.match(npz_path.name)
     if not m:
         return None
@@ -48,6 +59,7 @@ def _load_case(npz_path: Path, cfd_df: pd.DataFrame):
 def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame,
                              dataset_note: str | None,
                              appendix_font_scale: float = 1.0) -> dict[float, dict]:
+    """Thesis-style closed-loop time series for every case."""
     thesis_dir = coupled_eval_dir / "thesis_figures"
     if appendix_font_scale != 1.0:
         thesis_dir = thesis_dir / "appendix_narrow"
@@ -77,6 +89,7 @@ def replot_timeseries_thesis(coupled_eval_dir: Path, cfd_df: pd.DataFrame,
 
 
 def _load_partition_by_ur(model_column: str) -> dict[float, str]:
+    """Train/val/test partition of each Ur, from the model's run_config.json."""
     from viv_analysis.utils import parse_ur_label
 
     metrics_path = PROJECT_ROOT / "results" / model_column / "metrics_gru.json"
@@ -95,6 +108,7 @@ def _load_partition_by_ur(model_column: str) -> dict[float, str]:
 def replot_sweep_summary_thesis(coupled_eval_dir: Path, model_column: str,
                                 dataset_note: str | None,
                                 font_scale: float = 1.0) -> dict:
+    """Status-aware amplitude response over Ur."""
     csv_path = coupled_eval_dir / "sweep_results.csv"
     if not csv_path.exists():
         print(f"  [skip] no sweep_results.csv in {coupled_eval_dir}")
@@ -138,6 +152,7 @@ def replot_sweep_summary_thesis(coupled_eval_dir: Path, model_column: str,
 
 
 def select_representative_cases(coupled_eval_dir: Path) -> dict:
+    """Cases shown in the main text; the others go to the appendix."""
     csv_path = coupled_eval_dir / "sweep_results.csv"
     if not csv_path.exists():
         return {}
@@ -161,6 +176,7 @@ def select_representative_cases(coupled_eval_dir: Path) -> dict:
 
 
 def main():
+    """Regenerate the bridge closed-loop figures."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--coupled_eval_dir", required=True,
                   help="results/-relative directory of a prior "
